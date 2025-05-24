@@ -38,9 +38,10 @@ SS Bootcamp 3rd #2025
 
 
 ## デモサイト
-- https://toytalk.zakicorp.com/demo
+- https://toytalk.zakicorp.com/demo/index.html
 
 
 ## 構成図
 サーバーレスでAWS上に構築
+- デモ
 ![image](https://github.com/user-attachments/assets/17ba02fb-200f-44a9-a990-9b352dcf7615)
