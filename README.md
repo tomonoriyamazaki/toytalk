@@ -53,9 +53,11 @@ SS Bootcamp 3rd #2025
 ![image](https://github.com/user-attachments/assets/17ba02fb-200f-44a9-a990-9b352dcf7615)
 
 
-### 補足：APIGWのCORS設定
+### 補足：セキュリティ観点で本番は以下の設定が必要かも
 | 設定項目                               | 開発中 | 本番             |
 | ---------------------------------- | --------- | ------------------------------ |
 | `Access-Control-Allow-Credentials` | （なし）      | `true`（必要なら）                   |
 | CloudFront キャッシュキー                 | （特になし）    | `Origin` を含めて設定                |
+| APIキーの保護                 | Lambda環境変数    | Secrets Manager利用（チーム開発でなければ必須ではない）      |
+
 
