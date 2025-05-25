@@ -45,3 +45,12 @@ SS Bootcamp 3rd #2025
 サーバーレスでAWS上に構築
 - デモ
 ![image](https://github.com/user-attachments/assets/17ba02fb-200f-44a9-a990-9b352dcf7615)
+
+
+### 補足：APIGWのCORS設定
+| 設定項目                               | 開発中 (`*`) | 本番 (`zakicorp.com`)            |
+| ---------------------------------- | --------- | ------------------------------ |
+| `Access-Control-Allow-Origin`      | `*`       | `https://toytalk.zakicorp.com` |
+| `Access-Control-Allow-Credentials` | （なし）      | `true`（必要なら）                   |
+| CloudFront キャッシュキー                 | （特になし）    | `Origin` を含めて設定                |
+
