@@ -51,7 +51,6 @@ SS Bootcamp 3rd #2025
 ### 補足：APIGWのCORS設定
 | 設定項目                               | 開発中 (`*`) | 本番 (`zakicorp.com`)            |
 | ---------------------------------- | --------- | ------------------------------ |
-| `Access-Control-Allow-Origin`      | `*`       | `https://toytalk.zakicorp.com` |
 | `Access-Control-Allow-Credentials` | （なし）      | `true`（必要なら）                   |
 | CloudFront キャッシュキー                 | （特になし）    | `Origin` を含めて設定                |
 
