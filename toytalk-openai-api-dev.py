@@ -79,11 +79,19 @@ def lambda_handler(event, context):
         print("Whisper STT Text:", user_text)
 
         # ✨ Step 2: ChatGPT応答を取得
+
+        # クライアントから履歴を取得
+        history = body.get("history", [])
+        print(json.dumps(history, indent=2))
+
+        # 最後のユーザー発話を履歴に追加（Whisperで得たやつ）
+        history.append({"role": "user", "content": user_text})
+
         chat_payload = json.dumps({
-            "model": "gpt-4.1-mini",
+            "model": "gpt-4o",
             "messages": [
                 {"role": "system", "content": "あなたは子供にやさしく話しかけるお姉さんのようなAIです。"},
-                {"role": "user", "content": user_text}
+                *history  # ← 会話履歴を展開
             ]
         }).encode("utf-8")
 
@@ -108,7 +116,7 @@ def lambda_handler(event, context):
             "model": "gpt-4o-mini-tts",
             "input": response_text,
             "voice": "nova",
-            "response_format": "mp3"
+            "response_format": "aac"
         }).encode("utf-8")
 
         tts_req = urllib.request.Request(
