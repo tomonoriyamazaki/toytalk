@@ -1,50 +1,72 @@
-# Welcome to your Expo app 👋
+# ToyTalk Mobile App
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+ToyTalk の React Native / Expo プロジェクトです。  
+iOS / Android アプリのソースコードをこのディレクトリで管理しています。
 
-## Get started
+---
 
-1. Install dependencies
-
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+## ��� 開発環境セットアップ
 
 ```bash
-npm run reset-project
+# 依存パッケージをインストール
+npm install
+
+# 開発サーバー起動
+npx expo start
+````
+
+* iPhone の場合: Expo Go アプリで QR コードを読み取ると動作確認可能
+* Android の場合: Expo Go アプリでも同様に確認可能
+
+---
+
+## ��� 環境変数
+
+`.env` ファイルを `app/` 直下に配置して利用します。
+APIキーや秘密情報は **必ず Git に含めない** でください。
+
+例:
+
+```env
+EXPO_PUBLIC_API_URL=https://api.toytalk.com
+OPENAI_API_KEY=sk-xxxx
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+> 本番環境では EAS Secrets に登録してください。
 
-## Learn more
+---
 
-To learn more about developing your project with Expo, look at the following resources:
+## ��� ビルド & デプロイ
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+### iOS
 
-## Join the community
+```bash
+npx eas build -p ios --profile production
+npx eas submit -p ios --latest
+```
 
-Join our community of developers creating universal apps.
+* `bundleIdentifier` は `com.zakicorp.toytalk`
+* App Store Connect に作成済みのアプリと一致させること
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+### Android
+
+（未設定）
+
+---
+
+## ��� 開発ルール
+
+* コミット前に `git status` で差分確認
+* `node_modules/` や `.env` は `.gitignore` で除外済み
+* 大きな変更はブランチを切って作業（例: `feature/chat-ui`）
+
+---
+
+## ✅ TODO
+
+* アイコン、スプラッシュスクリーンの追加
+* TestFlight 内部テストでの確認
+* 権限まわり（マイク、通知）の実装
+
+```
+
