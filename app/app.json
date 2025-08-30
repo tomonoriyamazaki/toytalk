@@ -10,8 +10,11 @@
     "newArchEnabled": true,
     "ios": {
       "bundleIdentifier": "com.zakicorp.toytalk",
-      "buildNumber": "1",
-      "supportsTablet": false
+      "buildNumber": "2",
+      "supportsTablet": false,
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "splash": {
       "image": "./assets/images/splash.png",
@@ -30,20 +33,15 @@
       "output": "static",
       "favicon": "./assets/images/favicon.png"
     },
-    "plugins": [
-      "expo-router",
-      [
-        "expo-splash-screen",
-        {
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 200,
-          "resizeMode": "contain",
-          "backgroundColor": "#ffffff"
-        }
-      ]
-    ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "98de720f-f917-4ca2-93db-81ea4dd4c9a9"
+      }
+    },
+    "owner": "zackey"
   }
 }
