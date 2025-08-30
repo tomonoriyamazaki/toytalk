@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "toytalk",
+    "name": "ToyTalk",
     "slug": "toytalk",
     "version": "0.1.0",
     "orientation": "portrait",
@@ -10,7 +10,7 @@
     "newArchEnabled": true,
     "ios": {
       "bundleIdentifier": "com.zakicorp.toytalk",
-      "buildNumber": "4",
+      "buildNumber": "5",
       "supportsTablet": false,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
