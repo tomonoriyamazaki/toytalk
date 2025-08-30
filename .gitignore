@@ -1,0 +1,10 @@
+# Node / Expo
+node_modules/
+.expo/
+
+# Build artifacts
+dist/
+build/
+
+# key
+.env

@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>ToyTalk Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {
+      font-family: sans-serif;
+      text-align: center;
+      padding: 2em;
+    }
+    #character {
+      width: 150px;
+      transition: transform 0.4s ease;
+      margin-bottom: 1em;
+    }
+    #character.spin {
+      transform: rotateY(180deg);
+    }
+    .char-buttons {
+      margin-bottom: 1em;
+    }
+    .char-buttons button {
+      margin: 0.2em;
+      padding: 0.5em 1em;
+      font-size: 1em;
+    }
+    #transcript p {
+      text-align: left;
+      max-width: 500px;
+      margin: 0.2em auto;
+      padding: 0.5em;
+      border-radius: 6px;
+    }
+    #transcript p:nth-child(odd) {
+      background: #eef;
+    }
+    #transcript p:nth-child(even) {
+      background: #efe;
+    }
+    .response-time {
+      font-size: 0.8em;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎤 ToyTalk デモ</h1>
+
+  <div class="char-buttons">
+    <button onclick="changeCharacter('default')">⚙️ デフォルト</button>
+    <button onclick="changeCharacter('boy')">👦 男の子</button>
+    <button onclick="changeCharacter('girl')">👧 女の子</button>
+    <button onclick="changeCharacter('tanuki')">🦝 タヌキ</button>
+  </div>
+
+  <img id="character" src="picture/tanuki_idle.png" alt="Toy Character" />
+  <p>マイクに向かって話しかけてください。</p>
+  <button id="recordButton">🎤 話しかける</button>
+  <div id="transcript"></div>
+
+  <script>
+    let unlockedAudioContext = null;
+
+    const SHOW_DEBUG_LOGS = false;
+    function logToScreen(message) {
+      if (!SHOW_DEBUG_LOGS) return;
+      const logElem = document.createElement("div");
+      logElem.innerText = message;
+      logElem.style.fontSize = "0.8em";
+      logElem.style.color = "gray";
+      logElem.style.margin = "0.2em auto";
+      logElem.style.maxWidth = "500px";
+      logElem.style.textAlign = "left";
+      document.body.appendChild(logElem);
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+
+      let audioUnlocked = false;
+
+      let conversationHistory = [];
+      const saved = localStorage.getItem("toyHistory");
+      if (saved) {
+        conversationHistory = JSON.parse(saved);
+      }
+
+      let mediaRecorder;
+      let audioChunks = [];
+      let audioContext;
+      let analyser;
+      let sourceNode;
+      let silenceTimer;
+      let stream;
+      let animationId = null;
+      const silenceThreshold = 0.02;
+      const maxSilenceDuration = 1500;
+      const minRecordDuration = 2000;
+      let keepListening = false;
+      let currentCharacter = "tanuki";
+
+      const recordButton = document.getElementById("recordButton");
+      const transcriptDiv = document.getElementById("transcript");
+
+      function setCharacterState(state) {
+        const img = document.getElementById("character");
+        img.classList.add("spin");
+        setTimeout(() => {
+          img.src = `picture/${currentCharacter}_${state}.png`;
+          img.classList.remove("spin");
+        }, 200);
+      }
+
+      window.changeCharacter = function(name) {
+        currentCharacter = name;
+        setCharacterState("idle");
+      }
+
+      recordButton.onclick = async () => {
+        if (!audioUnlocked) {
+          try {
+            unlockedAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = unlockedAudioContext.createOscillator();
+            const gainNode = unlockedAudioContext.createGain();
+
+            oscillator.connect(gainNode);
+            gainNode.connect(unlockedAudioContext.destination);
+
+            oscillator.frequency.value = 440;
+            gainNode.gain.value = 0.0001; // 無音
+
+            oscillator.start();
+            oscillator.stop(unlockedAudioContext.currentTime + 0.05);
+
+            audioUnlocked = true;
+            logToScreen("✅ 音声再生権限を取得しました");
+          } catch (e) {
+            alert("🎧 音声再生の許可が得られませんでした。もう一度タップしてください");
+            return;
+          }
+        }
+
+        if (keepListening) return;
+        keepListening = true;
+        recordButton.disabled = true;
+        recordButton.innerText = "🎧 話しかけ中...";
+        setCharacterState("idle");
+        await startListeningLoop();
+      };
+
+      async function startListeningLoop() {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioContext = new AudioContext();
+        sourceNode = audioContext.createMediaStreamSource(stream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 2048;
+        sourceNode.connect(analyser);
+
+        while (keepListening) {
+          await new Promise((resolve) => detectSoundStart(resolve));
+          await startSingleRecording();
+        }
+      }
+
+      function detectSoundStart(onSpeech) {
+  const rawAnalyser = audioContext.createAnalyser();
+  rawAnalyser.fftSize = 1024;
+  sourceNode.connect(rawAnalyser);
+
+  const bandpass = audioContext.createBiquadFilter();
+  bandpass.type = "bandpass";
+  bandpass.frequency.value = 1000;
+  bandpass.Q.value = 0.707;
+  sourceNode.connect(bandpass);
+
+  const bpAnalyser = audioContext.createAnalyser();
+  bpAnalyser.fftSize = 1024;
+  bandpass.connect(bpAnalyser);
+
+  const buf = new Uint8Array(bpAnalyser.fftSize);
+  let voiced = false, startTime = 0;
+
+  function loop() {
+    bpAnalyser.getByteTimeDomainData(buf);
+    let sum = 0, zc = 0, prev = buf[0] < 128;
+    for (let i = 0; i < buf.length; i++) {
+      const v = (buf[i] - 128) / 128;
+      sum += v * v;
+      const sign = buf[i] < 128;
+      if (sign !== prev) { zc++; prev = sign; }
+    }
+    const rms = Math.sqrt(sum / buf.length);
+    const zcr = zc / buf.length;
+    const now = performance.now();
+
+    if (rms > 0.01 && zcr > 0.05) {
+      if (!voiced) { voiced = true; startTime = now; }
+      if (now - startTime > 150) {
+        cancelAnimationFrame(animationId);
+        onSpeech();
+        return;
+      }
+    } else {
+      voiced = false;
+    }
+    animationId = requestAnimationFrame(loop);
+  }
+  loop();
+}
+          const volume = Math.sqrt(sum / buffer.length);
+          if (volume > silenceThreshold) {
+            cancelAnimationFrame(animationId);
+            onSoundDetected();
+            return;
+          }
+          animationId = requestAnimationFrame(check);
+        }
+        check();
+      }
+
+      async function startSingleRecording() {
+        return new Promise((resolve) => {
+          audioChunks = [];
+          mediaRecorder = new MediaRecorder(stream);
+          const startTime = Date.now();
+
+          mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+          mediaRecorder.onstop = async () => {
+            const startTime = Date.now();
+
+            const blob = new Blob(audioChunks, { type: 'audio/webm' });
+            const reader = new FileReader();
+
+            reader.onloadend = async () => {
+              const base64Audio = reader.result.split(',')[1];
+              const loadingElem = document.createElement("p");
+              loadingElem.innerText = "🗣️: 出力中...";
+              transcriptDiv.appendChild(loadingElem);
+
+              setCharacterState("thinking");
+
+              try {
+                const apiStartTime = Date.now();
+
+                const payload = {
+                  history: conversationHistory,
+                  audio: base64Audio
+                };
+
+                const response = await fetch('https://ujh8l09at7.execute-api.ap-northeast-1.amazonaws.com/dev/chat', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+                const apiEndTime = Date.now();
+                const totalTime = ((apiEndTime - startTime) / 1000).toFixed(1);
+                const responseTime = ((apiEndTime - apiStartTime) / 1000).toFixed(1);
+
+                if (data.user_text) {
+                  loadingElem.innerText = `🗣️: ${data.user_text}`;
+                  loadingElem.style.background = "#eef";
+                  conversationHistory.push({ role: "user", content: data.user_text });
+                }
+
+                if (data.response_text) {
+                  const responseElem = document.createElement("p");
+                  responseElem.innerHTML = `🤖: ${data.response_text} <span class="response-time">（応答 ${responseTime} 秒）</span>`;
+                  transcriptDiv.appendChild(responseElem);
+                  conversationHistory.push({ role: "assistant", content: data.response_text });
+
+                  if (conversationHistory.length > 20) {
+                    conversationHistory = conversationHistory.slice(-20);
+                  }
+
+                  localStorage.setItem("toyHistory", JSON.stringify(conversationHistory));
+                  logToScreen("📦 voice length: " + (data.voice?.length || 0));
+
+                  // iOS対応のAudioContext経由再生に差し替え
+                  const binary = Uint8Array.from(atob(data.voice), c => c.charCodeAt(0));
+                  const blob = new Blob([binary], { type: 'audio/mp4' });
+
+                  const reader = new FileReader();
+                  reader.onload = async () => {
+                    try {
+                      const arrayBuffer = reader.result;
+
+                      const context = unlockedAudioContext || new (window.AudioContext || window.webkitAudioContext)();
+                      const decodedData = await context.decodeAudioData(arrayBuffer);
+
+                      const source = context.createBufferSource();
+                      source.buffer = decodedData;
+                      source.connect(context.destination);
+
+                      source.onended = () => setCharacterState("idle");
+                      source.start(0);
+
+                      setCharacterState("speaking");
+                      logToScreen("🎧 再生成功 via AudioContext");
+                    } catch (e) {
+                      logToScreen("❌ decodeAudioData error: " + e.message);
+                    }
+                  };
+                  reader.readAsArrayBuffer(blob);
+
+                }
+
+              } catch (e) {
+                transcriptDiv.innerHTML += `<p>❌ 通信エラー</p>`;
+                setCharacterState("idle");
+              }
+
+              resolve();
+            };
+
+            reader.readAsDataURL(blob);
+          };
+
+          mediaRecorder.start();
+
+          detectSilence(() => {
+            const duration = Date.now() - startTime;
+            if (duration >= minRecordDuration) {
+              mediaRecorder.stop();
+            } else {
+              setTimeout(() => mediaRecorder.stop(), minRecordDuration - duration);
+            }
+          });
+
+          setTimeout(() => {
+            if (mediaRecorder && mediaRecorder.state === "recording") {
+              mediaRecorder.stop();
+            }
+          }, 15000);
+        });
+      }
+
+      function detectSilence(onSilence) {
+        const buffer = new Uint8Array(analyser.fftSize);
+        function check() {
+          analyser.getByteTimeDomainData(buffer);
+          let sum = 0;
+          for (let i = 0; i < buffer.length; i++) {
+            const val = (buffer[i] - 128) / 128;
+            sum += val * val;
+          }
+          const volume = Math.sqrt(sum / buffer.length);
+
+          if (volume < silenceThreshold) {
+            if (!silenceTimer) {
+              silenceTimer = setTimeout(onSilence, maxSilenceDuration);
+            }
+          } else {
+            clearTimeout(silenceTimer);
+            silenceTimer = null;
+          }
+
+          animationId = requestAnimationFrame(check);
+        }
+        check();
+      }
+    });
+  </script>
+</body>
+</html>
