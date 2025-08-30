@@ -1,0 +1,20 @@
+import { SafeAreaView, Text, View, StyleSheet } from "react-native";
+
+export default function Settings() {
+  return (
+    <SafeAreaView style={s.root}>
+      <View style={s.wrap}>
+        <Text style={s.title}>設定</Text>
+        <Text style={s.item}>・バージョン 0.1.0</Text>
+        <Text style={s.item}>・（ここに項目を追加）</Text>
+      </View>
+    </SafeAreaView>
+  );
+}
+const s = StyleSheet.create({
+  root: { flex: 1, backgroundColor: "#fff" },
+  wrap: { padding: 20, gap: 12 },
+  title: { fontSize: 20, fontWeight: "700" },
+  item: { fontSize: 16, color: "#444" },
+});
+

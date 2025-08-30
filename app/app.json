@@ -2,14 +2,21 @@
   "expo": {
     "name": "toytalk",
     "slug": "toytalk",
-    "version": "1.0.0",
+    "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "toytalk",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "bundleIdentifier": "com.zakicorp.toytalk",
+      "buildNumber": "1",
+      "supportsTablet": false
+    },
+    "splash": {
+      "image": "./assets/images/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#000000"
     },
     "android": {
       "adaptiveIcon": {
