@@ -193,11 +193,8 @@ const send = async () => {
     // 送信開始
     xhr.send(
       JSON.stringify({
-        messages: [{ role: "user", content: t }],
-        tts: true,
-        ttsFormat: "mp3",
-        ttsVoice: "alloy",
-        emitSegText: true,
+        messages: [{ role: "user", content: t }], // ← 入力テキストそのまま送る
+        voice: "nova",                           // ← サーバが見るのは voice
       })
     );
   } catch (e: any) {
