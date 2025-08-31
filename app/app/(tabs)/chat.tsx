@@ -13,9 +13,8 @@ import * as FileSystem from "expo-file-system";
 import { Audio } from "expo-av";
 
 // デバッグログを見たいとき true
-const DEBUG = true;
+const DEBUG = false;
 
-// ★ あなたの Lambda URL
 const STREAM_URL =
   "https://ruc3x2rt3bcnsqxvuyvwdshhh40mzadk.lambda-url.ap-northeast-1.on.aws/";
 
@@ -84,35 +83,62 @@ const send = async () => {
     // 進捗（ストリーム受信）イベント
     let lastIndex = 0;
     let buffer = "";
+    let accText = "";                                  // 文字粒度をここに溜める
+    const printedIds = new Set<number | string>();     // 同一 id の再表示防止
+    
+    let lastEventType: string | null = null;
     let currentEvent: string | null = null;
     let currentData: string[] = [];
 
     const flush = () => {
-      if (!currentEvent || currentData.length === 0) return;
+      if (currentData.length === 0 && !currentEvent) return;
+
+      const ev = currentEvent ?? lastEventType ?? "message";
       const dataStr = currentData.join("\n");
 
-      // 生ログ（event / data）を必ず出す
-      setLog((L) => [...L, `event:${currentEvent}, data:${dataStr.slice(0, 200)}`]);
+      // ★ これまでは常に出していたイベント生ログ → DEBUGの時だけ
+      if (DEBUG) setLog((L) => [...L, `event:${ev}, data:${dataStr.slice(0, 200)}`]);
 
       try {
-        if (currentEvent === "delta") {
+        if (ev === "delta") {
+          // ★ delta はデバッグ時だけ可視化。本番は無視
+          if (DEBUG) {
+            const obj = JSON.parse(dataStr);
+            const text: string = obj?.text ?? "";
+            if (text) setLog((L) => [...L, `delta: ${text}`]);
+          }
+
+        } else if (ev === "segment") {
+          // ★ segment は確定文。ToyTalkだけ常に表示（デバッグ関係なし）
           const obj = JSON.parse(dataStr);
-          const text = obj?.text;
+          const text: string = obj?.text ?? "";
           if (text) setLog((L) => [...L, `ToyTalk: ${text}`]);
-        } else if (currentEvent === "tts") {
+
+          // （必要ならデバッグで segment の生データも見せられる）
+          // if (DEBUG) setLog((L) => [...L, `segment raw: ${dataStr.slice(0, 200)}`]);
+
+        } else if (ev === "tts") {
+          // ★ tts は再生のみ。ログは DEBUG のときだけ
           const obj = JSON.parse(dataStr);
           const { id, b64, format } = obj || {};
-          if (id && b64 && format) enqueueAudio(b64, id, format);
-        } else if (currentEvent === "error") {
+          if (id != null && b64 && format) enqueueAudio(b64, String(id), String(format));
+          else if (DEBUG) setLog((L) => [...L, `tts malformed: ${dataStr.slice(0, 120)}`]);
+
+          // if (DEBUG) setLog((L) => [...L, `tts chunk id=${id}`]);
+
+        } else if (ev === "error") {
+          // エラーは常に表示
           setLog((L) => [...L, `Error: ${dataStr}`]);
         }
       } catch (e: any) {
-        setLog((L) => [...L, `ParseErr(${currentEvent}): ${e?.message ?? e}`]);
+        setLog((L) => [...L, `ParseErr(${ev}): ${e?.message ?? e}`]);
       }
 
+      lastEventType = ev;
       currentEvent = null;
       currentData = [];
     };
+
 
     const processChunk = (chunk: string) => {
       buffer += chunk;
@@ -155,6 +181,12 @@ const send = async () => {
       const text = xhr.responseText || "";
       const tail = text.slice(lastIndex);
       if (tail) processChunk(tail);
+
+      // ★ 取りこぼしのaccTextがあれば出して終わる
+      const out = accText.trim();
+      if (out) setLog((L) => [...L, `ToyTalk: ${out}`]);
+      accText = "";
+
       setLog((L) => [...L, "=== stream done ==="]);
     };
 
