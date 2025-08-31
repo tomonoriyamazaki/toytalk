@@ -1,0 +1,26 @@
+{
+  "name": "toytalk",
+  "version": "1.0.0",
+  "description": "SS Bootcamp 3rd #2025",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tomonoriyamazaki/toytalk.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/tomonoriyamazaki/toytalk/issues"
+  },
+  "homepage": "https://github.com/tomonoriyamazaki/toytalk#readme",
+  "dependencies": {
+    "openai": "^5.16.0"
+  }
+}

@@ -1,10 +1,14 @@
 # Node / Expo
 node_modules/
+npm-degub.log
+yarn-error.log
 .expo/
+
 
 # Build artifacts
 dist/
 build/
+*.zip
 
 # key
 .env
