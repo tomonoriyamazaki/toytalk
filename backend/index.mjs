@@ -1,115 +1,114 @@
-// Lambda runtime: Node.js 18+
+// Node.js 18+ / ESM（index.mjs）
 // Handler: index.handler
-// Function URL: Invoke mode = RESPONSE_STREAM
 // Env: OPENAI_API_KEY
-
 import OpenAI from "openai";
-
-// ★ Lambda内では awslambda はグローバルで使える（import不要）
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// 小さなユーティリティ
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-const send = (res, ev, data) =>
-  res.write(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`);
+// ---- チューニング定数（まずはこのままでOK） ----
+const HEAD_MIN_CHARS = 24;      // 先頭プレビューTTSのトリガ（20〜40目安）
+const SEG_MAX_CHARS  = 48;      // 文が来ない時の強制カット（30〜50目安）
+const TTS_FORMAT     = "wav";   // 実装簡単なWAV。帯域が気になればm4a/CAFへ
+const VOICE_DEFAULT  = "alloy";
+
+const sleep = (ms)=>new Promise(r=>setTimeout(r, ms));
+const send  = (res, ev, data)=>res.write(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`);
 
 export const handler = awslambda.streamifyResponse(async (event, res) => {
-  // SSEヘッダ
   res.setContentType("text/event-stream");
 
-  // 1) クライアント側のTTFB計測用“ping”
+  // 入力
+  const body = event.body ? JSON.parse(event.body) : {};
+  const voice = body.voice ?? VOICE_DEFAULT;
+  const messages = body.messages ?? [{ role:"user", content:"自己紹介して" }];
+
+  // 即TTFB確認
   send(res, "ping", { t: Date.now() });
 
-  // 入力（必要に応じて取り回してね）
-  // ここでは簡易に JSON body: { messages: [{role, content}...], voice?: "anime" }
-  const body = event.body ? JSON.parse(event.body) : {};
-  const messages = body.messages ?? [{ role: "user", content: "自己紹介して" }];
-  const voice = body.voice ?? "alloy"; // OpenAIのTTSボイス名に合わせて変更
-
-  // 2) LLMをストリーミング開始（先に“文字”を流す）
-  let textSoFar = "";
-  let headTtsFired = false;
-
-  // OpenAI v4 SDK: chat.completions (streaming)
-  const llmStream = await openai.chat.completions.create({
-    model: "gpt-4.1-mini",          // ここは使っているモデルに合わせて
-    stream: true,
+  // LLMストリーム開始
+  const llm = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
     temperature: 0.7,
+    stream: true,
     messages
   });
 
-  // LLMの読み取りと“ヘッドTTS”を並行に
-  const llmReader = (async () => {
-    for await (const chunk of llmStream) {
-      const delta = chunk.choices?.[0]?.delta?.content ?? "";
-      if (!delta) continue;
-      textSoFar += delta;
-      send(res, "llm_token", { token: delta });
+  let buf = "";             // トークン蓄積
+  let textAll = "";         // 全文
+  let headSent = false;     // ヘッドTTS済みフラグ
+  let segSeq = 0;           // セグメント番号
 
-      // “ヘッドクリップ”のトリガー：先頭が出そろったら1回だけTTSを先行
-      if (!headTtsFired && textSoFar.length >= 30) { // 目安 20〜50文字
-        headTtsFired = true;
-        // 先頭の一文 or 60〜120字くらいで短いTTSを作る
-        const headText = extractHead(textSoFar, 90);
-        fireHeadTTS(res, headText, voice).catch(console.error);
+  // LLMトークンを読みつつ：1) 文字はそのまま流す 2) 文/長さでTTSを発火
+  for await (const chunk of llm) {
+    const delta = chunk.choices?.[0]?.delta?.content ?? "";
+    if (!delta) continue;
+
+    textAll += delta;
+    buf     += delta;
+    send(res, "llm_token", { token: delta }); // 文字も見せる
+
+    // ヘッドTTS（先頭プレビュー）— 一度だけ
+    if (!headSent && textAll.replace(/\s+/g,"").length >= HEAD_MIN_CHARS) {
+      headSent = true;
+      const headText = sliceToSentence(textAll, HEAD_MIN_CHARS); // 区切り良く
+      fireTTS(res, headText, voice, { kind:"head", seq:0 }).catch(()=>{});
+    }
+
+    // 文末出現 or 長すぎたらセグメントTTS
+    if (endsWithSentence(buf) || buf.length >= SEG_MAX_CHARS) {
+      const segText = buf.trim();
+      buf = ""; // クリア
+      if (segText) {
+        segSeq += 1;
+        fireTTS(res, segText, voice, { kind:"seg", seq: segSeq }).catch(()=>{});
       }
     }
-  })();
-
-  await llmReader; // LLM完了
-
-  // 3) 本編のフルTTS（1ファイル）を生成して流す（MVP）
-  //   ※ まずは“先頭すぐ鳴る体験”を確定させる。のちに「本編を小分け」で上書き可能。
-  if (textSoFar.trim().length > 0) {
-    await sendFullTTS(res, textSoFar, voice);
   }
 
-  // 4) 終了
+  // 取りこぼし（末尾に句点がないケース）
+  if (buf.trim()) {
+    segSeq += 1;
+    await fireTTS(res, buf.trim(), voice, { kind:"seg", seq: segSeq });
+  }
+
+  // 全文の“保険”としてフル音声（クライアント側で未再生分があれば使う）
+  if (textAll.trim()) {
+    const b64 = await ttsToBase64(textAll, voice);
+    send(res, "tts_chunk", { kind:"full", seq: 9999, bytes_base64: b64 });
+  }
+
   send(res, "done", {});
   res.end();
 });
 
 // ---- ヘルパ ----
 
-// 先頭の一文（もしくは最大N文字）を抽出
-function extractHead(text, maxLen = 90) {
-  const trimmed = text.replace(/\s+/g, " ").trim();
-  const m = trimmed.match(/(.+?[。！？!?.])/); // 一文
-  const head = m ? m[1] : trimmed.slice(0, maxLen);
-  return head.slice(0, maxLen);
+// 文末かどうか（簡易）
+function endsWithSentence(s) {
+  return /[。！？!?]\s*$/.test(s);
 }
 
-// 先頭プレビューTTS（~300〜500msくらいを狙う短文）
-async function fireHeadTTS(res, text, voice) {
-  try {
-    const tts = await openai.audio.speech.create({
-      model: "gpt-4o-mini-tts",       // 利用中のTTSモデルに合わせて
-      voice,                          // 例: "alloy" / "verse" / "anime" など
-      input: text,
-      format: "wav"                   // クライアントが扱いやすい形式で
-      // stream: 現状SDKはレスポンス全体。MVPは一発でOK
-    });
-    // SDKは ArrayBuffer 互換を返す（環境により .arrayBuffer() が必要）
-    const audioBuf = Buffer.from(await tts.arrayBuffer());
-    const b64 = audioBuf.toString("base64");
-    send(res, "tts_chunk", { kind: "head", bytes_base64: b64 });
-  } catch (e) {
-    send(res, "log", { level: "warn", msg: "head tts failed", err: String(e) });
-  }
+// ヘッド用：なるべく一文、なければ指定長まで
+function sliceToSentence(text, maxLen) {
+  const t = text.replace(/\s+/g, " ").trim();
+  const m = t.match(/(.+?[。！？!?])/);
+  const sent = m ? m[1] : t.slice(0, maxLen);
+  return sent.slice(0, maxLen);
 }
 
-// 本編のフルTTSを作って1発で送る（MVP）
-// 後で“分割送出”に差し替え可能
-async function sendFullTTS(res, text, voice) {
-  // 長すぎると生成に時間がかかる → 適宜サマリ/分割はあとで
+// TTSを呼んで送信
+async function fireTTS(res, text, voice, meta) {
+  const b64 = await ttsToBase64(text, voice);
+  send(res, "tts_chunk", { ...meta, bytes_base64: b64, text });
+}
+
+// OpenAI TTS → base64
+async function ttsToBase64(text, voice) {
   const tts = await openai.audio.speech.create({
     model: "gpt-4o-mini-tts",
-    voice,
     input: text,
-    format: "wav"
+    voice,
+    format: TTS_FORMAT
   });
-  const audioBuf = Buffer.from(await tts.arrayBuffer());
-  const b64 = audioBuf.toString("base64");
-  // “head”のあとに“full”を送る。クライアント側でヘッドをフェードアウト→本編へ切替
-  send(res, "tts_chunk", { kind: "full", bytes_base64: b64 });
+  const buf = Buffer.from(await tts.arrayBuffer());
+  return buf.toString("base64");
 }
