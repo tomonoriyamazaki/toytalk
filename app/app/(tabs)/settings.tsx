@@ -5,8 +5,17 @@ export default function Settings() {
     <SafeAreaView style={s.root}>
       <View style={s.wrap}>
         <Text style={s.title}>設定</Text>
-        <Text style={s.item}>・バージョン 0.1.0</Text>
         <Text style={s.item}>・（ここに項目を追加）</Text>
+        <Text style={s.item}></Text>
+        <Text style={s.item}></Text>
+        <Text style={s.title}>バージョン</Text>
+        <Text style={s.item}>・ver0.3.0     20250901：</Text>
+        <Text style={s.item}>マイク機能追加</Text>
+        <Text style={s.item}>・ver0.2.0     20250831：</Text>
+        <Text style={s.item}>会話機能追加。マイク不可。文字入力が必要</Text>
+        <Text style={s.item}>・ver0.1.0     20250830：</Text>
+        <Text style={s.item}>テストアプリ登録。ホーム/会話/設定画面のみ</Text>
+        <Text style={s.item}></Text>
       </View>
     </SafeAreaView>
   );

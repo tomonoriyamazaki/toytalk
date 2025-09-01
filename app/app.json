@@ -2,7 +2,7 @@
   "expo": {
     "name": "ToyTalk",
     "slug": "toytalk",
-    "version": "0.1.0",
+    "version": "0.3.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "toytalk",
@@ -10,10 +10,12 @@
     "newArchEnabled": true,
     "ios": {
       "bundleIdentifier": "com.zakicorp.toytalk",
-      "buildNumber": "7",
+      "buildNumber": "8",
       "supportsTablet": false,
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSMicrophoneUsageDescription": "音声認識のためにマイクを使用します。",
+        "NSSpeechRecognitionUsageDescription": "音声を文字に変換するために音声認識を使用します。"
       }
     },
     "android": {
@@ -21,7 +23,8 @@
         "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.zakicorp.toytalk"
     },
     "web": {
       "bundler": "metro",
