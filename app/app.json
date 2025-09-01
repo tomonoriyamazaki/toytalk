@@ -10,12 +10,14 @@
     "newArchEnabled": true,
     "ios": {
       "bundleIdentifier": "com.zakicorp.toytalk",
-      "buildNumber": "8",
+      "buildNumber": "9",
       "supportsTablet": false,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSMicrophoneUsageDescription": "音声認識のためにマイクを使用します。",
-        "NSSpeechRecognitionUsageDescription": "音声を文字に変換するために音声認識を使用します。"
+        "NSSpeechRecognitionUsageDescription": "音声を文字に変換するために音声認識を使用します。",
+        "NSPhotoLibraryUsageDescription": "このアプリはユーザーの体験向上のために写真ライブラリへアクセスする可能性があります。",
+        "NSPhotoLibraryAddUsageDescription": "このアプリは生成した画像やコンテンツを保存するために写真ライブラリを使用する可能性があります。"
       }
     },
     "android": {
