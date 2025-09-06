@@ -101,8 +101,7 @@ SS Bootcamp 3rd #2025
 
 - このあたりで速度改善、VAD、声のチューニングの本格対応を始める？マイコン化を優先？
 - 一旦速度改善できた。Lambdaのストリーミング処理でLLM/TTSをそれぞれ並列化。STT（VADも）は一旦スマホ側で処理。今後SSTもサーバー側へ移行する
-- iOSアプリ（TestFlifhtというアプリのダウンロードも必要。会話機能だけ）：
-- https://testflight.apple.com/join/Aq5D8b62
+- iOSアプリのインストール（TestFlifhtというアプリも必要）：https://testflight.apple.com/join/Aq5D8b62
 - [ToyTalkアプリ実装はこちら](app/README.md)
 - 調査進めたところ、アプリ経由でなくても、おもちゃ（ESP32 s3という安価なマイコン）⇔中継サーバーで直接やりとりできそう。ver2の構成はとりやめて、ver3の構成にする
 
