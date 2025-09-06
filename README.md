@@ -95,10 +95,22 @@ SS Bootcamp 3rd #2025
   - 速度：①base64処理とmp3/wavの処理最適化、②システムプロンプトを会話特化に、③相槌機能追加（Lambdaの2重化）で、改善&カバーを検討
   - 声：今のOpenAI APIでチューニングしつつ、別のTTS用APIを検討
 
-## ラズパイ対応 ver2　※対応中
+## ラズパイ対応 ver2　※対応済み
 - スマホアプリ（一旦iOS）を作り、アプリ側で音声処理を行う。ラズパイはマイク/スピーカーの中継だけ（マイコン化に向けた対応）
 <img width="1351" height="456" alt="image" src="https://github.com/user-attachments/assets/c09baf43-5672-4c0d-b494-8947d178093b" />
 
 - このあたりで速度改善、VAD、声のチューニングの本格対応を始める？マイコン化を優先？
-- 一旦速度改善できた。Lambdaのストリーミング処理でLLM/TTSをそれぞれ並列化した。STTの課題はあるが、一旦スマホ側で処理（VADもスマホ処理）
+- 一旦速度改善できた。Lambdaのストリーミング処理でLLM/TTSをそれぞれ並列化。STT（VADも）は一旦スマホ側で処理。今後SSTもサーバー側へ移行する
+- iOSアプリ（TestFlifhtというアプリのダウンロードも必要。会話機能だけ）：
+- https://testflight.apple.com/join/Aq5D8b62
+- 調査したところ、アプリ経由でなくても、おもちゃ（ESP32 s3）⇔中継サーバーで直接やりとりできそう。ver2の構成はとりやめて、ver3の構成にする
+
+## ラズパイ対応 ver3　※対応中
+- iOSアプリでラズパイのwifi設定をできるようにする
+- SST（音声のテキスト化）をサーバー側に移行する（あわせてVAD機能をクライアント側に実装）
+<img width="1384" height="582" alt="image" src="https://github.com/user-attachments/assets/e8e12240-20a8-49e7-b56c-62494d6c9f51" />
+
+
+
+
 
