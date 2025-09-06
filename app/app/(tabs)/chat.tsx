@@ -22,6 +22,8 @@ import Voice, {
 // デバッグログを見たいとき true
 const DEBUG = false;
 const SHOW_STT_DEBUG_UI = DEBUG;    // ★追加：STTデバッグUIの表示可否
+const DEBUG_TIME = false;
+
 
 {/* === 追加: STTのpartial/final最小表示 === */}
 {SHOW_STT_DEBUG_UI && (                 // ★追加：これで隠す/出す
@@ -54,6 +56,8 @@ export default function Chat() {
   const lastSentRef = useRef<string>("");
   const autoSendTimerRef = useRef<NodeJS.Timeout | null>(null); // デバウンスタイマ
   const sendingRef = useRef(false);                           // 送信中ガード
+  // STT: “最初に音を検知した瞬間” を記録
+  const sttDetectAtRef = useRef<number | null>(null);
 
   // === 追加: STT用の最小state ===
   const [isListening, setIsListening] = useState(false);
@@ -93,17 +97,57 @@ export default function Chat() {
     }
   };
 
+  // 処理時間計測
+  const mtRef = { current: {} as Record<string, number | undefined> };
+  const mtSet = (k: string) => { if (DEBUG_TIME) mtRef.current[k] = Date.now(); };
+  // 計測用の基準時間
+  const sttStartAtRef = { current: 0 };
+  const sendStartAtRef = { current: 0 };
+
+  // ログ出力（サーバ時刻とクライアント時刻の簡易まとめ）
+  const mtReport = (appendLog: (f: (L: string[]) => string[]) => void) => {
+    if (!DEBUG_TIME) return;
+
+    const m = mtRef.current;
+
+    const REQ_TTFB_ms =
+      m.firstEventAt && m.reqAt ? m.firstEventAt - m.reqAt : undefined;
+
+    const TTS_FIRST_ARRIVE_ms =
+      m.firstTtsArriveAt && m.reqAt ? m.firstTtsArriveAt - m.reqAt : undefined;
+
+    // （サーバ側）ping からの相対
+    const LLM_START_srv_ms =
+      m.srv_llmStart && m.srv_t0 ? m.srv_llmStart - m.srv_t0 : undefined;
+
+    const TTS_FIRST_BYTE_srv_ms =
+      m.srv_ttsFirstByte && m.srv_t0 ? m.srv_ttsFirstByte - m.srv_t0 : undefined;
+
+    appendLog(L => [
+      ...L,
+      `⏱️ TTFB=${REQ_TTFB_ms}ms, FirstTTS(arrive)=${TTS_FIRST_ARRIVE_ms}ms / srv: LLM=${LLM_START_srv_ms}ms, TTS1B=${TTS_FIRST_BYTE_srv_ms}ms`
+    ]);
+  };
+
+
   // === 追加: Voiceイベント（最小） ===
   useEffect(() => {
     Voice.onSpeechStart = () => {
       setIsListening(true);
       setPartial("");
       setFinalText("");
+      if (DEBUG_TIME) sttStartAtRef.current = Date.now();   // ★ STT開始時間計測
       lastActivityAtRef.current = Date.now();              // ★追加
       if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
     };
     Voice.onSpeechEnd = () => {
       setIsListening(false);
+      // “検知→入力終了” の時間をここで確定
+      if (DEBUG_TIME && sttDetectAtRef.current != null) {
+        const dur = Date.now() - sttDetectAtRef.current;
+        setLog(L => [...L, `⏱️ STT(talk)=${dur}ms`]);
+        sttDetectAtRef.current = null;
+      }
       // ★話し終わりで送る（finalが空ならpartialでも送る）
       const textToSend = (finalText || partial).trim();
       if (textToSend) {
@@ -120,12 +164,19 @@ export default function Chat() {
     Voice.onSpeechPartialResults = (e: SpeechPartialResultsEvent) => {
       const text = (e.value?.[0] ?? "").trim();
       if (text) setPartial(text);
+      // 音声の“最初の検知”を一回だけ記録（partial が初めて来た瞬間）
+      if (sttDetectAtRef.current == null) sttDetectAtRef.current = Date.now();
       lastActivityAtRef.current = Date.now();              // ★追加
     };
     Voice.onSpeechResults = (e: SpeechResultsEvent) => {
       const text = (e.value?.[0] ?? "").trim();
       setFinalText(text);
       setPartial("");
+      if (DEBUG_TIME && sttStartAtRef.current) {            // ★ STT終了時間計測
+        const dur = Date.now() - sttStartAtRef.current;
+        setLog(L => [...L, `⏱️ STT=${dur}ms`]);
+        sttStartAtRef.current = 0;
+      }
       lastActivityAtRef.current = Date.now();              // ★追加
     };
     return () => {
@@ -216,7 +267,13 @@ export default function Chat() {
         const { sound } = await Audio.Sound.createAsync({ uri });
         await sound.playAsync();
         await new Promise<void>((resolve) => {
+          let firstFrame = true;
           sound.setOnPlaybackStatusUpdate((st) => {
+            if (DEBUG_TIME && firstFrame && st.isLoaded && st.isPlaying) {
+              firstFrame = false;
+              const ftts = Date.now() - sendStartAtRef.current;
+              setLog(L => [...L, `⏱️ FTTS=${ftts}ms`]);
+            }
             if (st.isLoaded && st.didJustFinish) {
               resolve();
             }
@@ -234,13 +291,15 @@ export default function Chat() {
     const t = (textArg ?? msg).trim();
     if (!t) return;
 
-    if (sendingRef.current) {                    // ★追加
+    if (sendingRef.current) {  
       if (DEBUG) setLog(L => [...L, "skip: sending in flight"]);
       return;
     }
-    sendingRef.current = true;                   // ★追加
+    sendingRef.current = true; 
 
-    if (DEBUG) setLog(L => [...L, `→ POST ${t}`]);   // ★追加（任意）
+    if (DEBUG) setLog(L => [...L, `→ POST ${t}`]);  
+    if (DEBUG_TIME) sendStartAtRef.current = Date.now(); 
+
     setMsg("");
     setLog((L) => [...L, JSON.stringify({ type: "user", text: t })]);
 
@@ -263,44 +322,54 @@ export default function Chat() {
       let currentEvent: string | null = null;
       let currentData: string[] = [];
 
+      // ★追加：最初のイベントを記録するためのフラグ
+      let firstEventSeen = false;
+
       const flush = () => {
         if (currentData.length === 0 && !currentEvent) return;
 
         const ev = currentEvent ?? lastEventType ?? "message";
         const dataStr = currentData.join("\n");
 
-        if (DEBUG)
-          setLog((L) => [
-            ...L,
-            `event:${ev}, data:${dataStr.slice(0, 200)}`,
-          ]);
+        // ★最初のイベント（サーバから何か来た瞬間）
+        if (DEBUG_TIME && !firstEventSeen) {
+          firstEventSeen = true;
+          mtSet("firstEventAt"); // → REQ_TTFB 用
+        }
 
         try {
-          if (ev === "delta") {
-            if (DEBUG) {
+          if (ev === "ping") {
+            // { t: <server now> }
+            if (DEBUG_TIME) {
               const obj = JSON.parse(dataStr);
-              const text: string = obj?.text ?? "";
-              if (text) setLog((L) => [...L, `delta: ${text}`]);
+              (mtRef.current as any).srv_t0 = obj?.t;
             }
+          } else if (ev === "mark") {
+            // { k: "llm_start" | "tts_first_byte", t: <server now> }
+            if (DEBUG_TIME) {
+              const obj = JSON.parse(dataStr);
+              if (obj?.k === "llm_start")      (mtRef.current as any).srv_llmStart   = obj.t;
+              if (obj?.k === "tts_first_byte") (mtRef.current as any).srv_ttsFirstByte = obj.t;
+            }
+          } else if (ev === "tts") {
+            // 最初のTTSチャンクが到着した時刻（再生開始ではなく到着）
+            if (DEBUG_TIME && !(mtRef.current as any).firstTtsArriveAt) mtSet("firstTtsArriveAt");
+
+            const obj = JSON.parse(dataStr);
+            const { id, b64, format } = obj || {};
+            if (id != null && b64 && format) enqueueAudio(b64, String(id), String(format));
           } else if (ev === "segment") {
             const obj = JSON.parse(dataStr);
             const text: string = obj?.text ?? "";
-            if (text) setLog((L) => [...L, text]);
-          } else if (ev === "tts") {
-            const obj = JSON.parse(dataStr);
-            const { id, b64, format } = obj || {};
-            if (id != null && b64 && format)
-              enqueueAudio(b64, String(id), String(format));
-            else if (DEBUG)
-              setLog((L) => [
-                ...L,
-                `tts malformed: ${dataStr.slice(0, 120)}`,
-              ]);
+            if (text) setLog(L => [...L, text]);
           } else if (ev === "error") {
-            setLog((L) => [...L, `Error: ${dataStr}`]);
+            setLog(L => [...L, `Error: ${dataStr}`]);
+          } else if (ev === "done") {
+            // ★サーバ送信完了時点で現状の計測を出す（音声再生の終了は含まない）
+            if (DEBUG_TIME) mtReport(setLog);
           }
         } catch (e: any) {
-          setLog((L) => [...L, `ParseErr(${ev}): ${e?.message ?? e}`]);
+          setLog(L => [...L, `ParseErr(${ev}): ${e?.message ?? e}`]);
         }
 
         lastEventType = ev;
@@ -364,6 +433,8 @@ export default function Chat() {
       };
 
       // 送信開始
+      if (DEBUG_TIME) { mtRef.current = {}; mtSet("reqAt"); }
+
       xhr.send(
         JSON.stringify({
           messages: [{ role: "user", content: t }],
