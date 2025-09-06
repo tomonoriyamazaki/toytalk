@@ -1,52 +1,37 @@
 # ToyTalk App
 
-ToyTalk の React Native / Expo プロジェクトです。  
-iOS / Android アプリのソースコードをこのディレクトリで管理しています。
+- ToyTalk アプリの React Native / Expo プロジェクトです。
+- iOS / Android アプリのソースコードをこのディレクトリで管理しています。
+- 現在はiOSのみ稼働
 
 ---
+## ツール
+- React Native	：JavaScript。node.jsを使う
+- Expo          ：RNのツール群。アカウント登録が必要
+- EAS			      ：Expoのクラウドサービス。ビルドを手軽にしてくれる
+- .ipa			    ：ビルド後にできるiOSアプリのバイナリコード
+- xcode			    ：ビルド&検証ツール。今回はEASに任せるので使わない
 
-## 開発環境セットアップ
+## 環境
+- 開発端末       ：Windows PC 1台でok。これで開発～検証までできる。VSCodeにgit bashを入れておく
+- 入れるもの     ：nodejsをサイトからとってきて入れる　→　npm(nodejsのインストーラ)コマンドでexpo,eas群のツールを入れる
 
-```bash
-# 依存パッケージをインストール
-npm install
-
-# 開発サーバー起動
-npx expo start
-````
-
-* iPhone の場合: Expo Go アプリで QR コードを読み取ると動作確認可能
-* Android の場合: Expo Go アプリでも同様に確認可能
-
----
-
-## 環境変数
-
-`.env` ファイルを `app/` 直下に配置して利用します。
-APIキーや秘密情報はGitに含めない
-
-例:
-
-```env
-EXPO_PUBLIC_API_URL=https://api.toytalk.com
-OPENAI_API_KEY=sk-xxxx
-```
-
-> 本番環境では EAS Secrets に登録。
-
----
-
-## ビルド & デプロイ
-
-### iOS
-
-```bash
-npx eas build -p ios --profile production
-npx eas submit -p ios --latest
-```
-
-* `bundleIdentifier` は `com.zakicorp.toytalk`
-* App Store Connect に作成済みのアプリと一致させること
+### iOSアプリの検証方法
+- 流れ          ：コード書く　→　簡易検証　→　実機検証　→　TestFlight（iOSアプリに登録する前の段階のもの）にアップ
+- 簡易検証       ：アプリのUIとか操作感とかをさくっと確認できる。npx expo start -cコマンドしたら、QRでるので、アプリ側にexpo go入れた状態でカメラ読み取りでok
+- 実機検証       ：実機と同じような検証。マイクとかはここで。事前設定が面倒。EASで毎回ビルドする必要があり、これに時間がかかる（10分以上、、、）
+  - npm i -g eas-cli             ：EASを入れる
+  - npm i -D expo-dev-client     ：Expoの検証用ツールを入れる
+  - eas device:create            ：証明書設定してデバイスを登録する。前提としてapple developper（1.5万円/年かかる）に登録
+  - eas.jsonの修正               ：ビルドのprofileを設定する。今回はpreviewというデフォのprofileを修正。internalを指定する
+  - eas build --platform ios --profile preview    ：ビルド。こに10分以上時間がかかる。
+  - npx expo start --dev-client  ：これでさっきビルドしたものがQRで落とせるので、カメラで読み取ってアプリをiPhoneに導入→使用
+- TestFlight    ：iOSアプリとして登録する前段階の検証サイト。ここにアップしたら、URLが発行できるようになる。これも初回手続きが面倒
+  - eas.jsonの修正               ：ビルドのprofileを設定する。今回はtestflightを追加。distorbutionにstoreを指定する
+  - eas build --platform ios --profile testflight   ：ビルド。ここに10分以上かかる
+  - eas submit --platform ios --latest  ：TestFlightに提出するコマンド
+  - apple connectサイトでのTestFlightテスター設定      ：テスターには内部と外部がいるが、内部だとApple ID登録するとか面倒。外部だと審査下りればみんな使える→外部を設定する→URLが発行される。審査は1-2日?で基本通る
+  - →URLが発行されたら、それを共有する→testflightアプリ経由で、対象アプリのインストールができるようになる
 
 ### Android
 
@@ -54,19 +39,25 @@ npx eas submit -p ios --latest
 
 ---
 
-## 開発ルール
-
-* コミット前に `git status` で差分確認
-* `node_modules/` や `.env` は `.gitignore` で除外済み
-* 大きな変更はブランチを切って作業（例: `feature/chat-ui`）
-
----
-
-## ✅ TODO
-
-* アイコン、スプラッシュスクリーンの追加
-* TestFlight 内部テストでの確認
+## ✅ 完了
+* スプラッシュなし
+* アイコン追加
+* TestFlight のアップロードと外部公開
 * 権限まわり（マイク、通知）の実装
+* 会話機能実装　※STTはスマホ依存
+
+## 機能追加
+* おもちゃのwifiを設定できるようにする
+* ログ機能追加
+
+## 改善
+* 話している内容を保持する
+* マイク開始中は音声会話ずっとできるように
+* マイク開始中、スマホから出る音声が入力されてしまう防ぐ or 出力中は入力止める
+* 文字入力画面になると文字が見えなくなる
+* 下にスクロールさせたい
+* 文字区切りがおかしい
+* ボイスのテンションが安定しない。↑が原因なのもある。4o-ttsに雰囲気の指定ができるので試す
 
 ```
 
