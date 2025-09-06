@@ -22,23 +22,14 @@ import Voice, {
 // デバッグログを見たいとき true
 const DEBUG = false;
 const SHOW_STT_DEBUG_UI = DEBUG;    // ★追加：STTデバッグUIの表示可否
-const DEBUG_TIME = false;
+const DEBUG_TIME = true;
 
+// === 会話履歴 ===
+type Turn = { role: "user" | "assistant"; text: string; ts: number };
+const DEBUG_HISTORY = false;
 
-{/* === 追加: STTのpartial/final最小表示 === */}
-{SHOW_STT_DEBUG_UI && (                 // ★追加：これで隠す/出す
-  <View style={{ marginTop: 12 }}>
-    <Text style={s.section}>🎙️ STT</Text>
-    <Text style={s.small}>
-      {isListening ? "Listening: true" : "Listening: false"}
-    </Text>
-    <Text style={s.label}>Partial</Text>
-    <Text style={s.box}>{partial || "…"}</Text>
-    <Text style={s.label}>Final</Text>
-    <Text style={s.boxStrong}>{finalText || "…"}</Text>
-  </View>
-)}
-
+/* === 追加: STTのpartial/final最小表示 === */
+// （このブロックはJSX外なので実行されません。UIに出すなら return 内の DEBUG ブロックを使ってください）
 
 const STREAM_URL =
   "https://ruc3x2rt3bcnsqxvuyvwdshhh40mzadk.lambda-url.ap-northeast-1.on.aws/";
@@ -47,6 +38,11 @@ export default function Chat() {
   const [msg, setMsg] = useState("");
   const [log, setLog] = useState<string[]>([]);
   const readyRef = useRef(false);
+
+  // ==== 会話履歴（このセッションのみ保持）====
+  const historyRef = useRef<Turn[]>([]);
+  const curAssistantRef = useRef<string>(""); // ストリーミング途中のアシスト応答を束ねる
+  const HISTORY_TURNS_TO_SEND = 10; // 直近何ターン送るかを指定
 
   // 音声はキュー再生（重なり防止）
   const playingRef = useRef(false);
@@ -291,15 +287,18 @@ export default function Chat() {
     const t = (textArg ?? msg).trim();
     if (!t) return;
 
-    if (sendingRef.current) {  
+    // === 会話履歴: user を追加 ===
+    historyRef.current.push({ role: "user", text: t, ts: Date.now() });
+    if (DEBUG_HISTORY) setLog(L => [...L, `🧾 hist +user "${t.slice(0,40)}"`]);
+
+    if (sendingRef.current) {                    // ★追加
       if (DEBUG) setLog(L => [...L, "skip: sending in flight"]);
       return;
     }
-    sendingRef.current = true; 
+    sendingRef.current = true;                   // ★追加
 
-    if (DEBUG) setLog(L => [...L, `→ POST ${t}`]);  
-    if (DEBUG_TIME) sendStartAtRef.current = Date.now(); 
-
+    if (DEBUG) setLog(L => [...L, `→ POST ${t}`]);   // ★追加（任意）
+    if (DEBUG_TIME) sendStartAtRef.current = Date.now();
     setMsg("");
     setLog((L) => [...L, JSON.stringify({ type: "user", text: t })]);
 
@@ -339,37 +338,46 @@ export default function Chat() {
 
         try {
           if (ev === "ping") {
-            // { t: <server now> }
             if (DEBUG_TIME) {
               const obj = JSON.parse(dataStr);
               (mtRef.current as any).srv_t0 = obj?.t;
             }
           } else if (ev === "mark") {
-            // { k: "llm_start" | "tts_first_byte", t: <server now> }
             if (DEBUG_TIME) {
               const obj = JSON.parse(dataStr);
               if (obj?.k === "llm_start")      (mtRef.current as any).srv_llmStart   = obj.t;
               if (obj?.k === "tts_first_byte") (mtRef.current as any).srv_ttsFirstByte = obj.t;
             }
           } else if (ev === "tts") {
-            // 最初のTTSチャンクが到着した時刻（再生開始ではなく到着）
             if (DEBUG_TIME && !(mtRef.current as any).firstTtsArriveAt) mtSet("firstTtsArriveAt");
-
             const obj = JSON.parse(dataStr);
             const { id, b64, format } = obj || {};
-            if (id != null && b64 && format) enqueueAudio(b64, String(id), String(format));
+            if (id != null && b64 && format)
+              enqueueAudio(b64, String(id), String(format));
           } else if (ev === "segment") {
             const obj = JSON.parse(dataStr);
             const text: string = obj?.text ?? "";
-            if (text) setLog(L => [...L, text]);
+            const final: boolean = !!obj?.final;
+
+            if (text) {
+              setLog(L => [...L, text]);                // 画面表示（従来通り）
+              curAssistantRef.current += text;          // 束ねる
+            }
+            if (final) {
+              const whole = curAssistantRef.current.trim();
+              if (whole) {
+                historyRef.current.push({ role: "assistant", text: whole, ts: Date.now() });
+                if (DEBUG_HISTORY) setLog(L => [...L, `🧾 hist +assistant "${whole.slice(0,40)}"`]);
+              }
+              curAssistantRef.current = "";
+            }
           } else if (ev === "error") {
-            setLog(L => [...L, `Error: ${dataStr}`]);
+            setLog((L) => [...L, `Error: ${dataStr}`]);
           } else if (ev === "done") {
-            // ★サーバ送信完了時点で現状の計測を出す（音声再生の終了は含まない）
-            if (DEBUG_TIME) mtReport(setLog);
+            if (DEBUG_TIME) mtReport(setLog); // サーバ送信完了時点で計測まとめ
           }
         } catch (e: any) {
-          setLog(L => [...L, `ParseErr(${ev}): ${e?.message ?? e}`]);
+          setLog((L) => [...L, `ParseErr(${ev}): ${e?.message ?? e}`]);
         }
 
         lastEventType = ev;
@@ -435,12 +443,30 @@ export default function Chat() {
       // 送信開始
       if (DEBUG_TIME) { mtRef.current = {}; mtSet("reqAt"); }
 
-      xhr.send(
-        JSON.stringify({
-          messages: [{ role: "user", content: t }],
-          voice: "nova",
-        })
-      );
+
+      // 送信用のmessagesを履歴から組み立て（直近Nターン＋今回のユーザー発話）
+      const recentTurns = historyRef.current.slice(-HISTORY_TURNS_TO_SEND);
+      const historyMessages = recentTurns.map(t => ({
+        role: t.role,             // "user" | "assistant"
+        content: t.text,
+      }));
+
+      const payload = {
+        // 必要なら最初に system を入れてもOK
+        // system を使いたければここをアンコメント↓
+        // messages: [
+        //   { role: "system", content: "あなたは簡潔で親切なアシスタントです。" },
+        //   ...historyMessages,
+        //   { role: "user", content: t },
+        // ],
+        messages: [
+          ...historyMessages,
+          { role: "user", content: t },
+        ],
+        voice: "nova",
+      };
+      xhr.send(JSON.stringify(payload));
+
     } catch (e: any) {
       setLog((L) => [...L, `Error: ${e?.message ?? e}`]);
       sendingRef.current = false;                // ★解除
@@ -462,7 +488,7 @@ export default function Chat() {
             }
           } catch {}
 
-          if (isUser) {
+        if (isUser) {
             return (
               <View key={i} style={s.userBubble}>
                 <Text style={s.userBubbleText}>{content}</Text>
@@ -566,9 +592,9 @@ const s = StyleSheet.create({
     justifyContent: "center",
   },
   userLine: {
-  textAlign: "right",
-  color: "#007aff",     // 好きな色に変えてOK
-  fontWeight: "500",
+    textAlign: "right",
+    color: "#007aff",     // 好きな色に変えてOK
+    fontWeight: "500",
   },
   userBubble: {
     alignSelf: "flex-end",         // 右側に寄せる
