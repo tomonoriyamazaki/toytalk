@@ -108,7 +108,8 @@ SS Bootcamp 3rd #2025
 ## ラズパイ対応 ver3　※対応中
 - iOSアプリでラズパイのwifi設定をできるようにする
 - SST（音声のテキスト化）をサーバー側に移行する（あわせてVAD機能をクライアント側に実装）
-<img width="1384" height="582" alt="image" src="https://github.com/user-attachments/assets/e8e12240-20a8-49e7-b56c-62494d6c9f51" />
+<img width="1373" height="456" alt="image" src="https://github.com/user-attachments/assets/04f6af68-4a57-491b-898a-42d45e6870e2" />
+
 
 
 
