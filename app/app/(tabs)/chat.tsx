@@ -72,13 +72,22 @@ export default function Chat() {
         verse: { label: "Verse – calm narrator", vendorId: "verse" },
       },
     },
-    Gemini: {
-      label: "Gemini",
-      desc: "2.5 Flash + Google TTS",
+    Google: {
+      label: "Google",
+      desc: "Google TTS",
       defaultVoice: "jaB",
       voices: {
         jaB: { label: "JP-B – soft female", vendorId: "ja-JP-Neural2-B" },
         jaC: { label: "JP-C – soft male", vendorId: "ja-JP-Neural2-C" },
+      },
+    },
+    Gemini: { 
+      label: "Gemini",
+      desc: "2.5 Flash TTS",
+      defaultVoice: "leda",
+      voices: {
+        leda: { label: "Leda – clear female", vendorId: "leda" },
+        puck: { label: "Puck – clear male",  vendorId: "puck" },
       },
     },
     NijiVoice: {

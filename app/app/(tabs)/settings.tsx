@@ -9,6 +9,10 @@ export default function Settings() {
         <Text style={s.item}></Text>
         <Text style={s.item}></Text>
         <Text style={s.title}>バージョン</Text>
+        <Text style={s.item}>・ver0.4.1     20250907：</Text>
+        <Text style={s.item}>ボイス：Gemini Speech Generationを追加</Text>
+        <Text style={s.item}>・ver0.4.0     20250907：</Text>
+        <Text style={s.item}>ボイス：Google TTSを追加。ボイス選択できるように</Text>
         <Text style={s.item}>・ver0.3.0     20250901：</Text>
         <Text style={s.item}>マイク機能追加</Text>
         <Text style={s.item}>・ver0.2.0     20250831：</Text>

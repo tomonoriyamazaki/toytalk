@@ -28,18 +28,26 @@
       ttsVendor: "openai",
       ttsModel:  "gpt-4o-mini-tts",
     },
-    // LLM: OpenAI（据え置き）/ TTS: Google Cloud TTS（Gemini側の音声を使う）
-    Gemini: {
+    // LLM: OpenAI / TTS: Google Cloud Text-to-Speech
+    Google: {
       llmVendor: "openai",
       llmModel:  "gpt-4.1-mini",
       ttsVendor: "google",
-      ttsModel:  "google-tts",   // 名称は任意（識別用）
+      ttsModel:  "google-tts",
     },
+    // LLM: OpenAI / TTS: Gemini Speech Generation
+    Gemini: {
+      llmVendor: "openai",
+      llmModel:  "gpt-4.1-mini",
+      ttsVendor: "gemini",
+      ttsModel:  "gemini-2.5-flash-preview-tts",   // 名称は任意（識別用）
+    },
+    // 置き石
     NijiVoice: {
       llmVendor: "openai",
       llmModel:  "gpt-4.1-mini",
-      ttsVendor: "google",       // ここは後で差し替え予定なら仮のままでOK
-      ttsModel:  "google-tts",
+      ttsVendor: "",       // 後で変更
+      ttsModel:  "",
     },
   };
 
@@ -126,6 +134,23 @@
     return buf.toString("base64");
   }
 
+  function resolveGoogleTtsFromBody(body) {
+    const t = body?.tts || {};
+    // Googleのvoice形式だけ通す（alloy等が入っても安全に既定へ）
+    const cand = t.voice || body?.voice;
+    const isGoogleVoice = typeof cand === "string" && /^[a-z]{2}-[A-Z]{2}-/.test(cand);
+    const voiceName = isGoogleVoice ? cand : "ja-JP-Neural2-B";
+
+    return {
+     voiceName,
+     // ← 未指定は "入れない"（= undefined を返す）
+     speakingRate: (typeof t.speakingRate === "number") ? t.speakingRate : undefined,
+     pitch:        (typeof t.pitch        === "number") ? t.pitch        : undefined,
+     sampleRateHertz: (typeof t.sampleRateHertz === "number") ? t.sampleRateHertz : undefined,
+      audioEncoding: "LINEAR16", // ★ WAV固定（LINEAR16→WAVラップ）
+    };
+  }
+
   // Google Cloud Text-to-Speech (API Key) → base64(WAV)
   async function ttsToBase64Google(
     text,
@@ -169,23 +194,48 @@
     return pcm16ToWavBase64(json.audioContent, sampleRateHertz, 1);
   }
 
-  function resolveGoogleTtsFromBody(body) {
-    const t = body?.tts || {};
-    // Googleのvoice形式だけ通す（alloy等が入っても安全に既定へ）
-    const cand = t.voice || body?.voice;
-    const isGoogleVoice = typeof cand === "string" && /^[a-z]{2}-[A-Z]{2}-/.test(cand);
-    const voiceName = isGoogleVoice ? cand : "ja-JP-Neural2-B";
 
-    return {
-     voiceName,
-     // ← 未指定は "入れない"（= undefined を返す）
-     speakingRate: (typeof t.speakingRate === "number") ? t.speakingRate : undefined,
-     pitch:        (typeof t.pitch        === "number") ? t.pitch        : undefined,
-     sampleRateHertz: (typeof t.sampleRateHertz === "number") ? t.sampleRateHertz : undefined,
-      audioEncoding: "LINEAR16", // ★ WAV固定（LINEAR16→WAVラップ）
-    };
+  // Gemini 用の voice 解決（アプリから "Lede"/"Puck" などが来る想定）
+  function resolveGeminiTtsFromBody(body, cfg) {
+    const t = body?.tts || {};
+    const cand = t.voice || body?.voice;
+    const looksGoogle = typeof cand === "string" && /^[a-z]{2}-[A-Z]{2}-/.test(cand);
+    const looksGemini = typeof cand === "string"
+      && /^[A-Za-z][A-Za-z0-9_-]{1,40}$/.test(cand)   // 英数/アンダースコア/ハイフン可
+      && !looksGoogle;                                 // Google 形式は除外
+    const voiceName = looksGemini ? cand : "leda";     // 既定は Kore（Lede/Puck 等でもOK）
+    return { model: cfg.ttsModel, voiceName };
   }
 
+  // Gemini Speech Generation → base64(WAV)（APIキーは GOOGLE_API_KEY を共用）
+  async function ttsToBase64Gemini(text, { model = "gemini-2.5-flash-preview-tts", voiceName = "Kore" } = {}) {
+    const key = process.env.GOOGLE_API_KEY;
+    if (!key) throw new Error("GOOGLE_API_KEY is not set");
+    const resp = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+      {
+        method: "POST",
+        headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text }] }],
+          generationConfig: {
+            responseModalities: ["AUDIO"],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
+          },
+          model,
+        }),
+      }
+    );
+    const json = await resp.json();
+    if (!resp.ok) throw new Error(json?.error?.message || "Gemini TTS failed");
+    const b64Pcm = json?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || "";
+    if (!b64Pcm) throw new Error("Gemini TTS: empty audio");
+    // 24kHz/mono PCM16 → 既存の WAV ラッパで包む
+    return pcm16ToWavBase64(b64Pcm, 24000, 1);
+  }
+
+
+  
   export const handler = awslambda.streamifyResponse(async (event, res) => {
     res.setContentType("text/event-stream");
 
@@ -200,6 +250,7 @@
       if (!k) return undefined;
       const s = String(k).toLowerCase();
       if (s.includes("openai"))  return "OpenAI";
+      if (s.includes("google"))  return "Google";
       if (s.includes("gemini"))  return "Gemini";
       if (s.includes("niji"))    return "NijiVoice";
       return undefined; // 不明ならデフォルトにフォールバック
@@ -246,6 +297,8 @@
     let segSeq = 0;
     let lastSegHash = "";
     let firstTtsMarked = false;
+    let ttsChain = Promise.resolve();
+
 
     // segment を送る唯一の経路
     async function emitSegment(text, { final=false } = {}) {
@@ -275,6 +328,10 @@
           const g = resolveGoogleTtsFromBody(body);
           const w = await ttsToBase64Google(t, g);
           b64 = w;
+          fmt = "wav";
+        } else if (cfg.ttsVendor === "gemini") {
+          const g = resolveGeminiTtsFromBody(body, cfg);
+          b64 = await ttsToBase64Gemini(t, g);
           fmt = "wav";
         } else {
           throw new Error("Unknown ttsVendor");
