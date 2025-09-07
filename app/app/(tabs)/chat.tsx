@@ -474,13 +474,7 @@ export default function Chat() {
       }));
 
       const payload = {
-        // 必要なら最初に system を入れてもOK
-        // system を使いたければここをアンコメント↓
-        // messages: [
-        //   { role: "system", content: "あなたは簡潔で親切なアシスタントです。" },
-        //   ...historyMessages,
-        //   { role: "user", content: t },
-        // ],
+        model,
         messages: [
           ...historyMessages,
           { role: "user", content: t },

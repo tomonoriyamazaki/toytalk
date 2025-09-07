@@ -17,15 +17,29 @@ const DEBUG_TIME     = process.env.DEBUG_TIME === "true";
 const send  = (res, ev, data)=>res.write(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`);
 const sha1  = (s)=>createHash("sha1").update(s).digest("hex");
 
+// ---- 選択モデル定義（まずは OpenAI 固定運用）----
+const MODEL_DEFAULT = "OpenAI";
+/** 将来の拡張用にテーブル化しておく（今は OpenAI だけ使う） */
+const MODEL_TABLE = {
+  OpenAI: {
+    vendor: "openai",
+    llmModel: "gpt-4.1-mini",
+    ttsModel: "gpt-4o-mini-tts",
+  },
+  // ここに将来 Gemini / NijiVoice を足していく
+};
+
+
+
 // 文末かどうか（簡易）
 function endsWithSentence(s) {
   return /[。！？!?]\s*$/.test(s);
 }
 
 // OpenAI TTS → base64
-async function ttsToBase64(text, voice) {
+async function ttsToBase64(text, voice, ttsModel) {
   const tts = await openai.audio.speech.create({
-    model: "gpt-4o-mini-tts",
+    model: ttsModel,
     input: text,
     voice,
     format: TTS_FORMAT
@@ -40,6 +54,11 @@ export const handler = awslambda.streamifyResponse(async (event, res) => {
   const body    = event.body ? JSON.parse(event.body) : {};
   const voice   = body.voice ?? VOICE_DEFAULT;
   const messages= body.messages ?? [{ role:"user", content:"自己紹介して" }];
+  const modelKey= body.model ?? MODEL_DEFAULT;
+  const cfg     = MODEL_TABLE[modelKey] ?? MODEL_TABLE[MODEL_DEFAULT];
+
+  // クライアント側の計測・デバッグ用に「採用モデル」を1発通知
+  send(res, "mark", { k: "model", v: modelKey });
 
   // サーバ基準時刻（クライアントがREQ_TTFBやLLM/TTSとの相対を取れる）
   if (DEBUG_TIME) {
@@ -51,7 +70,7 @@ export const handler = awslambda.streamifyResponse(async (event, res) => {
     send(res, "mark", { k: "llm_start", t: Date.now() });
   }
   const llm = await openai.chat.completions.create({
-    model: "gpt-4.1-mini",
+    model: cfg.llmModel,
     temperature: 0.7,
     stream: true,
     messages
@@ -83,7 +102,7 @@ export const handler = awslambda.streamifyResponse(async (event, res) => {
     }
 
     // 音声チャンク（textは載せない）
-    const b64 = await ttsToBase64(t, voice);
+    const b64 = await ttsToBase64(t, voice, cfg.ttsModel);
     send(res, "tts", { id: segSeq, format: TTS_FORMAT, b64 });
   }
 
