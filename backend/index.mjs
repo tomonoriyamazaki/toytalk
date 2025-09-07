@@ -26,6 +26,11 @@ const MODEL_TABLE = {
     llmModel: "gpt-4.1-mini",
     ttsModel: "gpt-4o-mini-tts",
   },
+  Gemini: {
+    vendor: "google",
+    llmModel: "gemini-2.5-flash",  // ★後で実際に使う
+    ttsModel: "gemini-speech",     // ★後で実際に使う
+  },
   // ここに将来 Gemini / NijiVoice を足していく
 };
 
@@ -37,7 +42,7 @@ function endsWithSentence(s) {
 }
 
 // OpenAI TTS → base64
-async function ttsToBase64(text, voice, ttsModel) {
+async function ttsToBase64OpenAI(text, voice, ttsModel) {
   const tts = await openai.audio.speech.create({
     model: ttsModel,
     input: text,
@@ -48,17 +53,37 @@ async function ttsToBase64(text, voice, ttsModel) {
   return buf.toString("base64");
 }
 
+// ▼（後で実装）Gemini TTS → base64
+async function ttsToBase64Gemini(text, voice, ttsModel) {
+  // TODO: Google SDK / REST を呼ぶ（env: GOOGLE_API_KEY）
+  throw new Error("Gemini TTS not wired yet");
+}
+
+
 export const handler = awslambda.streamifyResponse(async (event, res) => {
   res.setContentType("text/event-stream");
 
   const body    = event.body ? JSON.parse(event.body) : {};
   const voice   = body.voice ?? VOICE_DEFAULT;
   const messages= body.messages ?? [{ role:"user", content:"自己紹介して" }];
-  const modelKey= body.model ?? MODEL_DEFAULT;
-  const cfg     = MODEL_TABLE[modelKey] ?? MODEL_TABLE[MODEL_DEFAULT];
+  const rawModel = typeof body.model === "string" ? body.model : undefined;
+  const modelKey = normalizeModelKey(rawModel) ?? MODEL_DEFAULT;
+  const cfg      = MODEL_TABLE[modelKey] ?? MODEL_TABLE[MODEL_DEFAULT];
 
-  // クライアント側の計測・デバッグ用に「採用モデル」を1発通知
+  function normalizeModelKey(k) {
+    if (!k) return undefined;
+    const s = String(k).toLowerCase();
+    if (s.includes("openai"))  return "OpenAI";
+    if (s.includes("gemini"))  return "Gemini";
+    if (s.includes("niji"))    return "NijiVoice";
+    return undefined; // 不明ならデフォルトにフォールバック
+  }
+
+
+  // クライアント側の計測・デバッグ用に「採用モデル」を通知
   send(res, "mark", { k: "model", v: modelKey });
+  send(res, "mark", { k: "vendor", v: cfg.vendor });
+  if (DEBUG_TIME) console.log("[route]", { rawModel, modelKey, vendor: cfg.vendor });
 
   // サーバ基準時刻（クライアントがREQ_TTFBやLLM/TTSとの相対を取れる）
   if (DEBUG_TIME) {
@@ -69,12 +94,29 @@ export const handler = awslambda.streamifyResponse(async (event, res) => {
   if (DEBUG_TIME) {
     send(res, "mark", { k: "llm_start", t: Date.now() });
   }
-  const llm = await openai.chat.completions.create({
-    model: cfg.llmModel,
-    temperature: 0.7,
-    stream: true,
-    messages
-  });
+  let llmStream;
+  if (cfg.vendor === "openai") {
+    const llm = await openai.chat.completions.create({
+      model: cfg.llmModel,
+      temperature: 0.7,
+      stream: true,
+      messages,
+    });
+    llmStream = (async function* () {
+      for await (const chunk of llm) {
+        const delta = chunk.choices?.[0]?.delta?.content ?? "";
+        if (delta) yield delta;
+      }
+    })();
+  } else if (cfg.vendor === "google") {
+    // TODO: Google Generative AI SDK / REST で text streaming
+    // とりあえず “通る” 仮実装（単発返答してストリームに見せる）
+    const fallback = "（Gemini ルートの接続準備中です。OpenAI ルートは動作中）";
+    llmStream = (async function* () { yield fallback; })();
+  } else {
+    const fallback = "未対応ベンダーです。";
+    llmStream = (async function* () { yield fallback; })();
+  }
 
   // ---- ストリーム状態 ----
   let buf = "";                 // ★ここで1回だけ宣言
@@ -102,34 +144,42 @@ export const handler = awslambda.streamifyResponse(async (event, res) => {
     }
 
     // 音声チャンク（textは載せない）
-    const b64 = await ttsToBase64(t, voice, cfg.ttsModel);
+    const b64 = cfg.vendor === "openai"
+        ? await ttsToBase64OpenAI(t, voice, cfg.ttsModel)
+        : await ttsToBase64Gemini(t, voice, cfg.ttsModel); // 現状は未実装で例外
     send(res, "tts", { id: segSeq, format: TTS_FORMAT, b64 });
-  }
-
-  // ---- LLM ストリーム処理 ----
-  for await (const chunk of llm) {
-    const delta = chunk.choices?.[0]?.delta?.content ?? "";
-    if (!delta) continue;
-
-    textAll += delta;
-    buf     += delta;
-    if (DEBUG) send(res, "llm_token", { token: delta });
-
-    // 文末 or 長さで切る
-    if (endsWithSentence(buf) || buf.trim().length >= SEG_MAX_CHARS) {
-      const segText = buf.trim();
-      buf = ""; 
-      await emitSegment(segText);
+    if (cfg.vendor === "openai") {
+      const b64 = await ttsToBase64OpenAI(t, voice, cfg.ttsModel);
+      send(res, "tts", { id: segSeq, format: TTS_FORMAT, b64 });
+    } else {
+      // Gemini は今はテキストのみ（TTS未実装）
     }
   }
 
-  // 末尾に残りがあれば最後に1回だけ
-  const tail = buf.trim();
-  if (tail.length > 0) {
-    buf = "";
-    await emitSegment(tail, { final: true });
+  // ---- LLM ストリーム処理（共通インターフェース）----
+  try {
+    // ---- LLM ストリーム処理（共通）----
+    for await (const delta of llmStream) {
+      textAll += delta;
+      buf     += delta;
+      if (DEBUG) send(res, "llm_token", { token: delta });
+      if (endsWithSentence(buf) || buf.trim().length >= SEG_MAX_CHARS) {
+        const segText = buf.trim();
+        buf = "";
+        await emitSegment(segText);
+      }
+    }
+    // 残り
+    const tail = buf.trim();
+    if (tail.length > 0) {
+      buf = "";
+      await emitSegment(tail, { final: true });
+    }
+    send(res, "done", {});
+  } catch (err) {
+    const msg = (err && err.message) ? err.message : String(err);
+    send(res, "error", { message: msg });
+  } finally {
+    res.end();
   }
-
-  send(res, "done", {});
-  res.end();
 });

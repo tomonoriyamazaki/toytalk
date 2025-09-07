@@ -337,7 +337,7 @@ export default function Chat() {
       let lastIndex = 0;
       let buffer = "";
       let accText = ""; // 文字粒度をここに溜める
-      const printedIds = new Set<number | string>(); // 同一 id の再表示防止
+      const printedIds = new Set<string>(); // 同一イベントの重複防止
 
       let lastEventType: string | null = null;
       let currentEvent: string | null = null;
@@ -374,16 +374,26 @@ export default function Chat() {
             if (DEBUG_TIME && !(mtRef.current as any).firstTtsArriveAt) mtSet("firstTtsArriveAt");
             const obj = JSON.parse(dataStr);
             const { id, b64, format } = obj || {};
-            if (id != null && b64 && format)
-              enqueueAudio(b64, String(id), String(format));
+            if (id != null && b64 && format) {
+              const key = `tts:${String(id)}`;
+              if (!printedIds.has(key)) {
+                printedIds.add(key);
+                enqueueAudio(b64, String(id), String(format));
+              }
+            }
           } else if (ev === "segment") {
             const obj = JSON.parse(dataStr);
             const text: string = obj?.text ?? "";
             const final: boolean = !!obj?.final;
+            const segId = obj?.id != null ? String(obj.id) : null;
+            const segKey = segId ? `seg:${segId}` : null;
 
-            if (text) {
-              setLog(L => [...L, text]);                // 画面表示（従来通り）
-              curAssistantRef.current += text;          // 束ねる
+            if (!segKey || !printedIds.has(segKey)) {
+              if (segKey) printedIds.add(segKey);
+              if (text) {
+                setLog(L => [...L, text]);                // 画面表示
+                curAssistantRef.current += text;          // 束ねる
+              }
             }
             if (final) {
               const whole = curAssistantRef.current.trim();
