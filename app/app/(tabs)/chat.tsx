@@ -77,8 +77,8 @@ export default function Chat() {
       desc: "2.5 Flash + Google TTS",
       defaultVoice: "jaB",
       voices: {
-        jaB: { label: "JP-B – bright male", vendorId: "ja-JP-Neural2-B" },
-        jaC: { label: "JP-C – soft female", vendorId: "ja-JP-Neural2-C" },
+        jaB: { label: "JP-B – soft female", vendorId: "ja-JP-Neural2-B" },
+        jaC: { label: "JP-C – soft male", vendorId: "ja-JP-Neural2-C" },
       },
     },
     NijiVoice: {

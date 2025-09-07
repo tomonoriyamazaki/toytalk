@@ -21,17 +21,26 @@ const sha1  = (s)=>createHash("sha1").update(s).digest("hex");
 const MODEL_DEFAULT = "OpenAI";
 /** 将来の拡張用にテーブル化しておく（今は OpenAI だけ使う） */
 const MODEL_TABLE = {
+  // LLM: OpenAI / TTS: OpenAI
   OpenAI: {
-    vendor: "openai",
-    llmModel: "gpt-4.1-mini",
-    ttsModel: "gpt-4o-mini-tts",
+    llmVendor: "openai",
+    llmModel:  "gpt-4.1-mini",
+    ttsVendor: "openai",
+    ttsModel:  "gpt-4o-mini-tts",
   },
+  // LLM: OpenAI（据え置き）/ TTS: Google Cloud TTS（Gemini側の音声を使う）
   Gemini: {
-    vendor: "google",
-    llmModel: "gemini-2.5-flash",  // ★後で実際に使う
-    ttsModel: "gemini-speech",     // ★後で実際に使う
+    llmVendor: "openai",
+    llmModel:  "gpt-4.1-mini",
+    ttsVendor: "google",
+    ttsModel:  "google-tts",   // 名称は任意（識別用）
   },
-  // ここに将来 Gemini / NijiVoice を足していく
+  NijiVoice: {
+    llmVendor: "openai",
+    llmModel:  "gpt-4.1-mini",
+    ttsVendor: "google",       // ここは後で差し替え予定なら仮のままでOK
+    ttsModel:  "google-tts",
+  },
 };
 
 
@@ -53,12 +62,68 @@ async function ttsToBase64OpenAI(text, voice, ttsModel) {
   return buf.toString("base64");
 }
 
-// ▼（後で実装）Gemini TTS → base64
-async function ttsToBase64Gemini(text, voice, ttsModel) {
-  // TODO: Google SDK / REST を呼ぶ（env: GOOGLE_API_KEY）
-  throw new Error("Gemini TTS not wired yet");
+// PCM16 (LINEAR16) を WAV へラップして base64 を返す
+function pcm16ToWavBase64(pcmB64, sampleRate = 24000, channels = 1) {
+  const pcm = Buffer.from(pcmB64, "base64");
+  const byteRate   = sampleRate * channels * 2; // 16bit = 2 bytes
+  const blockAlign = channels * 2;
+  const dataSize   = pcm.length;
+  const headerSize = 44;
+  const buf = Buffer.alloc(headerSize + dataSize);
+  // RIFF header
+  buf.write("RIFF", 0);
+  buf.writeUInt32LE(36 + dataSize, 4);
+  buf.write("WAVE", 8);
+  // fmt chunk
+  buf.write("fmt ", 12);
+  buf.writeUInt32LE(16, 16);         // PCM fmt chunk size
+  buf.writeUInt16LE(1, 20);          // PCM = 1
+  buf.writeUInt16LE(channels, 22);
+  buf.writeUInt32LE(sampleRate, 24);
+  buf.writeUInt32LE(byteRate, 28);
+  buf.writeUInt16LE(blockAlign, 32);
+  buf.writeUInt16LE(16, 34);         // bitsPerSample
+  // data chunk
+  buf.write("data", 36);
+  buf.writeUInt32LE(dataSize, 40);
+  pcm.copy(buf, 44);
+  return buf.toString("base64");
 }
 
+// Google Cloud Text-to-Speech (API Key) → base64(WAV)
+async function ttsToBase64Google(text, voiceName) {
+  const key = process.env.GOOGLE_API_KEY;
+  if (!key) throw new Error("GOOGLE_API_KEY is not set");
+  // 例: "ja-JP-Neural2-B" → "ja-JP"
+  const parts = String(voiceName).split("-");
+  const languageCode = parts.length >= 2 ? `${parts[0]}-${parts[1]}` : "ja-JP";
+  const sampleRateHertz = 24000; // お好みで（端末互換が良い 24k）
+
+  const resp = await fetch(
+    `https://texttospeech.googleapis.com/v1/text:synthesize?key=${key}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        input: { text },
+        voice: { languageCode, name: voiceName },
+        audioConfig: {
+          audioEncoding: "LINEAR16",
+          speakingRate: 1.0,
+          pitch: 0.0,
+          sampleRateHertz,
+        },
+      }),
+    }
+  );
+  const json = await resp.json();
+  if (!resp.ok) {
+    const msg = json?.error?.message || "Google TTS failed";
+    throw new Error(msg);
+  }
+  // json.audioContent は PCM16 (raw)。→ WAV に包んで返す
+  return pcm16ToWavBase64(json.audioContent, sampleRateHertz, 1);
+}
 
 export const handler = awslambda.streamifyResponse(async (event, res) => {
   res.setContentType("text/event-stream");
@@ -82,8 +147,8 @@ export const handler = awslambda.streamifyResponse(async (event, res) => {
 
   // クライアント側の計測・デバッグ用に「採用モデル」を通知
   send(res, "mark", { k: "model", v: modelKey });
-  send(res, "mark", { k: "vendor", v: cfg.vendor });
-  if (DEBUG_TIME) console.log("[route]", { rawModel, modelKey, vendor: cfg.vendor });
+  send(res, "mark", { k: "llm_vendor", v: cfg.llmVendor });
+  send(res, "mark", { k: "tts_vendor", v: cfg.ttsVendor });
 
   // サーバ基準時刻（クライアントがREQ_TTFBやLLM/TTSとの相対を取れる）
   if (DEBUG_TIME) {
@@ -95,7 +160,7 @@ export const handler = awslambda.streamifyResponse(async (event, res) => {
     send(res, "mark", { k: "llm_start", t: Date.now() });
   }
   let llmStream;
-  if (cfg.vendor === "openai") {
+  if (cfg.llmVendor === "openai") {
     const llm = await openai.chat.completions.create({
       model: cfg.llmModel,
       temperature: 0.7,
@@ -108,15 +173,11 @@ export const handler = awslambda.streamifyResponse(async (event, res) => {
         if (delta) yield delta;
       }
     })();
-  } else if (cfg.vendor === "google") {
-    // TODO: Google Generative AI SDK / REST で text streaming
-    // とりあえず “通る” 仮実装（単発返答してストリームに見せる）
-    const fallback = "（Gemini ルートの接続準備中です。OpenAI ルートは動作中）";
-    llmStream = (async function* () { yield fallback; })();
   } else {
-    const fallback = "未対応ベンダーです。";
-    llmStream = (async function* () { yield fallback; })();
-  }
+   // もし将来 Gemini LLM に切り替えるならここで実装
+   const fallback = "（LLM ルート未実装です）";
+   llmStream = (async function* () { yield fallback; })();
+ }
 
   // ---- ストリーム状態 ----
   let buf = "";                 // ★ここで1回だけ宣言
@@ -144,15 +205,20 @@ export const handler = awslambda.streamifyResponse(async (event, res) => {
     }
 
     // 音声チャンク（textは載せない）
-    const b64 = cfg.vendor === "openai"
-        ? await ttsToBase64OpenAI(t, voice, cfg.ttsModel)
-        : await ttsToBase64Gemini(t, voice, cfg.ttsModel); // 現状は未実装で例外
-    send(res, "tts", { id: segSeq, format: TTS_FORMAT, b64 });
-    if (cfg.vendor === "openai") {
-      const b64 = await ttsToBase64OpenAI(t, voice, cfg.ttsModel);
-      send(res, "tts", { id: segSeq, format: TTS_FORMAT, b64 });
-    } else {
-      // Gemini は今はテキストのみ（TTS未実装）
+    try {
+      let b64, fmt;
+      if (cfg.ttsVendor === "openai") {
+        b64 = await ttsToBase64OpenAI(t, voice, cfg.ttsModel);
+        fmt = "wav";
+      } else if (cfg.ttsVendor === "google") {
+        b64 = await ttsToBase64Google(t, voice);
+        fmt = "wav";
+      } else {
+        throw new Error("Unknown ttsVendor");
+      }
+      send(res, "tts", { id: segSeq, format: fmt, b64 });
+    } catch (e) {
+      send(res, "error", { message: `TTS failed: ${e?.message || e}` });
     }
   }
 
