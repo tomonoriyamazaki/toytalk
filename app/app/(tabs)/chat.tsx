@@ -12,6 +12,7 @@ import {
   PermissionsAndroid,
   Modal,
   Dimensions,
+  Pressable,
 } from "react-native";
 import * as FileSystem from "expo-file-system";
 import { Audio } from "expo-av";
@@ -46,20 +47,54 @@ export default function Chat() {
   const [msg, setMsg] = useState("");
   const [log, setLog] = useState<string[]>([]);
   const readyRef = useRef(false);
-
+  
   // モデル選択
-  const [model, setModel] = useState("OpenAI");
   const [menuVisible, setMenuVisible] = useState(false);
   const [anchor, setAnchor] = useState<{x:number;y:number;w:number;h:number} | null>(null);
   const pillRef = useRef<View>(null);
   const { width: SCREEN_W } = Dimensions.get("window");
 
-  // モデル定義（辞書）
+  // メニュー用
+  const [submenuFor, setSubmenuFor] =
+    useState<keyof typeof MODEL_MAP | null>(null);
+  const MENU_W = 240; // 左パネル幅
+  
+
+  // モデル定義
   const MODEL_MAP = {
-    OpenAI:   { label: "OpenAI (4o-mini-tts)", desc: "Fast TTS, 1–3s first audio" },
-    Gemini:   { label: "Gemini 2.5 Flash",     desc: "Low-latency speech, budget-friendly" },
-    NijiVoice:{ label: "Niji Voice",           desc: "Anime-style voices, 10k chars ≈ ¥825" },
+    OpenAI: {
+      label: "OpenAI",
+      desc: "4o-mini-tts",
+      defaultVoice: "nova",
+      voices: {
+        alloy: { label: "Alloy – neutral male", vendorId: "alloy" },
+        nova:  { label: "Nova – kind female",   vendorId: "nova"  },
+        verse: { label: "Verse – calm narrator", vendorId: "verse" },
+      },
+    },
+    Gemini: {
+      label: "Gemini",
+      desc: "2.5 Flash + Google TTS",
+      defaultVoice: "jaB",
+      voices: {
+        jaB: { label: "JP-B – bright male", vendorId: "ja-JP-Neural2-B" },
+        jaC: { label: "JP-C – soft female", vendorId: "ja-JP-Neural2-C" },
+      },
+    },
+    NijiVoice: {
+      label: "Niji Voice",
+      desc: "Anime-style",
+      defaultVoice: "default",
+      voices: {
+        default: { label: "Default", vendorId: "niji-default" }, // 置き石
+      },
+    },
   } as const;
+
+  const [model, setModel] = useState<keyof typeof MODEL_MAP>("OpenAI");
+  const [voiceKey, setVoiceKey] = useState<string>(
+    (MODEL_MAP[model].defaultVoice as string)
+  );
 
   // ==== 会話履歴（このセッションのみ保持）====
   const historyRef = useRef<Turn[]>([]);
@@ -483,13 +518,19 @@ export default function Chat() {
         content: t.text,
       }));
 
+      const voices = MODEL_MAP[model].voices as any;
+      const voiceToSend =
+        MODEL_MAP[model].voices[voiceKey]?.vendorId
+        ?? MODEL_MAP[model].voices[MODEL_MAP[model].defaultVoice].vendorId;
+
+      
       const payload = {
         model,
+        voice: voiceToSend,
         messages: [
           ...historyMessages,
           { role: "user", content: t },
         ],
-        voice: "nova",
       };
       xhr.send(JSON.stringify(payload));
 
@@ -511,11 +552,17 @@ export default function Chat() {
           onPress={() => {
             pillRef.current?.measureInWindow((x, y, w, h) => {
               setAnchor({ x, y, w, h });
+              setSubmenuFor(null);         // ★追加：まだボイスは出さない
               setMenuVisible(true);
             });
           }}
         >
-          <Text style={s.modelPillText}>{MODEL_MAP[model]?.label ?? model}</Text>
+          <Text style={s.modelPillText}>
+            {MODEL_MAP[model].label} · {
+              MODEL_MAP[model].voices[voiceKey]?.label
+                ?? MODEL_MAP[model].voices[MODEL_MAP[model].defaultVoice].label
+            }
+          </Text>
         </TouchableOpacity>
       </View>
 
@@ -526,48 +573,85 @@ export default function Chat() {
         animationType="fade"
         onRequestClose={() => setMenuVisible(false)}
       >
-        <TouchableOpacity
-          activeOpacity={1}
-          style={s.overlay}
-          onPress={() => setMenuVisible(false)}
-        >
+        <View style={s.overlay}>
+          {/* 背景だけを閉じるボタンにする（メニューは包まない） */}
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setMenuVisible(false)} />
+
+          {/* ▼ 左パネル：モデル一覧 */}
           {anchor && (
             <View
-              // メニューの横位置を画面内に収める（右はみ出し防止）
-            style={[
+              style={[
                 s.dropdown,
                 {
                   top: anchor.y + anchor.h + 8,
-                  left: Math.min(
-                    anchor.x,
-                    SCREEN_W - 220 - 12 // 220はメニュー幅、12は余白
-                  ),
-                  width: 220,
+                  left: Math.min(anchor.x, SCREEN_W - MENU_W - 12),
+                  width: MENU_W,
                 },
               ]}
             >
-            {Object.keys(MODEL_MAP).map((k) => {
-              const key = k as keyof typeof MODEL_MAP;
-              const opt = MODEL_MAP[key];
-              return (
+              {Object.keys(MODEL_MAP).map((k) => {
+                const key = k as keyof typeof MODEL_MAP;
+                const opt = MODEL_MAP[key];
+                const active = submenuFor === key || model === key;
+                return (
+                  <TouchableOpacity
+                    key={key}
+                    style={[s.dropdownItem, active && s.dropdownItemActive]}
+                    onPress={() => setSubmenuFor(key)}   // ここで右パネルを開く
+                  >
+                    <View style={s.dropdownRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={s.dropdownTitle}>{opt.label}</Text>
+                        <Text style={s.dropdownSub}>{opt.desc}</Text>
+                      </View>
+                      {model === key && <Text style={s.dropdownCheck}>✓</Text>}
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
+
+          {/* ▼ 右パネル：ボイス一覧（submenuFor が選ばれた時だけ） */}
+          {anchor && submenuFor && (
+            <View
+              style={[
+                s.dropdown,
+                {
+                  top: anchor.y + anchor.h + 8,
+                  left: Math.min(anchor.x + MENU_W + 8, SCREEN_W - MENU_W - 12),
+                  width: MENU_W,
+                },
+              ]}
+            >
+              {Object.entries(MODEL_MAP[submenuFor].voices).map(([vk, v]) => (
                 <TouchableOpacity
-                  key={key}
-                  style={[s.dropdownItem, model === key && s.dropdownItemActive]}
-                  onPress={() => { setModel(key as typeof model); setMenuVisible(false); }}
+                  key={vk}
+                  style={[
+                    s.dropdownItem,
+                    model === submenuFor && voiceKey === vk && s.dropdownItemActive,
+                  ]}
+                  onPress={() => {
+                    setModel(submenuFor);
+                    setVoiceKey(vk);
+                    setSubmenuFor(null);
+                    setMenuVisible(false);
+                  }}
                 >
                   <View style={s.dropdownRow}>
                     <View style={{ flex: 1 }}>
-                      <Text style={s.dropdownTitle}>{opt.label}</Text>
-                      <Text style={s.dropdownSub}>{opt.desc}</Text>
+                      <Text style={s.dropdownTitle}>{v.label}</Text>
+                      {v.desc && <Text style={s.dropdownSub}>{v.desc}</Text>}
                     </View>
-                    {model === key && <Text style={s.dropdownCheck}>✓</Text>}
+                    {model === submenuFor && voiceKey === vk && (
+                      <Text style={s.dropdownCheck}>✓</Text>
+                    )}
                   </View>
                 </TouchableOpacity>
-              );
-            })}
+              ))}
             </View>
           )}
-        </TouchableOpacity>
+        </View>
       </Modal>
 
       <ScrollView style={s.chat}>
@@ -803,5 +887,10 @@ const s = StyleSheet.create({
   dropdownItemActive: {
     backgroundColor: "rgba(79,70,229,0.06)", // うっすら強調
     borderRadius: 8,
+  },
+  dropdownDivider: {
+    height: 1,
+    backgroundColor: "#eee",
+    marginVertical: 6,
   },
 });
