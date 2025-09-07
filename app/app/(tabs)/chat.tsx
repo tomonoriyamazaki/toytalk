@@ -10,6 +10,8 @@ import {
   ScrollView,
   Platform,
   PermissionsAndroid,
+  Modal,
+  Dimensions,
 } from "react-native";
 import * as FileSystem from "expo-file-system";
 import { Audio } from "expo-av";
@@ -18,6 +20,9 @@ import Voice, {
   SpeechErrorEvent,
   SpeechPartialResultsEvent,
 } from "@react-native-voice/voice";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Menu, Provider } from "react-native-paper";
+
 
 // デバッグログを見たいとき true
 const DEBUG = false;
@@ -34,10 +39,27 @@ const DEBUG_HISTORY = false;
 const STREAM_URL =
   "https://ruc3x2rt3bcnsqxvuyvwdshhh40mzadk.lambda-url.ap-northeast-1.on.aws/";
 
+
+
 export default function Chat() {
+  // 時間計測
   const [msg, setMsg] = useState("");
   const [log, setLog] = useState<string[]>([]);
   const readyRef = useRef(false);
+
+  // モデル選択
+  const [model, setModel] = useState("OpenAI");
+  const [menuVisible, setMenuVisible] = useState(false);
+  const [anchor, setAnchor] = useState<{x:number;y:number;w:number;h:number} | null>(null);
+  const pillRef = useRef<View>(null);
+  const { width: SCREEN_W } = Dimensions.get("window");
+
+  // モデル定義（辞書）
+  const MODEL_MAP = {
+    OpenAI:   { label: "OpenAI (4o-mini-tts)", desc: "Fast TTS, 1–3s first audio" },
+    Gemini:   { label: "Gemini 2.5 Flash",     desc: "Low-latency speech, budget-friendly" },
+    NijiVoice:{ label: "Niji Voice",           desc: "Anime-style voices, 10k chars ≈ ¥825" },
+  } as const;
 
   // ==== 会話履歴（このセッションのみ保持）====
   const historyRef = useRef<Turn[]>([]);
@@ -475,6 +497,75 @@ export default function Chat() {
 
   return (
     <SafeAreaView style={s.root}>
+
+      {/* ★ ヘッダー */}
+      <View style={s.header}>
+        <TouchableOpacity
+          ref={pillRef}
+          style={s.modelPill}
+          activeOpacity={0.7}
+          onPress={() => {
+            pillRef.current?.measureInWindow((x, y, w, h) => {
+              setAnchor({ x, y, w, h });
+              setMenuVisible(true);
+            });
+          }}
+        >
+          <Text style={s.modelPillText}>{MODEL_MAP[model]?.label ?? model}</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* アンカー付きポップオーバー */}
+      <Modal
+        visible={menuVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuVisible(false)}
+      >
+        <TouchableOpacity
+          activeOpacity={1}
+          style={s.overlay}
+          onPress={() => setMenuVisible(false)}
+        >
+          {anchor && (
+            <View
+              // メニューの横位置を画面内に収める（右はみ出し防止）
+            style={[
+                s.dropdown,
+                {
+                  top: anchor.y + anchor.h + 8,
+                  left: Math.min(
+                    anchor.x,
+                    SCREEN_W - 220 - 12 // 220はメニュー幅、12は余白
+                  ),
+                  width: 220,
+                },
+              ]}
+            >
+            {Object.keys(MODEL_MAP).map((k) => {
+              const key = k as keyof typeof MODEL_MAP;
+              const opt = MODEL_MAP[key];
+              return (
+                <TouchableOpacity
+                  key={key}
+                  style={[s.dropdownItem, model === key && s.dropdownItemActive]}
+                  onPress={() => { setModel(key as typeof model); setMenuVisible(false); }}
+                >
+                  <View style={s.dropdownRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.dropdownTitle}>{opt.label}</Text>
+                      <Text style={s.dropdownSub}>{opt.desc}</Text>
+                    </View>
+                    {model === key && <Text style={s.dropdownCheck}>✓</Text>}
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+            </View>
+          )}
+        </TouchableOpacity>
+      </Modal>
+
       <ScrollView style={s.chat}>
         {log.map((l, i) => {
           let content = l;
@@ -608,5 +699,105 @@ const s = StyleSheet.create({
   userBubbleText: {
     color: "#fff",                 // 吹き出し内テキストを白に
     fontSize: 16,
+  },
+  header: {
+    height: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderColor: "#eee",
+    backgroundColor: "#fff",
+  },
+  modelPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+    backgroundColor: "rgba(0,0,0,0.06)",
+  },
+  modelPillText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#333",
+  },
+  headerTitle: {
+    flex: 1,
+    textAlign: "center",
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  modalOverlay: {
+  position: "absolute",
+  top: 0, left: 0, right: 0, bottom: 0,
+  backgroundColor: "rgba(0,0,0,0.3)",
+  justifyContent: "center",
+  alignItems: "center",
+  },
+  modalBox: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 16,
+    width: "70%",
+  },
+  modalItem: {
+    paddingVertical: 12,
+  },
+  modalItemText: {
+    fontSize: 16,
+    textAlign: "center",
+  },
+  modalCancel: {
+    marginTop: 12,
+    fontSize: 14,
+    textAlign: "center",
+    color: "#b00",
+  },
+  overlay: {
+    flex: 1,
+    backgroundColor: "transparent",
+  },
+  dropdown: {
+    position: "absolute",
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    paddingVertical: 6,
+    width: 280,
+    // 影
+    shadowColor: "#000",
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
+  },
+  dropdownItem: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  dropdownText: {
+    fontSize: 16,
+  },
+  dropdownRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  dropdownTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#111",
+  },
+  dropdownSub: {
+    marginTop: 2,
+    fontSize: 12,
+    color: "#6b7280", // グレー
+  },
+  dropdownCheck: {
+    fontSize: 16,
+    color: "#4f46e5",
+    marginLeft: 8,
+  },
+  dropdownItemActive: {
+    backgroundColor: "rgba(79,70,229,0.06)", // うっすら強調
+    borderRadius: 8,
   },
 });
