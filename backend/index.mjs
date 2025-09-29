@@ -297,8 +297,6 @@
     let segSeq = 0;
     let lastSegHash = "";
     let firstTtsMarked = false;
-    let ttsChain = Promise.resolve();
-
 
     // segment を送る唯一の経路
     async function emitSegment(text, { final=false } = {}) {

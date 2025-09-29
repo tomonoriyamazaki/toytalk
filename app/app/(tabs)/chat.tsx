@@ -28,7 +28,7 @@ import { Menu, Provider } from "react-native-paper";
 // デバッグログを見たいとき true
 const DEBUG = false;
 const SHOW_STT_DEBUG_UI = DEBUG;    // ★追加：STTデバッグUIの表示可否
-const DEBUG_TIME = true;
+let DEBUG_TIME = false;
 
 // === 会話履歴 ===
 type Turn = { role: "user" | "assistant"; text: string; ts: number };
@@ -48,6 +48,12 @@ export default function Chat() {
   const [log, setLog] = useState<string[]>([]);
   const readyRef = useRef(false);
   
+  // デバッグログをスマホ側でon/offする
+  const [debugTime, setDebugTime] = useState(DEBUG_TIME);
+  useEffect(() => {
+    DEBUG_TIME = debugTime;    // ← 画面トグルが変わるたびにグローバルを書き換え
+  }, [debugTime]);
+
   // モデル選択
   const [menuVisible, setMenuVisible] = useState(false);
   const [anchor, setAnchor] = useState<{x:number;y:number;w:number;h:number} | null>(null);
@@ -571,6 +577,18 @@ export default function Chat() {
               MODEL_MAP[model].voices[voiceKey]?.label
                 ?? MODEL_MAP[model].voices[MODEL_MAP[model].defaultVoice].label
             }
+          </Text>
+        </TouchableOpacity>
+        {/* ←追加：右寄せ用のスペーサー */}
+        <View style={{ flex: 1 }} />
+
+        {/* ←追加：DEBUG_TIME トグル */}
+        <TouchableOpacity
+          onPress={() => setDebugTime(!debugTime)}
+          style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12, backgroundColor: 'rgba(0,0,0,0.06)' }}
+        >
+          <Text style={{ fontSize: 14, fontWeight: '600', color: debugTime ? '#b00' : '#333' }}>
+            {debugTime ? 'Debug:ON' : 'Debug:OFF'}
           </Text>
         </TouchableOpacity>
       </View>
