@@ -1,5 +1,5 @@
 import { EventSourcePolyfill } from "event-source-polyfill";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import {
   SafeAreaView,
   View,
@@ -23,6 +23,8 @@ import Voice, {
 } from "@react-native-voice/voice";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Menu, Provider } from "react-native-paper";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useFocusEffect } from "@react-navigation/native";
 
 
 // デバッグログを見たいとき true
@@ -54,7 +56,23 @@ export default function Chat() {
     DEBUG_TIME = debugTime;    // ← 画面トグルが変わるたびにグローバルを書き換え
   }, [debugTime]);
 
-  // モデル選択
+
+  // STTモデル取得
+  const [sttMode, setSttMode] = useState<"local" | "soniox">("local");
+
+  useFocusEffect(
+    useCallback(() => {
+      (async () => {
+        const saved = await AsyncStorage.getItem("sttMode");
+        if (saved === "local" || saved === "soniox") {
+          setSttMode(saved);
+        }
+      })();
+    }, [])
+  );
+
+
+  // TTSモデル選択
   const [menuVisible, setMenuVisible] = useState(false);
   const [anchor, setAnchor] = useState<{x:number;y:number;w:number;h:number} | null>(null);
   const pillRef = useRef<View>(null);
@@ -66,7 +84,7 @@ export default function Chat() {
   const MENU_W = 240; // 左パネル幅
   
 
-  // モデル定義
+  // TTSモデル定義
   const MODEL_MAP = {
     OpenAI: {
       label: "OpenAI",
@@ -200,6 +218,8 @@ export default function Chat() {
 
   // === 追加: Voiceイベント（最小） ===
   useEffect(() => {
+    if (sttMode !== "local") return; 
+
     Voice.onSpeechStart = () => {
       setIsListening(true);
       setPartial("");
@@ -250,7 +270,7 @@ export default function Chat() {
     return () => {
       Voice.destroy().then(Voice.removeAllListeners);
     };
-  }, []);
+  }, [sttMode]);
 
   // finalTextが更新されても、録音中は送らない。
   // 録音終了(onSpeechEnd) or 無音INACT_MS経過で送る。
@@ -287,35 +307,62 @@ export default function Chat() {
 
   // STT開始/停止
   const startSTT = async () => {
-    lastSentRef.current = "";
-    if (autoSendTimerRef.current) { clearTimeout(autoSendTimerRef.current); autoSendTimerRef.current = null; }
-    if (Platform.OS === "android") {
-      const ok = await ensureMicPermission();
-      if (!ok) {
-        setLog(L => [...L, "STT: マイク権限がありません"]);
-        return;
-      }
+
+    if(DEBUG_TIME)setLog(L => [...L, `sttMode=${sttMode}`]);
+
+    // soniox STT処理
+    if (sttMode === "soniox") {
+      startSonioxSTT();
+      return;
     }
-    try {
-      const avail = await Voice.isAvailable();            // ★追加
-      if (!avail) {
-        setLog(L => [...L, "STT: 音声認識がこの端末/設定で利用できません"]);
-        return;
+
+    // ローカルSTT処理
+    if (sttMode === "local") {
+      lastSentRef.current = "";
+      if (autoSendTimerRef.current) { clearTimeout(autoSendTimerRef.current); autoSendTimerRef.current = null; }
+      if (Platform.OS === "android") {
+        const ok = await ensureMicPermission();
+        if (!ok) {
+          setLog(L => [...L, "STT: マイク権限がありません"]);
+          return;
+        }
       }
-      if (DEBUG) setLog(L => [...L, "STT: start(ja-JP)"]);
-      await Voice.start("ja-JP", { EXTRA_PARTIAL_RESULTS: true } as any);
-    } catch (e: any) {
-      setLog(L => [...L, `STT start failed: ${e?.message ?? String(e)}`]); // ★見える化
+      try {
+        const avail = await Voice.isAvailable();            // ★追加
+        if (!avail) {
+          setLog(L => [...L, "STT: 音声認識がこの端末/設定で利用できません"]);
+          return;
+        }
+        if (DEBUG) setLog(L => [...L, "STT: start(ja-JP)"]);
+        await Voice.start("ja-JP", { EXTRA_PARTIAL_RESULTS: true } as any);
+      } catch (e: any) {
+        setLog(L => [...L, `STT start failed: ${e?.message ?? String(e)}`]); // ★見える化
+      }
     }
   };
 
   const stopSTT = async () => {
-    try {
-      await Voice.stop();
-    } catch {
-      // ignore
+    if (sttMode === "soniox") {
+      stopSonioxSTT();     // ← ダミーSoniox呼び出し
+      return;
     }
+    await Voice.stop();
   };
+  
+
+
+
+  // Soniox専用（今はダミー）
+  const startSonioxSTT = () => {
+    setLog(L => [...L, "Soniox STT start() 呼ばれた"]);
+  };
+  const stopSonioxSTT = () => {
+    setLog(L => [...L, "Soniox STT stop() 呼ばれた"]);
+  };
+
+
+
+
 
   const enqueueAudio = async (b64: string, id: string, format: string) => {
     const path = `${FileSystem.cacheDirectory}${id}.${format}`;
