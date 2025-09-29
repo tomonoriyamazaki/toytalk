@@ -23,7 +23,7 @@
   - npm i -g eas-cli             ：EASを入れる
   - npm i -D expo-dev-client     ：Expoの検証用ツールを入れる
   - eas device:create            ：証明書設定してデバイスを登録する。前提としてapple developper（1.5万円/年かかる）に登録
-  - eas.jsonの修正               ：ビルドのprofileを設定する。今回はpreviewというデフォのprofileを修正。internalを指定する
+  - eas.jsonの修正               ：ビルドのprofileを設定する。今回はpreviewというデフォのprofileを修正。internalを指定するだけ
   - eas build --platform ios --profile preview    ：ビルド。こに10分以上時間がかかる。
   - npx expo start --dev-client  ：これでさっきビルドしたものがQRで落とせるので、カメラで読み取ってアプリをiPhoneに導入→使用
 - TestFlight    ：iOSアプリとして登録する前段階の検証サイト。ここにアップしたら、URLが発行できるようになる。これも初回手続きが面倒
