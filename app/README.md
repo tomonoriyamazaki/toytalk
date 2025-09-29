@@ -26,9 +26,9 @@
   - eas.jsonの修正               ：ビルドのprofileを設定する。development = 実機検証1、preview = 実機検証2、testflight = TestFlight用で今回は設定。3つ作ったが、正直、preview = testflight用でよかった
 - 実機検証1      ：これがメイン。マイクなどのiPhoneの機能を使うために必要。PC側でのサービス起動が必要だが、毎回buildしないで済むので素早く検証できる
   - eas build --platform ios --profile development    ：ビルド。10分以上かかる。ネイティブ系やapp.jsonの変更がある場合は都度buildする。jsコードなどの場合は不要。QRコードが発行されるのでそこからダウンロードする。
-  - npx expo start --dev-client --host tunnel  ：サービスを起動中だけアクセスできるようになる。QRを読み込んでアクセスする
-- 実機検証2       ：実質不要。PC側でexpo startしなくてもアプリ起動できる。でもjsコード修正したら毎回buildしないといけない（10分かかる）のでほぼ使わない。ここで検証せずにtestflightへ登録でok
-  - eas build --platform ios --profile preview    ：ビルド。10分以上かかる。QRコードが発行されるので、ダウンロードすればok
+  - npx expo start --dev-client --host tunnel  ：このコマンドでサービスが立ち上がる。起動中の間だけアプリを利用できる。QRを読み込んでアプリを利用する
+- 実機検証2       ：実質不要。PC側でサービス起動（expo start）しなくてもアプリ検証できる。でもjsコードを修正したら毎回buildしないといけないのでほぼ使わない。ここで検証せずにtestflightへ登録でok
+  - eas build --platform ios --profile preview    ：ビルド。10分以上かかる。QRコードが発行されるので、ダウンロードすれば利用可能
 - TestFlight    ：iOSアプリとして登録する前段階の検証サイト。ここにアップしたら、URLが発行できるようになる。これも初回手続きが面倒
   - eas.jsonの修正               ：ビルドのprofileを設定する。今回はtestflightを追加。distorbutionにstoreを指定する
   - eas build --platform ios --profile testflight   ：ビルド。ここに10分以上かかる
