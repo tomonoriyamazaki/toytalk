@@ -18,14 +18,17 @@
 
 ### iOSアプリの検証方法
 - 流れ          ：コード書く　→　簡易検証　→　実機検証　→　TestFlight（iOSアプリに登録する前の段階のもの）にアップ
-- 簡易検証       ：アプリのUIとか操作感とかをさくっと確認できる。npx expo start -cコマンドしたら、QRでるので、アプリ側にexpo go入れた状態でカメラ読み取りでok
-- 実機検証       ：実機と同じような検証。マイクとかはここで。事前設定が面倒。EASで毎回ビルドする必要があり、これに時間がかかる（10分以上、、、）
+- 簡易検証       ：アプリのUIとか操作感とかをさくっと確認できる。npx expo start -cコマンドしたら、QRでるので、アプリ側にexpo go入れた状態でカメラ読み取りでok。ただマイクとか機器自体の機能があるとNGになるので、途中からは使えなくなる
+- 実機検証初期設定：iPhoneのデバイス登録をしたり必要なツールを導入する
   - npm i -g eas-cli             ：EASを入れる
   - npm i -D expo-dev-client     ：Expoの検証用ツールを入れる
-  - eas device:create            ：証明書設定してデバイスを登録する。前提としてapple developper（1.5万円/年かかる）に登録
-  - eas.jsonの修正               ：ビルドのprofileを設定する。今回はpreviewというデフォのprofileを修正。internalを指定する
-  - eas build --platform ios --profile preview    ：ビルド。こに10分以上時間がかかる。
-  - npx expo start --dev-client  ：これでさっきビルドしたものがQRで落とせるので、カメラで読み取ってアプリをiPhoneに導入→使用
+  - eas device:create            ：証明書設定してデバイスを登録する。前提としてapple developper（1.5万円/年かかる）に登録。スマホを新しくしたら、コマンドではデバイス追加がうまくいかなかったので、developerサイト上で手動でデバイス追加→プロファイル上でデバイス登録→eas credentialsでプロフィル削除→buildで認識された
+  - eas.jsonの修正               ：ビルドのprofileを設定する。development = 実機検証1、preview = 実機検証2、testflight = TestFlight用で今回は設定。3つ作ったが、正直、preview = testflight用でよかった
+- 実機検証1      ：これがメイン。マイクなどのiPhoneの機能を使うために必要。PC側でのサービス起動が必要だが、毎回buildしないで済むので素早く検証できる
+  - eas build --platform ios --profile development    ：ビルド。10分以上かかる。ネイティブ系やapp.jsonの変更がある場合は都度buildする。jsコードなどの場合は不要。QRコードが発行されるのでそこからダウンロードする。
+  - npx expo start --dev-client --host tunnel  ：このコマンドでサービスが立ち上がる。起動中の間だけアプリを利用できる。QRを読み込んでアプリを利用する
+- 実機検証2       ：実質不要。PC側でサービス起動（expo start）しなくてもアプリ検証できる。でもjsコードを修正したら毎回buildしないといけないのでほぼ使わない。ここで検証せずにtestflightへ登録でok
+  - eas build --platform ios --profile preview    ：ビルド。10分以上かかる。QRコードが発行されるので、ダウンロードすれば利用可能
 - TestFlight    ：iOSアプリとして登録する前段階の検証サイト。ここにアップしたら、URLが発行できるようになる。これも初回手続きが面倒
   - eas.jsonの修正               ：ビルドのprofileを設定する。今回はtestflightを追加。distorbutionにstoreを指定する
   - eas build --platform ios --profile testflight   ：ビルド。ここに10分以上かかる
