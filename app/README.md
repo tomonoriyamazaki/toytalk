@@ -22,9 +22,9 @@
 - 実機検証       ：実機/testflightと同じような環境で検証できる。途中からマイクとか使うのでこれがメインの検証環境になる。事前設定は面倒。EASでネイティブ系の変更加えたらビルドが必要だが、スマホ操作などは不要。expo startした状態で検証できるようになる
   - npm i -g eas-cli             ：EASを入れる
   - npm i -D expo-dev-client     ：Expoの検証用ツールを入れる
-  - eas device:create            ：証明書設定してデバイスを登録する。前提としてapple developper（1.5万円/年かかる）に登録
+  - eas device:create            ：証明書設定してデバイスを登録する。前提としてapple developper（1.5万円/年かかる）に登録。スマホを新しくしたら、ここの再実行が必要
   - eas.jsonの修正               ：ビルドのprofileを設定する。今回はpreviewというデフォのprofileを修正。internalを指定するだけ
-  - eas build --platform ios --profile preview    ：ビルド。こに10分以上時間がかかる。
+  - eas build --platform ios --profile preview    ：ビルド。こに10分以上時間がかかる。ネイティブ系やapp.jsonの変更がある場合は都度buildする。jsコードなどの場合は不要
   - npx expo start --dev-client  ：これでさっきビルドしたものがQRで落とせるので、カメラで読み取ってアプリをiPhoneに導入→使用
 - TestFlight    ：iOSアプリとして登録する前段階の検証サイト。ここにアップしたら、URLが発行できるようになる。これも初回手続きが面倒
   - eas.jsonの修正               ：ビルドのprofileを設定する。今回はtestflightを追加。distorbutionにstoreを指定する
