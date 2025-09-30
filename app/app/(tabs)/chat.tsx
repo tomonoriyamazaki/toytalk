@@ -15,7 +15,7 @@ import {
   Pressable,
 } from "react-native";
 import * as FileSystem from "expo-file-system";
-import { Audio } from "expo-av";
+import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from "expo-av";
 import Voice, {
   SpeechResultsEvent,
   SpeechErrorEvent,
@@ -26,65 +26,72 @@ import { Menu, Provider } from "react-native-paper";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "@react-navigation/native";
 
+/* === 追加: Soniox用 === */
+import AudioRecord from "react-native-audio-record";
 
-// デバッグログを見たいとき true
-const DEBUG = false;
-const SHOW_STT_DEBUG_UI = DEBUG;    // ★追加：STTデバッグUIの表示可否
+/* === Soniox定数 === */
+const SONIOX_WS_URL = "wss://stt-rt.soniox.com/transcribe-websocket"; // 公式
+const SONIOX_MODEL = "stt-rt-preview";
+const SONIOX_SAMPLE_RATE = 16000;
+const SONIOX_CHANNELS = 1;
+/** あなたのテンポラリーAPIキー発行Lambda。POSTして { ok, api_key } を受け取る想定。 */
+const SONIOX_KEY_URL =
+  "https://ug5fcnjsxa22vtnrzlwpfgshd40nngbo.lambda-url.ap-northeast-1.on.aws/";
+
+/* === デバッグ === */
+const DEBUG = true;
+const SHOW_STT_DEBUG_UI = DEBUG;
 let DEBUG_TIME = false;
 
-// === 会話履歴 ===
 type Turn = { role: "user" | "assistant"; text: string; ts: number };
 const DEBUG_HISTORY = false;
 
-/* === 追加: STTのpartial/final最小表示 === */
-// （このブロックはJSX外なので実行されません。UIに出すなら return 内の DEBUG ブロックを使ってください）
-
+/* 既存：あなたのSSEサーバ（LLM→TTS）*/
 const STREAM_URL =
   "https://ruc3x2rt3bcnsqxvuyvwdshhh40mzadk.lambda-url.ap-northeast-1.on.aws/";
 
-
+/* === ユーティリティ === */
+function base64ToArrayBuffer(b64: string): ArrayBuffer {
+  const binaryString = (global as any).atob
+    ? (global as any).atob(b64)
+    : Buffer.from(b64, "base64").toString("binary");
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = binaryString.charCodeAt(i);
+  return bytes.buffer;
+}
 
 export default function Chat() {
   // 時間計測
   const [msg, setMsg] = useState("");
   const [log, setLog] = useState<string[]>([]);
   const readyRef = useRef(false);
-  
-  // デバッグログをスマホ側でon/offする
+
   const [debugTime, setDebugTime] = useState(DEBUG_TIME);
   useEffect(() => {
-    DEBUG_TIME = debugTime;    // ← 画面トグルが変わるたびにグローバルを書き換え
+    DEBUG_TIME = debugTime;
   }, [debugTime]);
 
-
-  // STTモデル取得
+  // STTモード
   const [sttMode, setSttMode] = useState<"local" | "soniox">("local");
-
   useFocusEffect(
     useCallback(() => {
       (async () => {
         const saved = await AsyncStorage.getItem("sttMode");
-        if (saved === "local" || saved === "soniox") {
-          setSttMode(saved);
-        }
+        setSttMode(saved === "soniox" ? "soniox" : "local");
       })();
     }, [])
   );
 
-
-  // TTSモデル選択
+  // TTSモデル選択UI（既存）
   const [menuVisible, setMenuVisible] = useState(false);
-  const [anchor, setAnchor] = useState<{x:number;y:number;w:number;h:number} | null>(null);
+  const [anchor, setAnchor] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const pillRef = useRef<View>(null);
   const { width: SCREEN_W } = Dimensions.get("window");
 
-  // メニュー用
-  const [submenuFor, setSubmenuFor] =
-    useState<keyof typeof MODEL_MAP | null>(null);
-  const MENU_W = 240; // 左パネル幅
-  
+  const [submenuFor, setSubmenuFor] = useState<keyof typeof MODEL_MAP | null>(null);
+  const MENU_W = 240;
 
-  // TTSモデル定義
   const MODEL_MAP = {
     OpenAI: {
       label: "OpenAI",
@@ -92,7 +99,7 @@ export default function Chat() {
       defaultVoice: "nova",
       voices: {
         alloy: { label: "Alloy – neutral male", vendorId: "alloy" },
-        nova:  { label: "Nova – kind female",   vendorId: "nova"  },
+        nova: { label: "Nova – kind female", vendorId: "nova" },
         verse: { label: "Verse – calm narrator", vendorId: "verse" },
       },
     },
@@ -105,13 +112,13 @@ export default function Chat() {
         jaC: { label: "JP-C – soft male", vendorId: "ja-JP-Neural2-C" },
       },
     },
-    Gemini: { 
+    Gemini: {
       label: "Gemini",
       desc: "2.5 Flash TTS",
       defaultVoice: "leda",
       voices: {
         leda: { label: "Leda – clear female", vendorId: "leda" },
-        puck: { label: "Puck – clear male",  vendorId: "puck" },
+        puck: { label: "Puck – clear male", vendorId: "puck" },
       },
     },
     NijiVoice: {
@@ -119,50 +126,74 @@ export default function Chat() {
       desc: "Anime-style",
       defaultVoice: "default",
       voices: {
-        default: { label: "Default", vendorId: "niji-default" }, // 置き石
+        default: { label: "Default", vendorId: "niji-default" },
       },
     },
   } as const;
 
   const [model, setModel] = useState<keyof typeof MODEL_MAP>("OpenAI");
-  const [voiceKey, setVoiceKey] = useState<string>(
-    (MODEL_MAP[model].defaultVoice as string)
-  );
+  const [voiceKey, setVoiceKey] = useState<string>(MODEL_MAP[model].defaultVoice as string);
 
-  // ==== 会話履歴（このセッションのみ保持）====
+  // 会話履歴
   const historyRef = useRef<Turn[]>([]);
-  const curAssistantRef = useRef<string>(""); // ストリーミング途中のアシスト応答を束ねる
-  const HISTORY_TURNS_TO_SEND = 10; // 直近何ターン送るかを指定
+  const curAssistantRef = useRef<string>("");
+  const HISTORY_TURNS_TO_SEND = 10;
 
-  // 音声はキュー再生（重なり防止）
+  // 音声キュー
   const playingRef = useRef(false);
   const queueRef = useRef<Array<{ uri: string }>>([]);
 
-  // finalを1回だけ送るためのガード
-  const lastSentRef = useRef<string>("");
-  const autoSendTimerRef = useRef<NodeJS.Timeout | null>(null); // デバウンスタイマ
-  const sendingRef = useRef(false);                           // 送信中ガード
-  // STT: “最初に音を検知した瞬間” を記録
-  const sttDetectAtRef = useRef<number | null>(null);
-
-  // === 追加: STT用の最小state ===
+  // STT共通state
   const [isListening, setIsListening] = useState(false);
-  const [partial, setPartial] = useState(""); // 部分結果
-  const [finalText, setFinalText] = useState(""); // 確定結果
+  const [partial, setPartial] = useState("");
+  const [finalText, setFinalText] = useState("");
 
-  // 入力音声終了制御
-  const lastActivityAtRef = useRef<number>(0);           // 直近でpartial/finalが来た時刻
-  const inactivityTimerRef = useRef<NodeJS.Timeout|null>(null);
-  const INACT_MS = 900;         // 無音・更新停止の待ち時間(ms) 最小でOK
+  const lastSentRef = useRef<string>("");
+  const autoSendTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const sendingRef = useRef(false);
+  const sttDetectAtRef = useRef<number | null>(null);
+  const lastActivityAtRef = useRef<number>(0);
+  const inactivityTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const INACT_MS = 900;
+
+  // ===== 修正: ここから（setLog を安全に使えるようにローカル関数へ） =====
+  const forceIOSPlayAndRecordToSpeaker = async () => {
+    if (Platform.OS !== "ios") return;
+    try {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true, // PlayAndRecord
+        playsInSilentModeIOS: true,
+        interruptionModeIOS: InterruptionModeIOS.MixWithOthers,
+        staysActiveInBackground: false,
+      });
+    } catch (e: any) {
+      setLog((L) => [...L, `AudioMode(PlayAndRecord) err: ${e?.message ?? e}`]);
+    }
+  };
+
+  const restoreIOSPlayback = async () => {
+    if (Platform.OS !== "ios") return;
+    try {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false, // Playback
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+      });
+    } catch (e: any) {
+      setLog((L) => [...L, `AudioMode(Playback) err: ${e?.message ?? e}`]);
+    }
+  };
+  // ===== 修正: ここまで =====
 
   useEffect(() => {
     (async () => {
       await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
+        allowsRecordingIOS: false, // ←録音オフにしてPlaybackベースに
         playsInSilentModeIOS: true,
-        staysActiveInBackground: true,
-        interruptionModeIOS: Audio.INTERRUPTION_MODE_IOS_DO_NOT_MIX,
-        interruptionModeAndroid: Audio.INTERRUPTION_MODE_ANDROID_DO_NOT_MIX,
+        staysActiveInBackground: false,
+        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
         shouldDuckAndroid: true,
         playThroughEarpieceAndroid: false,
       });
@@ -170,8 +201,7 @@ export default function Chat() {
     })();
   }, []);
 
-  // === 追加: Androidマイク許可（最小） ===
-  const ensureMicPermission = async () => {
+  const ensureMicPermissionAndroid = async () => {
     if (Platform.OS !== "android") return true;
     try {
       const granted = await PermissionsAndroid.request(
@@ -183,111 +213,117 @@ export default function Chat() {
     }
   };
 
-  // 処理時間計測
+  // ===== 追加: iOSでも明示的にマイク権限を確認 =====
+  const ensureMicPermissionIOS = async () => {
+    if (Platform.OS !== "ios") return true;
+    try {
+      const { status } = await Audio.requestPermissionsAsync();
+      return status === "granted";
+    } catch {
+      return false;
+    }
+  };
+  // =====
+
+  // 計測
   const mtRef = { current: {} as Record<string, number | undefined> };
-  const mtSet = (k: string) => { if (DEBUG_TIME) mtRef.current[k] = Date.now(); };
-  // 計測用の基準時間
+  const mtSet = (k: string) => {
+    if (DEBUG_TIME) mtRef.current[k] = Date.now();
+  };
   const sttStartAtRef = { current: 0 };
   const sendStartAtRef = { current: 0 };
-
-  // ログ出力（サーバ時刻とクライアント時刻の簡易まとめ）
   const mtReport = (appendLog: (f: (L: string[]) => string[]) => void) => {
     if (!DEBUG_TIME) return;
-
     const m = mtRef.current;
-
-    const REQ_TTFB_ms =
-      m.firstEventAt && m.reqAt ? m.firstEventAt - m.reqAt : undefined;
-
+    const REQ_TTFB_ms = m.firstEventAt && m.reqAt ? m.firstEventAt - m.reqAt : undefined;
     const TTS_FIRST_ARRIVE_ms =
       m.firstTtsArriveAt && m.reqAt ? m.firstTtsArriveAt - m.reqAt : undefined;
-
-    // （サーバ側）ping からの相対
-    const LLM_START_srv_ms =
-      m.srv_llmStart && m.srv_t0 ? m.srv_llmStart - m.srv_t0 : undefined;
-
+    const LLM_START_srv_ms = m.srv_llmStart && m.srv_t0 ? m.srv_llmStart - m.srv_t0 : undefined;
     const TTS_FIRST_BYTE_srv_ms =
       m.srv_ttsFirstByte && m.srv_t0 ? m.srv_ttsFirstByte - m.srv_t0 : undefined;
 
-    appendLog(L => [
+    appendLog((L) => [
       ...L,
-      `⏱️ TTFB=${REQ_TTFB_ms}ms, FirstTTS(arrive)=${TTS_FIRST_ARRIVE_ms}ms / srv: LLM=${LLM_START_srv_ms}ms, TTS1B=${TTS_FIRST_BYTE_srv_ms}ms`
+      `⏱️ TTFB=${REQ_TTFB_ms}ms, FirstTTS(arrive)=${TTS_FIRST_ARRIVE_ms}ms / srv: LLM=${LLM_START_srv_ms}ms, TTS1B=${TTS_FIRST_BYTE_srv_ms}ms`,
     ]);
   };
 
-
-  // === 追加: Voiceイベント（最小） ===
+  /* === Local STT(既存) === */
   useEffect(() => {
-    if (sttMode !== "local") return; 
+    if (sttMode !== "local") return;
+
+    // 再登録前にクリーンアップ
+    Voice.removeAllListeners?.();
 
     Voice.onSpeechStart = () => {
       setIsListening(true);
       setPartial("");
       setFinalText("");
-      if (DEBUG_TIME) sttStartAtRef.current = Date.now();   // ★ STT開始時間計測
-      lastActivityAtRef.current = Date.now();              // ★追加
+      if (DEBUG_TIME) sttStartAtRef.current = Date.now();
+      lastActivityAtRef.current = Date.now();
       if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
     };
     Voice.onSpeechEnd = () => {
       setIsListening(false);
-      // “検知→入力終了” の時間をここで確定
       if (DEBUG_TIME && sttDetectAtRef.current != null) {
         const dur = Date.now() - sttDetectAtRef.current;
-        setLog(L => [...L, `⏱️ STT(talk)=${dur}ms`]);
+        setLog((L) => [...L, `⏱️ STT(talk)=${dur}ms`]);
         sttDetectAtRef.current = null;
       }
-      // ★話し終わりで送る（finalが空ならpartialでも送る）
       const textToSend = (finalText || partial).trim();
       if (textToSend) {
-        // 録音は既に止まっている想定だが念のため
-        (async () => { try { await Voice.stop(); } catch {} send(textToSend); })();
+        (async () => {
+          try {
+            await stopSTT();
+          } catch {}
+          send(textToSend);
+        })();
       }
     };
     Voice.onSpeechError = (e: SpeechErrorEvent) => {
       setIsListening(false);
-      if (DEBUG) {
-        setLog((L) => [...L, `STT Error: ${e.error?.message ?? "unknown"}`]);
-      }
+      setLog((L) => [...L, `STT Error: ${e.error?.message ?? "unknown"}`]);
     };
     Voice.onSpeechPartialResults = (e: SpeechPartialResultsEvent) => {
       const text = (e.value?.[0] ?? "").trim();
       if (text) setPartial(text);
-      // 音声の“最初の検知”を一回だけ記録（partial が初めて来た瞬間）
       if (sttDetectAtRef.current == null) sttDetectAtRef.current = Date.now();
-      lastActivityAtRef.current = Date.now();              // ★追加
+      lastActivityAtRef.current = Date.now();
     };
     Voice.onSpeechResults = (e: SpeechResultsEvent) => {
       const text = (e.value?.[0] ?? "").trim();
       setFinalText(text);
       setPartial("");
-      if (DEBUG_TIME && sttStartAtRef.current) {            // ★ STT終了時間計測
+      if (DEBUG_TIME && sttStartAtRef.current) {
         const dur = Date.now() - sttStartAtRef.current;
-        setLog(L => [...L, `⏱️ STT=${dur}ms`]);
+        setLog((L) => [...L, `⏱️ STT=${dur}ms`]);
         sttStartAtRef.current = 0;
       }
-      lastActivityAtRef.current = Date.now();              // ★追加
+      lastActivityAtRef.current = Date.now();
     };
     return () => {
       Voice.destroy().then(Voice.removeAllListeners);
     };
   }, [sttMode]);
 
-  // finalTextが更新されても、録音中は送らない。
-  // 録音終了(onSpeechEnd) or 無音INACT_MS経過で送る。
   useEffect(() => {
     const t = finalText.trim();
     if (!t) return;
 
-    // すでに録音が止まっているなら即送る（デバウンス不要）
     if (!isListening) {
       if (t !== lastSentRef.current && !sendingRef.current) {
         lastSentRef.current = t;
-        (async () => { try { await Voice.stop(); } catch {} if (DEBUG) setLog(L=>[...L, `AutoSend: ${t}`]); send(t); })();
+        (async () => {
+          try {
+            await stopSTT();
+          } catch {}
+          if (DEBUG) setLog((L) => [...L, `AutoSend: ${t}`]);
+          send(t);
+        })();
       }
       return;
     }
 
-    // 録音中なら「無音/更新停止」待ち
     if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
     inactivityTimerRef.current = setTimeout(() => {
       const quiet = Date.now() - lastActivityAtRef.current >= INACT_MS;
@@ -297,7 +333,13 @@ export default function Chat() {
       if (latest === lastSentRef.current || sendingRef.current) return;
 
       lastSentRef.current = latest;
-      (async () => { try { await Voice.stop(); } catch {} if (DEBUG) setLog(L=>[...L, `AutoSend: ${latest}`]); send(latest); })();
+      (async () => {
+        try {
+          await stopSTT();
+        } catch {}
+        if (DEBUG) setLog((L) => [...L, `AutoSend: ${latest}`]);
+        send(latest);
+      })();
     }, INACT_MS);
 
     return () => {
@@ -305,118 +347,347 @@ export default function Chat() {
     };
   }, [finalText, isListening]);
 
-  // STT開始/停止
-  const startSTT = async () => {
+  /* === Soniox: リアルタイムWS === */
+  const sonioxWsRef = useRef<WebSocket | null>(null);
+  const sonioxListeningRef = useRef(false);
+  const sonioxFinalBufRef = useRef<string>(""); // final確定の蓄積
+  const sonioxNonFinalBufRef = useRef<string>(""); // 非確定の表示用
 
-    if(DEBUG_TIME)setLog(L => [...L, `sttMode=${sttMode}`]);
+  const configureAudioRecord = () => {
+    AudioRecord.init({
+      sampleRate: SONIOX_SAMPLE_RATE,
+      channels: SONIOX_CHANNELS,
+      bitsPerSample: 16,
+      audioSource: 6, // VOICE_RECOGNITION(Android); iOSでは無視される
+      wavFile: "", // 生PCMでon('data')を受ける
+    });
+  };
 
-    // soniox STT処理
-    if (sttMode === "soniox") {
-      startSonioxSTT();
+  const fetchSonioxTempKey = async (): Promise<string> => {
+    const res = await fetch(SONIOX_KEY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    const js = await res.json();
+    if (!res.ok || !js?.api_key) throw new Error("Failed to get Soniox temp key");
+    return js.api_key as string;
+  };
+
+  const startSonioxSTT = async () => {
+    if(DEBUG)setLog(L => [...L, "=== startSonioxSTT CALLED ==="]);  
+    setLog((L) => [...L, "Soniox STT: start()"]);
+
+    // 権限（Android/iOS 両方確認）
+    const okAndroid = await ensureMicPermissionAndroid();
+    const okIOS = await ensureMicPermissionIOS();
+    if (!okAndroid || !okIOS) {
+      setLog((L) => [...L, "STT: マイク権限がありません"]);
       return;
     }
 
-    // ローカルSTT処理
+    try {
+      // Temp API Key を取得（あなたのLambda）
+      const tempKey = await fetchSonioxTempKey(); // 例: "temp:xxxx"
+      // WebSocket接続
+      const ws = new WebSocket(SONIOX_WS_URL);
+      sonioxWsRef.current = ws;
+
+      ws.onopen = () => {
+        if(DEBUG)setLog(L => [...L, "Soniox WS: OPEN"]);  
+        const cfg = {
+          api_key: tempKey,
+          model: SONIOX_MODEL,
+          audio_format: "pcm_s16le",
+          sample_rate: SONIOX_SAMPLE_RATE,
+          num_channels: SONIOX_CHANNELS,
+          enable_endpoint_detection: true,
+          language_hints: ["ja"],
+        };
+        ws.send(JSON.stringify(cfg));
+
+        // 録音開始（PCMチャンクをbase64で受ける）
+        configureAudioRecord();
+        AudioRecord.on("data", (b64: string) => {
+          if (!sonioxListeningRef.current) return;
+          try {
+            const ab = base64ToArrayBuffer(b64);
+            ws.send(ab); // バイナリ送信
+          }  catch (e: any) {
+            if (DEBUG) {
+              const msg = e && typeof e === "object" && "message" in e
+                ? (e as any).message
+                : String(e);
+              setLog(L => [...L, `Soniox send err: ${msg}`]);
+            }
+          }
+
+        });
+        AudioRecord.start();
+        sonioxListeningRef.current = true;
+
+        // iOSの録音カテゴリを「PlayAndRecord + speaker」に強制
+        forceIOSPlayAndRecordToSpeaker();
+        setTimeout(forceIOSPlayAndRecordToSpeaker, 50);
+
+        // ===== 修正: ユーザーの体感フィードバック（即時トグル） =====
+        setIsListening(true);
+        // ===============================================
+        setPartial("");
+        setFinalText("");
+        sonioxFinalBufRef.current = "";
+        sonioxNonFinalBufRef.current = "";
+      };
+
+      ws.onmessage = (ev) => {
+        try {
+          const data = typeof ev.data === "string" ? JSON.parse(ev.data) : null;
+          if (!data) return;
+
+          const tokens: Array<{ text: string; is_final?: boolean }> = data.tokens || [];
+
+          let finalAppended = "";
+          let nonFinalCurrent = "";
+
+          for (const t of tokens) {
+            const txt = t.text ?? "";
+            if (!txt) continue;
+            if (t.is_final) {
+              finalAppended += txt;
+            } else {
+              nonFinalCurrent += txt;
+            }
+          }
+
+          if (finalAppended) {
+            sonioxFinalBufRef.current += finalAppended;
+            setFinalText(sonioxFinalBufRef.current.trim());
+          }
+          sonioxNonFinalBufRef.current = nonFinalCurrent;
+          setPartial(nonFinalCurrent);
+
+          if (data.finished && DEBUG) {
+            setLog((L) => [...L, "Soniox finished"]);
+          }
+          if (data.error_code) {
+            setLog((L) => [...L, `Soniox Error ${data.error_code}: ${data.error_message ?? ""}`]);
+          }
+        } catch (e: any) {
+          if (DEBUG) {
+            const msg = e && typeof e === "object" && "message" in e
+              ? (e as any).message
+              : String(e);
+            setLog(L => [...L, `Soniox parse err: ${msg}`]);
+          }
+        }
+      };
+
+      ws.onerror = () => {
+        setLog((L) => [...L, `Soniox WS error`]);
+      };
+
+      ws.onclose = () => {
+        sonioxListeningRef.current = false;
+        setIsListening(false);
+      };
+    } catch (e: any) {
+      setLog((L) => [...L, `Soniox start failed: ${e?.message ?? String(e)}`]);
+      sonioxListeningRef.current = false;
+      setIsListening(false);
+    }
+  };
+
+  const stopSonioxSTT = async () => {
+    setLog(L => [...L, "Soniox STT: stop()"]);
+
+    // 1. 録音停止
+    try {
+      await AudioRecord.stop();
+    } catch (e) {
+      setLog(L => [...L, `AudioRecord.stop error: ${String(e)}`]);
+    }
+    sonioxListeningRef.current = false;
+
+    // 2. WebSocket閉じる
+    const ws = sonioxWsRef.current;
+    if (ws && ws.readyState === 1) {
+      try { ws.send(new Uint8Array(0)); } catch {}
+      setTimeout(() => { try { ws.close(); } catch {} }, 150);
+    }
+
+    // 3. Playbackに戻す
+    try {
+      await restoreIOSPlayback();
+      setLog(L => [...L, "AudioMode reset to Playback"]);
+    } catch (e) {
+      setLog(L => [...L, `restoreIOSPlayback error: ${String(e)}`]);
+    }
+
+    // 4. 状態リセットと送信
+    setIsListening(false);
+
+    const textToSend = (
+      sonioxFinalBufRef.current ||
+      sonioxNonFinalBufRef.current ||
+      partial ||
+      finalText
+    ).trim();
+    if (textToSend) send(textToSend);
+
+    sonioxFinalBufRef.current = "";
+    sonioxNonFinalBufRef.current = "";
+  };
+
+  // STT開始/停止トグル
+  const startSTT = async () => {
+    if(DEBUG)setLog(L => [...L, "=== startSTT CALLED ==="]);  
+    if(DEBUG)setLog((L) => [...L, `sttMode=${sttMode}`]);
+
+    // 二重起動ガード（無反応の原因になりやすいので明示）
+    if (isListening) return;
+
+    // iOS録音カテゴリ
+    if (Platform.OS === "ios") {
+      try {
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: true,
+          playsInSilentModeIOS: true,
+          staysActiveInBackground: false,
+          interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+        });
+      } catch (e: any) {
+        setLog(L => [...L, `Audio.setAudioModeAsync error: ${String(e)}`]); // ★追加
+      }
+    }
+
+
+    if (sttMode === "soniox") {
+      // 体感フィードバック
+      setIsListening(true);
+      try {
+        await startSonioxSTT();
+      } catch (e) {
+        setIsListening(false);
+        throw e;
+      }
+      return;
+    }
+
     if (sttMode === "local") {
       lastSentRef.current = "";
-      if (autoSendTimerRef.current) { clearTimeout(autoSendTimerRef.current); autoSendTimerRef.current = null; }
-      if (Platform.OS === "android") {
-        const ok = await ensureMicPermission();
-        if (!ok) {
-          setLog(L => [...L, "STT: マイク権限がありません"]);
-          return;
-        }
+      if (autoSendTimerRef.current) {
+        clearTimeout(autoSendTimerRef.current);
+        autoSendTimerRef.current = null;
+      }
+      const okAndroid = await ensureMicPermissionAndroid();
+      const okIOS = await ensureMicPermissionIOS();
+      if (!okAndroid || !okIOS) {
+        setLog((L) => [...L, "STT: マイク権限がありません"]);
+        return;
       }
       try {
-        const avail = await Voice.isAvailable();            // ★追加
+        const avail = await Voice.isAvailable();
         if (!avail) {
-          setLog(L => [...L, "STT: 音声認識がこの端末/設定で利用できません"]);
+          setLog((L) => [...L, "STT: 音声認識がこの端末/設定で利用できません"]);
           return;
         }
-        if (DEBUG) setLog(L => [...L, "STT: start(ja-JP)"]);
+        // 体感フィードバック
+        setIsListening(true);
+        if (DEBUG) setLog((L) => [...L, "STT: start(ja-JP)"]);
         await Voice.start("ja-JP", { EXTRA_PARTIAL_RESULTS: true } as any);
       } catch (e: any) {
-        setLog(L => [...L, `STT start failed: ${e?.message ?? String(e)}`]); // ★見える化
+        setIsListening(false);
+        setLog((L) => [...L, `STT start failed: ${e?.message ?? String(e)}`]);
       }
     }
   };
 
   const stopSTT = async () => {
     if (sttMode === "soniox") {
-      stopSonioxSTT();     // ← ダミーSoniox呼び出し
-      return;
+      await stopSonioxSTT();
+    } else {
+      try {
+        await Voice.stop();
+      } catch {}
     }
-    await Voice.stop();
-  };
-  
-
-
-
-  // Soniox専用（今はダミー）
-  const startSonioxSTT = () => {
-    setLog(L => [...L, "Soniox STT start() 呼ばれた"]);
-  };
-  const stopSonioxSTT = () => {
-    setLog(L => [...L, "Soniox STT stop() 呼ばれた"]);
+    await restoreIOSPlayback();
   };
 
-
-
-
-
+  /* === 既存: 音声再生キュー/TTS === */
   const enqueueAudio = async (b64: string, id: string, format: string) => {
+    if(DEBUG)setLog(L => [...L, `enqueueAudio called: id=${id}, format=${format}`]);
     const path = `${FileSystem.cacheDirectory}${id}.${format}`;
     await FileSystem.writeAsStringAsync(path, b64, {
       encoding: FileSystem.EncodingType.Base64,
     });
+    if(DEBUG)setLog(L => [...L, `enqueueAudio wrote: ${path}`]);   
     queueRef.current.push({ uri: path });
     if (!playingRef.current) playLoop();
   };
 
   const playLoop = async () => {
+    if (DEBUG) setLog(L => [...L, "playLoop START"]);
     if (playingRef.current) return;
     playingRef.current = true;
+
     try {
       while (queueRef.current.length) {
         const { uri } = queueRef.current.shift()!;
+        if (DEBUG) setLog(L => [...L, `playLoop playing: ${uri}`]);
+
         const { sound } = await Audio.Sound.createAsync({ uri });
-        await sound.playAsync();
+        if (DEBUG) setLog(L => [...L, `sound loaded: ${uri}`]);
+
         await new Promise<void>((resolve) => {
-          let firstFrame = true;
+          let finished = false;
+
           sound.setOnPlaybackStatusUpdate((st) => {
-            if (DEBUG_TIME && firstFrame && st.isLoaded && st.isPlaying) {
-              firstFrame = false;
-              const ftts = Date.now() - sendStartAtRef.current;
-              setLog(L => [...L, `⏱️ FTTS=${ftts}ms`]);
-            }
-            if (st.isLoaded && st.didJustFinish) {
-              resolve();
+            if (st.isLoaded && st.didJustFinish && !finished) {
+              finished = true;
+              sound.unloadAsync().then(() => {
+                if (DEBUG) setLog(L => [...L, `sound unloaded: ${uri}`]);
+                resolve();
+              });
             }
           });
+
+          sound.playAsync().then(() => {
+            if (DEBUG) setLog(L => [...L, `sound.playAsync called: ${uri}`]);
+          });
+
+          // 念のためタイムアウトで解放（2秒後）
+          setTimeout(() => {
+            if (!finished) {
+              sound.unloadAsync().then(() => {
+                if (DEBUG) setLog(L => [...L, `sound timeout-unloaded: ${uri}`]);
+                resolve();
+              });
+            }
+          }, 2000);
         });
-        await sound.unloadAsync();
       }
+    } catch (e: any) {
+      setLog(L => [...L, `playLoop error: ${e?.message ?? e}`]);
     } finally {
       playingRef.current = false;
     }
   };
 
-  // もともとの send を少しだけ汎用化（引数テキストを送る）
+
+  // メッセージ送信（既存SSEサーバ）
   const send = async (textArg?: string) => {
     const t = (textArg ?? msg).trim();
     if (!t) return;
 
-    // === 会話履歴: user を追加 ===
     historyRef.current.push({ role: "user", text: t, ts: Date.now() });
-    if (DEBUG_HISTORY) setLog(L => [...L, `🧾 hist +user "${t.slice(0,40)}"`]);
+    if (DEBUG_HISTORY) setLog((L) => [...L, `🧾 hist +user "${t.slice(0, 40)}"`]);
 
-    if (sendingRef.current) {                    // ★追加
-      if (DEBUG) setLog(L => [...L, "skip: sending in flight"]);
+    if (sendingRef.current) {
+      if (DEBUG) setLog((L) => [...L, "skip: sending in flight"]);
       return;
     }
-    sendingRef.current = true;                   // ★追加
+    sendingRef.current = true;
 
-    if (DEBUG) setLog(L => [...L, `→ POST ${t}`]);   // ★追加（任意）
+    if (DEBUG) setLog((L) => [...L, `→ POST ${t}`]);
     if (DEBUG_TIME) sendStartAtRef.current = Date.now();
     setMsg("");
     setLog((L) => [...L, JSON.stringify({ type: "user", text: t })]);
@@ -425,34 +696,24 @@ export default function Chat() {
       const xhr = new XMLHttpRequest();
       xhr.open("POST", STREAM_URL, true);
       xhr.setRequestHeader("Content-Type", "application/json");
-      // ※ Acceptは付けない（付けても良いが不要）
-
-      // ★追加：念のためタイムアウト
       xhr.timeout = 30000;
 
-      // 進捗（ストリーム受信）イベント
       let lastIndex = 0;
       let buffer = "";
-      let accText = ""; // 文字粒度をここに溜める
-      const printedIds = new Set<string>(); // 同一イベントの重複防止
-
+      let accText = "";
+      const printedIds = new Set<string>();
       let lastEventType: string | null = null;
       let currentEvent: string | null = null;
       let currentData: string[] = [];
-
-      // ★追加：最初のイベントを記録するためのフラグ
       let firstEventSeen = false;
 
       const flush = () => {
         if (currentData.length === 0 && !currentEvent) return;
-
         const ev = currentEvent ?? lastEventType ?? "message";
         const dataStr = currentData.join("\n");
-
-        // ★最初のイベント（サーバから何か来た瞬間）
         if (DEBUG_TIME && !firstEventSeen) {
           firstEventSeen = true;
-          mtSet("firstEventAt"); // → REQ_TTFB 用
+          mtSet("firstEventAt");
         }
 
         try {
@@ -464,7 +725,7 @@ export default function Chat() {
           } else if (ev === "mark") {
             if (DEBUG_TIME) {
               const obj = JSON.parse(dataStr);
-              if (obj?.k === "llm_start")      (mtRef.current as any).srv_llmStart   = obj.t;
+              if (obj?.k === "llm_start") (mtRef.current as any).srv_llmStart = obj.t;
               if (obj?.k === "tts_first_byte") (mtRef.current as any).srv_ttsFirstByte = obj.t;
             }
           } else if (ev === "tts") {
@@ -488,22 +749,23 @@ export default function Chat() {
             if (!segKey || !printedIds.has(segKey)) {
               if (segKey) printedIds.add(segKey);
               if (text) {
-                setLog(L => [...L, text]);                // 画面表示
-                curAssistantRef.current += text;          // 束ねる
+                setLog((L) => [...L, text]);
+                curAssistantRef.current += text;
               }
             }
             if (final) {
               const whole = curAssistantRef.current.trim();
               if (whole) {
                 historyRef.current.push({ role: "assistant", text: whole, ts: Date.now() });
-                if (DEBUG_HISTORY) setLog(L => [...L, `🧾 hist +assistant "${whole.slice(0,40)}"`]);
+                if (DEBUG_HISTORY)
+                  setLog((L) => [...L, `🧾 hist +assistant "${whole.slice(0, 40)}"`]);
               }
               curAssistantRef.current = "";
             }
           } else if (ev === "error") {
             setLog((L) => [...L, `Error: ${dataStr}`]);
           } else if (ev === "done") {
-            if (DEBUG_TIME) mtReport(setLog); // サーバ送信完了時点で計測まとめ
+            if (DEBUG_TIME) mtReport(setLog);
           }
         } catch (e: any) {
           setLog((L) => [...L, `ParseErr(${ev}): ${e?.message ?? e}`]);
@@ -516,8 +778,6 @@ export default function Chat() {
 
       const processChunk = (chunk: string) => {
         buffer += chunk;
-
-        // 「\n\n」ごとに1レコード
         let idx: number;
         while ((idx = buffer.indexOf("\n\n")) !== -1) {
           const record = buffer.slice(0, idx);
@@ -531,7 +791,7 @@ export default function Chat() {
             } else if (line.startsWith("data:")) {
               currentData.push(line.slice(5).trimStart());
             } else {
-              // コメントなどは無視
+              // コメント無視
             }
           }
           flush();
@@ -539,7 +799,6 @@ export default function Chat() {
       };
 
       xhr.onprogress = () => {
-        // 追加分だけ取り出してパース
         const text = xhr.responseText || "";
         const chunk = text.slice(lastIndex);
         lastIndex = text.length;
@@ -547,65 +806,52 @@ export default function Chat() {
       };
 
       xhr.onerror = () => {
-        setLog(L => [...L, `XHR error`]);
-        sendingRef.current = false;              // ★解除
+        setLog((L) => [...L, `XHR error`]);
+        sendingRef.current = false;
       };
-
       xhr.ontimeout = () => {
-        setLog(L => [...L, `XHR timeout`]);
-        sendingRef.current = false;              // ★解除
+        setLog((L) => [...L, `XHR timeout`]);
+        sendingRef.current = false;
       };
 
       xhr.onload = () => {
-        // 念のため末尾に残った分を処理
         const text = xhr.responseText || "";
         const tail = text.slice(lastIndex);
         if (tail) processChunk(tail);
-
         const out = accText.trim();
         if (out) setLog((L) => [...L, out]);
-
-        if(DEBUG) setLog((L) => [...L, "=== stream done ==="]);
-        sendingRef.current = false;              // ★解除
+        if (DEBUG) setLog((L) => [...L, "=== stream done ==="]);
+        sendingRef.current = false;
       };
 
-      // 送信開始
-      if (DEBUG_TIME) { mtRef.current = {}; mtSet("reqAt"); }
+      if (DEBUG_TIME) {
+        (mtRef.current as any) = {};
+        mtSet("reqAt");
+      }
 
-
-      // 送信用のmessagesを履歴から組み立て（直近Nターン＋今回のユーザー発話）
       const recentTurns = historyRef.current.slice(-HISTORY_TURNS_TO_SEND);
-      const historyMessages = recentTurns.map(t => ({
-        role: t.role,             // "user" | "assistant"
-        content: t.text,
-      }));
+      const historyMessages = recentTurns.map((t) => ({ role: t.role, content: t.text }));
 
       const voices = MODEL_MAP[model].voices as any;
       const voiceToSend =
-        MODEL_MAP[model].voices[voiceKey]?.vendorId
-        ?? MODEL_MAP[model].voices[MODEL_MAP[model].defaultVoice].vendorId;
+        MODEL_MAP[model].voices[voiceKey]?.vendorId ??
+        MODEL_MAP[model].voices[MODEL_MAP[model].defaultVoice].vendorId;
 
-      
       const payload = {
         model,
         voice: voiceToSend,
-        messages: [
-          ...historyMessages,
-          { role: "user", content: t },
-        ],
+        messages: [...historyMessages, { role: "user", content: t }],
       };
       xhr.send(JSON.stringify(payload));
-
     } catch (e: any) {
       setLog((L) => [...L, `Error: ${e?.message ?? e}`]);
-      sendingRef.current = false;                // ★解除
+      sendingRef.current = false;
     }
   };
 
   return (
     <SafeAreaView style={s.root}>
-
-      {/* ★ ヘッダー */}
+      {/* ヘッダー */}
       <View style={s.header}>
         <TouchableOpacity
           ref={pillRef}
@@ -614,33 +860,34 @@ export default function Chat() {
           onPress={() => {
             pillRef.current?.measureInWindow((x, y, w, h) => {
               setAnchor({ x, y, w, h });
-              setSubmenuFor(null);         // ★追加：まだボイスは出さない
+              setSubmenuFor(null);
               setMenuVisible(true);
             });
           }}
         >
           <Text style={s.modelPillText}>
-            {MODEL_MAP[model].label} · {
-              MODEL_MAP[model].voices[voiceKey]?.label
-                ?? MODEL_MAP[model].voices[MODEL_MAP[model].defaultVoice].label
-            }
+            {MODEL_MAP[model].label} ·{" "}
+            {MODEL_MAP[model].voices[voiceKey]?.label ??
+              MODEL_MAP[model].voices[MODEL_MAP[model].defaultVoice].label}
           </Text>
         </TouchableOpacity>
-        {/* ←追加：右寄せ用のスペーサー */}
         <View style={{ flex: 1 }} />
-
-        {/* ←追加：DEBUG_TIME トグル */}
         <TouchableOpacity
           onPress={() => setDebugTime(!debugTime)}
-          style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12, backgroundColor: 'rgba(0,0,0,0.06)' }}
+          style={{
+            paddingHorizontal: 10,
+            paddingVertical: 6,
+            borderRadius: 12,
+            backgroundColor: "rgba(0,0,0,0.06)",
+          }}
         >
-          <Text style={{ fontSize: 14, fontWeight: '600', color: debugTime ? '#b00' : '#333' }}>
-            {debugTime ? 'Debug:ON' : 'Debug:OFF'}
+          <Text style={{ fontSize: 14, fontWeight: "600", color: debugTime ? "#b00" : "#333" }}>
+            {debugTime ? "Debug:ON" : "Debug:OFF"}
           </Text>
         </TouchableOpacity>
       </View>
 
-      {/* アンカー付きポップオーバー */}
+      {/* モデル/ボイス選択 */}
       <Modal
         visible={menuVisible}
         transparent
@@ -648,10 +895,7 @@ export default function Chat() {
         onRequestClose={() => setMenuVisible(false)}
       >
         <View style={s.overlay}>
-          {/* 背景だけを閉じるボタンにする（メニューは包まない） */}
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setMenuVisible(false)} />
-
-          {/* ▼ 左パネル：モデル一覧 */}
           {anchor && (
             <View
               style={[
@@ -671,7 +915,7 @@ export default function Chat() {
                   <TouchableOpacity
                     key={key}
                     style={[s.dropdownItem, active && s.dropdownItemActive]}
-                    onPress={() => setSubmenuFor(key)}   // ここで右パネルを開く
+                    onPress={() => setSubmenuFor(key)}
                   >
                     <View style={s.dropdownRow}>
                       <View style={{ flex: 1 }}>
@@ -686,7 +930,6 @@ export default function Chat() {
             </View>
           )}
 
-          {/* ▼ 右パネル：ボイス一覧（submenuFor が選ばれた時だけ） */}
           {anchor && submenuFor && (
             <View
               style={[
@@ -715,7 +958,6 @@ export default function Chat() {
                   <View style={s.dropdownRow}>
                     <View style={{ flex: 1 }}>
                       <Text style={s.dropdownTitle}>{v.label}</Text>
-                      {v.desc && <Text style={s.dropdownSub}>{v.desc}</Text>}
                     </View>
                     {model === submenuFor && voiceKey === vk && (
                       <Text style={s.dropdownCheck}>✓</Text>
@@ -732,7 +974,6 @@ export default function Chat() {
         {log.map((l, i) => {
           let content = l;
           let isUser = false;
-
           try {
             const obj = JSON.parse(l);
             if (obj.type === "user") {
@@ -740,7 +981,6 @@ export default function Chat() {
               isUser = true;
             }
           } catch {}
-
         if (isUser) {
             return (
               <View key={i} style={s.userBubble}>
@@ -756,13 +996,10 @@ export default function Chat() {
           }
         })}
 
-        {/* === 追加: STTのpartial/final最小表示 === */}
-        {DEBUG && (
+        {SHOW_STT_DEBUG_UI && (
           <View style={{ marginTop: 12 }}>
             <Text style={s.section}>🎙️ STT</Text>
-            <Text style={s.small}>
-              {isListening ? "Listening: true" : "Listening: false"}
-            </Text>
+            <Text style={s.small}>{isListening ? "Listening: true" : "Listening: false"}</Text>
             <Text style={s.label}>Partial</Text>
             <Text style={s.box}>{partial || "…"}</Text>
             <Text style={s.label}>Final</Text>
@@ -846,20 +1083,20 @@ const s = StyleSheet.create({
   },
   userLine: {
     textAlign: "right",
-    color: "#007aff",     // 好きな色に変えてOK
+    color: "#007aff",
     fontWeight: "500",
   },
   userBubble: {
-    alignSelf: "flex-end",         // 右側に寄せる
-    backgroundColor: "#007aff",    // 吹き出しの色（iMessage風ブルー）
+    alignSelf: "flex-end",
+    backgroundColor: "#007aff",
     borderRadius: 16,
     paddingHorizontal: 12,
     paddingVertical: 8,
     marginBottom: 6,
-    maxWidth: "80%",               // 長文は折り返す
+    maxWidth: "80%",
   },
   userBubbleText: {
-    color: "#fff",                 // 吹き出し内テキストを白に
+    color: "#fff",
     fontSize: 16,
   },
   header: {
@@ -889,11 +1126,14 @@ const s = StyleSheet.create({
     fontWeight: "700",
   },
   modalOverlay: {
-  position: "absolute",
-  top: 0, left: 0, right: 0, bottom: 0,
-  backgroundColor: "rgba(0,0,0,0.3)",
-  justifyContent: "center",
-  alignItems: "center",
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0,0,0,0.3)",
+    justifyContent: "center",
+    alignItems: "center",
   },
   modalBox: {
     backgroundColor: "#fff",
@@ -924,7 +1164,6 @@ const s = StyleSheet.create({
     borderRadius: 12,
     paddingVertical: 6,
     width: 280,
-    // 影
     shadowColor: "#000",
     shadowOpacity: 0.12,
     shadowRadius: 12,
@@ -951,7 +1190,7 @@ const s = StyleSheet.create({
   dropdownSub: {
     marginTop: 2,
     fontSize: 12,
-    color: "#6b7280", // グレー
+    color: "#6b7280",
   },
   dropdownCheck: {
     fontSize: 16,
@@ -959,7 +1198,7 @@ const s = StyleSheet.create({
     marginLeft: 8,
   },
   dropdownItemActive: {
-    backgroundColor: "rgba(79,70,229,0.06)", // うっすら強調
+    backgroundColor: "rgba(79,70,229,0.06)",
     borderRadius: 8,
   },
   dropdownDivider: {
