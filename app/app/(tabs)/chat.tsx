@@ -67,6 +67,14 @@ export default function Chat() {
   const [log, setLog] = useState<string[]>([]);
   const readyRef = useRef(false);
 
+  // セッション管理とウォッチドッグ
+  const sonioxSessionRef = useRef(0);  // 起動ごとに +1
+  const sonioxWatchRef = useRef<{ 
+    firstAudioTimer?: any; 
+    serverQuietTimer?: any; 
+  } | null>(null);
+
+
   const [debugTime, setDebugTime] = useState(DEBUG_TIME);
   useEffect(() => {
     DEBUG_TIME = debugTime;
@@ -156,29 +164,12 @@ export default function Chat() {
   const inactivityTimerRef = useRef<NodeJS.Timeout | null>(null);
   const INACT_MS = 900;
 
-  // ===== 修正: ここから（setLog を安全に使えるようにローカル関数へ） =====
-  const forceIOSPlayAndRecordToSpeaker = async () => {
-    if (Platform.OS !== "ios") return;
-    try {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true, // PlayAndRecord
-        playsInSilentModeIOS: true,
-        interruptionModeIOS: InterruptionModeIOS.MixWithOthers,
-        staysActiveInBackground: false,
-      });
-    } catch (e: any) {
-      setLog((L) => [...L, `AudioMode(PlayAndRecord) err: ${e?.message ?? e}`]);
-    }
-  };
 
   const restoreIOSPlayback = async () => {
-    const mode = await Audio.getAudioModeAsync();
-    if (DEBUG) setLog(L => [...L, `AudioMode: ${JSON.stringify(mode)}`]);
-
     if (Platform.OS !== "ios") return;
     try {
       await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false, // ←録音モードを完全解除
+        allowsRecordingIOS: false, // マイク完全に解放して再生専用
         staysActiveInBackground: false,
         playsInSilentModeIOS: true,
         interruptionModeIOS: InterruptionModeIOS.DoNotMix,
@@ -186,11 +177,13 @@ export default function Chat() {
         shouldDuckAndroid: true,
         playThroughEarpieceAndroid: false,
       });
-      setLog(L => [...L, "AudioMode restored to Playback (full params)"]);
+      setLog(L => [...L, "AudioMode restored to Playback"]);
     } catch (e: any) {
-      setLog((L) => [...L, `AudioMode(Playback) err: ${e?.message ?? e}`]);
+      setLog(L => [...L, `AudioMode(Playback) err: ${e?.message ?? e}`]);
     }
   };
+
+
 
   // ===== 修正: ここまで =====
 
@@ -382,194 +375,244 @@ export default function Chat() {
   };
 
   const startSonioxSTT = async () => {
-    if(DEBUG)setLog(L => [...L, "=== startSonioxSTT CALLED ==="]);  
-    
-    setLog((L) => [...L, "Soniox STT: start()"]);
+    setLog(L => [...L, "Soniox STT: start()"]);
 
-    // 権限（Android/iOS 両方確認）
-    const okAndroid = await ensureMicPermissionAndroid();
-    const okIOS = await ensureMicPermissionIOS();
-    if (!okAndroid || !okIOS) {
-      setLog((L) => [...L, "STT: マイク権限がありません"]);
+    // すでに起動中なら無視（多重起動防止）
+    if (sonioxListeningRef.current) {
+      setLog(L => [...L, "Soniox already listening – skip"]);
       return;
     }
 
-    try {
-      // Temp API Key を取得（あなたのLambda）
-      const tempKey = await fetchSonioxTempKey(); // 例: "temp:xxxx"
-      // WebSocket接続
-      const ws = new WebSocket(SONIOX_WS_URL);
-      sonioxWsRef.current = ws;
+    // 権限チェック
+    const okAndroid = await ensureMicPermissionAndroid();
+    const okIOS = await ensureMicPermissionIOS();
+    if (!okAndroid || !okIOS) {
+      setLog(L => [...L, "STT: マイク権限がありません"]);
+      return;
+    }
 
-      ws.onopen = () => {
-        if(DEBUG)setLog(L => [...L, "Soniox WS: OPEN"]);  
-        const cfg = {
-          api_key: tempKey,
-          model: SONIOX_MODEL,
-          audio_format: "pcm_s16le",
-          sample_rate: SONIOX_SAMPLE_RATE,
-          num_channels: SONIOX_CHANNELS,
-          enable_endpoint_detection: true,
-          language_hints: ["ja", "en"],
-        };
-        ws.send(JSON.stringify(cfg));
+    // 新しいセッションIDを払い出し
+    const mySession = ++sonioxSessionRef.current;
+    const guard = () => sonioxSessionRef.current === mySession;
 
-        // 録音開始（PCMチャンクをbase64で受ける）
-        configureAudioRecord();
-        AudioRecord.on("data", (b64: string) => {
-          if (!sonioxListeningRef.current) return;
-          try {
-            const ab = base64ToArrayBuffer(b64);
-            ws.send(ab); // バイナリ送信
-          }  catch (e: any) {
-            if (DEBUG) {
-              const msg = e && typeof e === "object" && "message" in e
-                ? (e as any).message
-                : String(e);
-              setLog(L => [...L, `Soniox send err: ${msg}`]);
-            }
-          }
+    // 旧WSが残っていたら閉じる
+    try { sonioxWsRef.current?.close(); } catch {}
 
-        });
-        AudioRecord.start();
-        sonioxListeningRef.current = true;
+    let bytesSent = 0;
+    let gotServerMsg = false;
 
-        // iOSの録音カテゴリを「PlayAndRecord + speaker」に強制
-        forceIOSPlayAndRecordToSpeaker();
-        setTimeout(forceIOSPlayAndRecordToSpeaker, 50);
+    // 新規WS
+    const ws = new WebSocket(SONIOX_WS_URL);
+    ws.binaryType = "arraybuffer";
+    sonioxWsRef.current = ws;
 
-        // ===== 修正: ユーザーの体感フィードバック（即時トグル） =====
-        setIsListening(true);
-        // ===============================================
-        setPartial("");
-        setFinalText("");
-        sonioxFinalBufRef.current = "";
-        sonioxNonFinalBufRef.current = "";
+    // ウォッチドッグ初期化
+    if (!sonioxWatchRef.current) sonioxWatchRef.current = {};
+    const clearWatch = () => {
+      if (sonioxWatchRef.current?.firstAudioTimer) clearTimeout(sonioxWatchRef.current.firstAudioTimer);
+      if (sonioxWatchRef.current?.serverQuietTimer) clearTimeout(sonioxWatchRef.current.serverQuietTimer);
+      sonioxWatchRef.current = null;
+    };
+
+    ws.onopen = async () => {
+      if (!guard()) return;
+
+
+      // サーバへ設定送信（まず設定→次に音声）
+      const cfg = {
+        api_key: await fetchSonioxTempKey(),
+        model: SONIOX_MODEL,
+        audio_format: "pcm_s16le",
+        sample_rate: SONIOX_SAMPLE_RATE,
+        num_channels: SONIOX_CHANNELS,
+        enable_endpoint_detection: true,
+        language_hints: ["ja"],
       };
+      ws.send(JSON.stringify(cfg));
+      setLog(L => [...L, "Soniox WS: OPEN + cfg sent"]);
 
-      ws.onmessage = (ev) => {
+      // 録音開始（onopen後に開始）
+      configureAudioRecord();
+      AudioRecord.on("data", (b64: string) => {
+        if (!guard()) return;                   // 古いセッションは無視
+        if (!sonioxListeningRef.current) return;
+
         try {
-          const data = typeof ev.data === "string" ? JSON.parse(ev.data) : null;
-          if (!data) return;
-
-          const tokens: Array<{ text: string; is_final?: boolean }> = data.tokens || [];
-
-          let finalAppended = "";
-          let nonFinalCurrent = "";
-
-          for (const t of tokens) {
-            const txt = t.text ?? "";
-            if (!txt) continue;
-            if (t.is_final) {
-              finalAppended += txt;
-            } else {
-              nonFinalCurrent += txt;
-            }
-          }
-
-          if (finalAppended) {
-            sonioxFinalBufRef.current += finalAppended;
-            setFinalText(sonioxFinalBufRef.current.trim());
-          }
-          sonioxNonFinalBufRef.current = nonFinalCurrent;
-          setPartial(nonFinalCurrent);
-
-          if (data.finished && DEBUG) {
-            setLog((L) => [...L, "Soniox finished"]);
-          }
-          if (data.error_code) {
-            setLog((L) => [...L, `Soniox Error ${data.error_code}: ${data.error_message ?? ""}`]);
-          }
+          const ab = base64ToArrayBuffer(b64);
+          const chunk = new Uint8Array(ab);
+          ws.readyState === 1 && ws.send(chunk);
+          bytesSent += chunk.byteLength;
         } catch (e: any) {
-          if (DEBUG) {
-            const msg = e && typeof e === "object" && "message" in e
-              ? (e as any).message
-              : String(e);
-            setLog(L => [...L, `Soniox parse err: ${msg}`]);
-          }
+          setLog(L => [...L, `Soniox send err: ${e?.message ?? String(e)}`]);
         }
-      };
+      });
 
-      ws.onerror = () => {
-        setLog((L) => [...L, `Soniox WS error`]);
-      };
-
-      ws.onclose = () => {
+      try {
+        await AudioRecord.start();
+        sonioxListeningRef.current = true;
+        setIsListening(true);
+        setPartial(""); setFinalText("");
+        sonioxFinalBufRef.current = ""; sonioxNonFinalBufRef.current = "";
+        setLog(L => [...L, "AudioRecord started"]);
+      } catch (e: any) {
+        setLog(L => [...L, `AudioRecord.start failed: ${e?.message ?? e}`]);
+        // 録音開始に失敗したら即終了
+        try { ws.close(); } catch {}
         sonioxListeningRef.current = false;
         setIsListening(false);
-      };
-    } catch (e: any) {
-      setLog((L) => [...L, `Soniox start failed: ${e?.message ?? String(e)}`]);
+        await restoreIOSPlayback();
+        return;
+      }
+
+      // ウォッチドッグ: 最初の音声フレームが来なければ切断（例: 3秒）
+      if (!sonioxWatchRef.current) sonioxWatchRef.current = {};
+      sonioxWatchRef.current.firstAudioTimer = setTimeout(async () => {
+        if (!guard()) return;
+        if (bytesSent === 0) {
+          setLog(L => [...L, "No audio frames within 3s -> abort session"]);
+          try { ws.close(); } catch {}
+          sonioxListeningRef.current = false;
+          setIsListening(false);
+          await restoreIOSPlayback();
+        }
+      }, 3000);
+
+      // ウォッチドッグ: サーバ応答が長く来なければ切断（例: 8秒）
+      sonioxWatchRef.current.serverQuietTimer = setTimeout(async () => {
+        if (!guard()) return;
+        if (!gotServerMsg) {
+          setLog(L => [...L, "No server msg within 8s -> abort session"]);
+          try { ws.close(); } catch {}
+          sonioxListeningRef.current = false;
+          setIsListening(false);
+          await restoreIOSPlayback();
+        }
+      }, 8000);
+    };
+
+    ws.onmessage = (ev) => {
+      if (!guard()) return;
+      gotServerMsg = true;
+
+      try {
+        const data = typeof ev.data === "string" ? JSON.parse(ev.data) : null;
+        if (!data) return;
+
+        if (data.error_code) {
+          // サーバからのエラー（408含む）を正常終了風に処理してセッションを畳む
+          setLog(L => [...L, `Soniox Error ${data.error_code}: ${data.error_message ?? ""}`]);
+          try { ws.close(); } catch {}
+          return;
+        }
+
+        const tokens: Array<{ text: string; is_final?: boolean }> = data.tokens || [];
+        let finalAppended = ""; let nonFinalCurrent = "";
+        for (const t of tokens) {
+          const txt = t.text ?? "";
+          if (!txt) continue;
+          t.is_final ? (finalAppended += txt) : (nonFinalCurrent += txt);
+        }
+        if (finalAppended) {
+          sonioxFinalBufRef.current += finalAppended;
+          setFinalText(sonioxFinalBufRef.current.trim());
+        }
+        sonioxNonFinalBufRef.current = nonFinalCurrent;
+        setPartial(nonFinalCurrent);
+      } catch (e: any) {
+        setLog(L => [...L, `Soniox parse err: ${e?.message ?? e}`]);
+      }
+    };
+
+    ws.onerror = (_e) => {
+      if (!guard()) return;
+      setLog(L => [...L, "Soniox WS error"]);
+    };
+
+    ws.onclose = async (e) => {
+      if (!guard()) return;
+      clearWatch();
+
+      // 録音停止（安全に）
+      try { await AudioRecord.stop(); } catch {}
       sonioxListeningRef.current = false;
+
+      // UI
       setIsListening(false);
-    }
+      setLog(L => [...L, `Soniox WS closed: code=${e.code}`]);
+    };
   };
 
 
 
-const stopSonioxSTT = async () => {
-  setLog(L => [...L, "Soniox STT: stop()"]);
 
-  // 1. 録音停止
-  try {
-    await AudioRecord.stop();
-    setLog(L => [...L, "AudioRecord stopped"]);
-  } catch (e) {
-    setLog(L => [...L, `AudioRecord.stop error: ${String(e)}`]);
-  }
-  sonioxListeningRef.current = false;
+  const stopSonioxSTT = async () => {
+    setLog(L => [...L, "Soniox STT: stop()"]);
+    const mySession = sonioxSessionRef.current;
 
-  const mode = await Audio.getAudioModeAsync();
-  if (DEBUG) setLog(L => [...L, `AudioMode after stop: ${JSON.stringify(mode)}`]);
+    // ウォッチドッグ停止
+    if (sonioxWatchRef.current?.firstAudioTimer) clearTimeout(sonioxWatchRef.current.firstAudioTimer);
+    if (sonioxWatchRef.current?.serverQuietTimer) clearTimeout(sonioxWatchRef.current.serverQuietTimer);
+    sonioxWatchRef.current = null;
 
-  // 2. WebSocket閉じる（確実に閉じるまで待つ）
-  const ws = sonioxWsRef.current;
-  if (ws && ws.readyState === 1) {
+    // ---- 1. WebSocketを確実に閉じる ----
     try {
-      ws.send(new Uint8Array(0));
-    } catch {}
-
-    await new Promise<void>((resolve) => {
-      ws.onclose = () => {
-        setLog(L => [...L, "Soniox WS closed"]);
-        resolve();
-      };
-      try {
-        ws.close();
-      } catch {
-        resolve(); // エラーなら即 resolve
+      const ws = sonioxWsRef.current;
+      if (ws && (ws.readyState === 1 || ws.readyState === 0)) {
+        await new Promise<void>((resolve) => {
+          ws.onclose = () => {
+            setLog(L => [...L, "Soniox WS closed"]);
+            resolve();
+          };
+          try { ws.send(new Uint8Array(0)); } catch {}
+          try { ws.close(); } catch {}
+        });
       }
-    });
-  }
+    } catch (e) {
+      setLog(L => [...L, `Soniox WS close error: ${String(e)}`]);
+    }
 
-  // 3. Playbackに戻す（録音停止とWS閉じのあと）
-  try {
-    await restoreIOSPlayback();
-    setLog(L => [...L, "AudioMode reset to Playback"]);
-  } catch (e) {
-    setLog(L => [...L, `restoreIOSPlayback error: ${String(e)}`]);
-  }
 
-  // 4. 状態リセット
-  setIsListening(false);
+    // ---- 2. 録音停止 ----
+    try {
+      await AudioRecord.stop();
+      setLog(L => [...L, "AudioRecord stopped"]);
+    } catch (e) {
+      setLog(L => [...L, `AudioRecord.stop error: ${String(e)}`]);
+    }
 
-  // 5. バッファから送信テキストを確定
-  const textToSend = (
-    sonioxFinalBufRef.current ||
-    sonioxNonFinalBufRef.current ||
-    partial ||
-    finalText
-  ).trim();
+    sonioxListeningRef.current = false;
+    setIsListening(false);
 
-  sonioxFinalBufRef.current = "";
-  sonioxNonFinalBufRef.current = "";
+    // ---- 3. Playbackへ確実に復帰 ----
+    // Playbackに戻すのを確実に待つ
+    try {
+      await restoreIOSPlayback();
 
-  // 6. 再生キューが残っていれば強制的にplayLoopを呼ぶ
-  if (queueRef.current.length > 0 && !playingRef.current) {
-    if (DEBUG) setLog(L => [...L, "force playLoop after stopSonioxSTT"]);
-    playLoop();
-  }
-};
+      // iOSは非同期で反映されることがあるので状態を確認して待機
+      let retries = 0;
+      while (retries < 5) {
+        const mode = await Audio.getAudioModeAsync();
+        if (!mode.allowsRecordingIOS) break; // Playback状態に戻った
+        await new Promise(r => setTimeout(r, 50)); // 50ms待機
+        retries++;
+      }
+
+      setLog(L => [...L, "AudioMode confirmed Playback"]);
+    } catch (e) {
+      setLog(L => [...L, `restoreIOSPlayback error: ${String(e)}`]);
+    }
+
+    // ---- 4. 送信テキストの確定 ----
+    const textToSend = (
+      sonioxFinalBufRef.current ||
+      sonioxNonFinalBufRef.current ||
+      partial ||
+      finalText
+    ).trim();
+
+    sonioxFinalBufRef.current = "";
+    sonioxNonFinalBufRef.current = "";
+  };
 
 
 
@@ -666,14 +709,33 @@ const stopSonioxSTT = async () => {
     }
   };
 
-
-
   const playLoop = async () => {
     if (DEBUG) setLog(L => [...L, "playLoop START"]);
     if (playingRef.current) return;
     playingRef.current = true;
 
     try {
+      // ★ セッション完全リセット　※効果はなさそう
+      await Audio.setIsEnabledAsync(false);
+      await Audio.setIsEnabledAsync(true);
+
+      // Playbackへ強制
+      await restoreIOSPlayback();
+      
+      // ★ 再生カテゴリへ強制　※効果はなさそう
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
+      });
+
+      if (DEBUG) setLog(L => [...L, "AudioMode forcibly reset before playback"]);
+
+      
       while (queueRef.current.length) {
         const { uri } = queueRef.current.shift()!;
 
