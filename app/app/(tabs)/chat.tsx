@@ -172,18 +172,26 @@ export default function Chat() {
   };
 
   const restoreIOSPlayback = async () => {
+    const mode = await Audio.getAudioModeAsync();
+    if (DEBUG) setLog(L => [...L, `AudioMode: ${JSON.stringify(mode)}`]);
+
     if (Platform.OS !== "ios") return;
     try {
       await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false, // Playback
-        playsInSilentModeIOS: true,
+        allowsRecordingIOS: false, // ←録音モードを完全解除
         staysActiveInBackground: false,
+        playsInSilentModeIOS: true,
         interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
       });
+      setLog(L => [...L, "AudioMode restored to Playback (full params)"]);
     } catch (e: any) {
       setLog((L) => [...L, `AudioMode(Playback) err: ${e?.message ?? e}`]);
     }
   };
+
   // ===== 修正: ここまで =====
 
   useEffect(() => {
@@ -375,6 +383,7 @@ export default function Chat() {
 
   const startSonioxSTT = async () => {
     if(DEBUG)setLog(L => [...L, "=== startSonioxSTT CALLED ==="]);  
+    
     setLog((L) => [...L, "Soniox STT: start()"]);
 
     // 権限（Android/iOS 両方確認）
@@ -401,7 +410,7 @@ export default function Chat() {
           sample_rate: SONIOX_SAMPLE_RATE,
           num_channels: SONIOX_CHANNELS,
           enable_endpoint_detection: true,
-          language_hints: ["ja"],
+          language_hints: ["ja", "en"],
         };
         ws.send(JSON.stringify(cfg));
 
@@ -496,46 +505,73 @@ export default function Chat() {
     }
   };
 
-  const stopSonioxSTT = async () => {
-    setLog(L => [...L, "Soniox STT: stop()"]);
 
-    // 1. 録音停止
+
+const stopSonioxSTT = async () => {
+  setLog(L => [...L, "Soniox STT: stop()"]);
+
+  // 1. 録音停止
+  try {
+    await AudioRecord.stop();
+    setLog(L => [...L, "AudioRecord stopped"]);
+  } catch (e) {
+    setLog(L => [...L, `AudioRecord.stop error: ${String(e)}`]);
+  }
+  sonioxListeningRef.current = false;
+
+  const mode = await Audio.getAudioModeAsync();
+  if (DEBUG) setLog(L => [...L, `AudioMode after stop: ${JSON.stringify(mode)}`]);
+
+  // 2. WebSocket閉じる（確実に閉じるまで待つ）
+  const ws = sonioxWsRef.current;
+  if (ws && ws.readyState === 1) {
     try {
-      await AudioRecord.stop();
-    } catch (e) {
-      setLog(L => [...L, `AudioRecord.stop error: ${String(e)}`]);
-    }
-    sonioxListeningRef.current = false;
+      ws.send(new Uint8Array(0));
+    } catch {}
 
-    // 2. WebSocket閉じる
-    const ws = sonioxWsRef.current;
-    if (ws && ws.readyState === 1) {
-      try { ws.send(new Uint8Array(0)); } catch {}
-      setTimeout(() => { try { ws.close(); } catch {} }, 150);
-    }
+    await new Promise<void>((resolve) => {
+      ws.onclose = () => {
+        setLog(L => [...L, "Soniox WS closed"]);
+        resolve();
+      };
+      try {
+        ws.close();
+      } catch {
+        resolve(); // エラーなら即 resolve
+      }
+    });
+  }
 
-    // 3. Playbackに戻す
-    try {
-      await restoreIOSPlayback();
-      setLog(L => [...L, "AudioMode reset to Playback"]);
-    } catch (e) {
-      setLog(L => [...L, `restoreIOSPlayback error: ${String(e)}`]);
-    }
+  // 3. Playbackに戻す（録音停止とWS閉じのあと）
+  try {
+    await restoreIOSPlayback();
+    setLog(L => [...L, "AudioMode reset to Playback"]);
+  } catch (e) {
+    setLog(L => [...L, `restoreIOSPlayback error: ${String(e)}`]);
+  }
 
-    // 4. 状態リセットと送信
-    setIsListening(false);
+  // 4. 状態リセット
+  setIsListening(false);
 
-    const textToSend = (
-      sonioxFinalBufRef.current ||
-      sonioxNonFinalBufRef.current ||
-      partial ||
-      finalText
-    ).trim();
-    if (textToSend) send(textToSend);
+  // 5. バッファから送信テキストを確定
+  const textToSend = (
+    sonioxFinalBufRef.current ||
+    sonioxNonFinalBufRef.current ||
+    partial ||
+    finalText
+  ).trim();
 
-    sonioxFinalBufRef.current = "";
-    sonioxNonFinalBufRef.current = "";
-  };
+  sonioxFinalBufRef.current = "";
+  sonioxNonFinalBufRef.current = "";
+
+  // 6. 再生キューが残っていれば強制的にplayLoopを呼ぶ
+  if (queueRef.current.length > 0 && !playingRef.current) {
+    if (DEBUG) setLog(L => [...L, "force playLoop after stopSonioxSTT"]);
+    playLoop();
+  }
+};
+
+
 
   // STT開始/停止トグル
   const startSTT = async () => {
@@ -614,15 +650,23 @@ export default function Chat() {
 
   /* === 既存: 音声再生キュー/TTS === */
   const enqueueAudio = async (b64: string, id: string, format: string) => {
-    if(DEBUG)setLog(L => [...L, `enqueueAudio called: id=${id}, format=${format}`]);
+    if(DEBUG)setLog(L => [...L, `---start--- enqueueAudio called: id=${id}, format=${format}`]);
     const path = `${FileSystem.cacheDirectory}${id}.${format}`;
     await FileSystem.writeAsStringAsync(path, b64, {
       encoding: FileSystem.EncodingType.Base64,
     });
-    if(DEBUG)setLog(L => [...L, `enqueueAudio wrote: ${path}`]);   
     queueRef.current.push({ uri: path });
-    if (!playingRef.current) playLoop();
+    if (DEBUG) setLog(L => [...L, `before playLoop queue length: ${queueRef.current.length}`]);
+    if (DEBUG) setLog(L => [...L, `before playLoop playingRef status: ${playingRef.current}`]);
+    if (!playingRef.current) {
+      if (DEBUG) setLog(L => [...L, "enqueueAudio triggers playLoop"]);
+      playLoop();
+    } else {
+      if (DEBUG) setLog(L => [...L, "enqueueAudio skipped playLoop (already playing)"]);
+    }
   };
+
+
 
   const playLoop = async () => {
     if (DEBUG) setLog(L => [...L, "playLoop START"]);
@@ -632,45 +676,42 @@ export default function Chat() {
     try {
       while (queueRef.current.length) {
         const { uri } = queueRef.current.shift()!;
-        if (DEBUG) setLog(L => [...L, `playLoop playing: ${uri}`]);
 
-        const { sound } = await Audio.Sound.createAsync({ uri });
-        if (DEBUG) setLog(L => [...L, `sound loaded: ${uri}`]);
+        let sound: Audio.Sound | null = null;
+        try {
+          const result = await Audio.Sound.createAsync({ uri });
+          sound = result.sound;
+          if (DEBUG) setLog(L => [...L, `sound loaded:`]);
+        } catch (e: any) {
+          setLog(L => [...L, `createAsync error: ${e?.message ?? e}`]);
+          continue; // この音声は飛ばす
+        }
 
         await new Promise<void>((resolve) => {
           let finished = false;
-
-          sound.setOnPlaybackStatusUpdate((st) => {
+          sound!.setOnPlaybackStatusUpdate((st) => {
             if (st.isLoaded && st.didJustFinish && !finished) {
               finished = true;
-              sound.unloadAsync().then(() => {
-                if (DEBUG) setLog(L => [...L, `sound unloaded: ${uri}`]);
+              sound!.unloadAsync().then(() => {
+                if (DEBUG) setLog(L => [...L, `sound unloaded:`]);
                 resolve();
               });
             }
           });
-
-          sound.playAsync().then(() => {
-            if (DEBUG) setLog(L => [...L, `sound.playAsync called: ${uri}`]);
+          sound!.playAsync().catch((e) => {
+            setLog(L => [...L, `sound.playAsync error: ${e?.message ?? e}`]);
+            resolve();
           });
-
-          // 念のためタイムアウトで解放（2秒後）
-          setTimeout(() => {
-            if (!finished) {
-              sound.unloadAsync().then(() => {
-                if (DEBUG) setLog(L => [...L, `sound timeout-unloaded: ${uri}`]);
-                resolve();
-              });
-            }
-          }, 2000);
         });
       }
     } catch (e: any) {
       setLog(L => [...L, `playLoop error: ${e?.message ?? e}`]);
     } finally {
       playingRef.current = false;
+      if (DEBUG) setLog(L => [...L, "playLoop FINISHED -> playingRef reset to false"]);
     }
   };
+
 
 
   // メッセージ送信（既存SSEサーバ）
