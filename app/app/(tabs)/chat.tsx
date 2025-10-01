@@ -576,6 +576,11 @@ export default function Chat() {
     try {
       await AudioRecord.stop();
       setLog(L => [...L, "AudioRecord stopped"]);
+
+      // ★追加: 完全リリース
+      AudioRecord.removeAllListeners?.();
+      configureAudioRecord(); // ← 再初期化でセッションを閉じる効果を狙う
+      setLog(L => [...L, "AudioRecord fully released"]);
     } catch (e) {
       setLog(L => [...L, `AudioRecord.stop error: ${String(e)}`]);
     }
@@ -584,7 +589,6 @@ export default function Chat() {
     setIsListening(false);
 
     // ---- 3. Playbackへ確実に復帰 ----
-    // Playbackに戻すのを確実に待つ
     try {
       await restoreIOSPlayback();
 
