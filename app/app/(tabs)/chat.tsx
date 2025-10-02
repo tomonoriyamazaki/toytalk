@@ -744,7 +744,7 @@ export default function Chat() {
           if (DEBUG) setLog(L => [...L, "force kick playLoop after delay"]);
           playLoop();
         }
-      }, 100); // 100ms 後に再チェック
+      }, 50); // 100ms 後に再チェック
   };
 
   const playLoop = async () => {
@@ -813,6 +813,10 @@ export default function Chat() {
       playingRef.current = false;
       loopBeatRef.current = Date.now();
       if (DEBUG) setLog(L => [...L, "playLoop FINISHED -> playingRef reset to false"]);
+      if (queueRef.current.length > 0) {
+        if (DEBUG) setLog(L => [...L, "playLoop restarting due to leftover queue"]);
+        playLoop();
+      }
     }
   };
 
