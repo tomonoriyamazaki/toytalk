@@ -150,6 +150,7 @@ export default function Chat() {
   // 音声キュー
   const playingRef = useRef(false);
   const queueRef = useRef<Array<{ uri: string }>>([]);
+  const loopBeatRef = useRef(0);  
 
   // STT共通state
   const [isListening, setIsListening] = useState(false);
@@ -455,6 +456,7 @@ export default function Chat() {
         sonioxFinalBufRef.current = ""; sonioxNonFinalBufRef.current = "";
         setLog(L => [...L, "AudioRecord started"]);
       } catch (e: any) {
+        setIsListening(false);
         setLog(L => [...L, `AudioRecord.start failed: ${e?.message ?? e}`]);
         // 録音開始に失敗したら即終了
         try { ws.close(); } catch {}
@@ -536,6 +538,10 @@ export default function Chat() {
       try { await AudioRecord.stop(); } catch {}
       sonioxListeningRef.current = false;
 
+      // ===== 変更点①: 録音リスナ完全解放 & Playback復帰を“close経路”でも必ず実施 =====
+      try { AudioRecord.removeAllListeners?.(); } catch {}
+      try { await restoreIOSPlayback(); } catch {}
+
       // UI
       setIsListening(false);
       setLog(L => [...L, `Soniox WS closed: code=${e.code}`]);
@@ -577,9 +583,9 @@ export default function Chat() {
       await AudioRecord.stop();
       setLog(L => [...L, "AudioRecord stopped"]);
 
-      // ★追加: 完全リリース
+      // 完全リリース
       AudioRecord.removeAllListeners?.();
-      configureAudioRecord(); // ← 再初期化でセッションを閉じる効果を狙う
+      configureAudioRecord(); // 再初期化でセッションを閉じる効果を狙う
       setLog(L => [...L, "AudioRecord fully released"]);
     } catch (e) {
       setLog(L => [...L, `AudioRecord.stop error: ${String(e)}`]);
@@ -592,19 +598,25 @@ export default function Chat() {
     try {
       await restoreIOSPlayback();
 
-      // iOSは非同期で反映されることがあるので状態を確認して待機
-      let retries = 0;
-      while (retries < 5) {
-        const mode = await Audio.getAudioModeAsync();
-        if (!mode.allowsRecordingIOS) break; // Playback状態に戻った
-        await new Promise(r => setTimeout(r, 50)); // 50ms待機
-        retries++;
+      // ★追加: SDK によっては getAudioModeAsync が存在しない場合がある
+      if (typeof (Audio as any).getAudioModeAsync === "function") {
+        let retries = 0;
+        while (retries < 10) {
+          const mode = await (Audio as any).getAudioModeAsync();
+          if (!mode?.allowsRecordingIOS) break;
+          await new Promise(r => setTimeout(r, 100));
+          retries++;
+        }
+      } else {
+        // ★追加: API がなければ単純に待つだけ
+        await new Promise(r => setTimeout(r, 300));
       }
 
       setLog(L => [...L, "AudioMode confirmed Playback"]);
     } catch (e) {
       setLog(L => [...L, `restoreIOSPlayback error: ${String(e)}`]);
     }
+
 
     // ---- 4. 送信テキストの確定 ----
     const textToSend = (
@@ -679,7 +691,7 @@ export default function Chat() {
         await Voice.start("ja-JP", { EXTRA_PARTIAL_RESULTS: true } as any);
       } catch (e: any) {
         setIsListening(false);
-        setLog((L) => [...L, `STT start failed: ${e?.message ?? String(e)}`]);
+        setLog((L) => [...L, `STT start failed: ${e?.message ?? e}`]);
       }
     }
   };
@@ -710,23 +722,46 @@ export default function Chat() {
       playLoop();
     } else {
       if (DEBUG) setLog(L => [...L, "enqueueAudio skipped playLoop (already playing)"]);
+
+      // ★追加: ループが生きているか監視し、固着なら強制再起動
+      const safetyKick = (delay: number) =>
+        setTimeout(() => {
+          const stale = Date.now() - (loopBeatRef.current || 0);
+          if (playingRef.current && stale > 500 && queueRef.current.length > 0) {
+            if (DEBUG) setLog(L => [...L, `watchdog: playingRef stuck (${stale}ms) -> reset & restart`]);
+            playingRef.current = false;  // 強制解除
+            playLoop();
+          }
+        }, delay);
+
+      safetyKick(50);
+      safetyKick(300);
     }
+
+      // ===== 変更点②: “キック抜け”を防ぐ安全キック（ゼロ遅延） =====
+      setTimeout(() => {
+        if (!playingRef.current && queueRef.current.length > 0) {
+          if (DEBUG) setLog(L => [...L, "force kick playLoop after delay"]);
+          playLoop();
+        }
+      }, 100); // 100ms 後に再チェック
   };
 
   const playLoop = async () => {
     if (DEBUG) setLog(L => [...L, "playLoop START"]);
     if (playingRef.current) return;
     playingRef.current = true;
+    loopBeatRef.current = Date.now();
 
     try {
-      // ★ セッション完全リセット　※効果はなさそう
+      // セッション完全リセット（再生有効化の明示）
       await Audio.setIsEnabledAsync(false);
       await Audio.setIsEnabledAsync(true);
 
       // Playbackへ強制
       await restoreIOSPlayback();
       
-      // ★ 再生カテゴリへ強制　※効果はなさそう
+      // 再生カテゴリへ強制
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
         playsInSilentModeIOS: true,
@@ -756,9 +791,11 @@ export default function Chat() {
         await new Promise<void>((resolve) => {
           let finished = false;
           sound!.setOnPlaybackStatusUpdate((st) => {
+            if (st.isLoaded) loopBeatRef.current = Date.now();
             if (st.isLoaded && st.didJustFinish && !finished) {
               finished = true;
               sound!.unloadAsync().then(() => {
+                loopBeatRef.current = Date.now();
                 if (DEBUG) setLog(L => [...L, `sound unloaded:`]);
                 resolve();
               });
@@ -774,6 +811,7 @@ export default function Chat() {
       setLog(L => [...L, `playLoop error: ${e?.message ?? e}`]);
     } finally {
       playingRef.current = false;
+      loopBeatRef.current = Date.now();
       if (DEBUG) setLog(L => [...L, "playLoop FINISHED -> playingRef reset to false"]);
     }
   };
@@ -911,7 +949,6 @@ export default function Chat() {
         lastIndex = text.length;
         if (chunk) processChunk(chunk);
       };
-
       xhr.onerror = () => {
         setLog((L) => [...L, `XHR error`]);
         sendingRef.current = false;
