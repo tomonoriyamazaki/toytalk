@@ -42,6 +42,9 @@
         "projectId": "98de720f-f917-4ca2-93db-81ea4dd4c9a9"
       }
     },
-    "owner": "zackey"
+    "owner": "zackey",
+    "plugins": [
+      "expo-audio"
+    ]
   }
 }

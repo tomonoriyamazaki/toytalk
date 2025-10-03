@@ -26,6 +26,8 @@ import { Menu, Provider } from "react-native-paper";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "@react-navigation/native";
 import AudioRecord from "react-native-audio-record";
+import { useAudioPlayer, setAudioModeAsync, useAudioSource } from "expo-audio";
+
 
 /* === Soniox定数 === */
 const SONIOX_WS_URL = "wss://stt-rt.soniox.com/transcribe-websocket"; // 公式
@@ -150,6 +152,38 @@ export default function Chat() {
   const queueRef = useRef<Array<{ uri: string }>>([]);
   const loopBeatRef = useRef(0);  
 
+
+// expo-audio test
+const player = useAudioPlayer();
+
+useEffect(() => {
+  (async () => {
+    try {
+      const dummyBase64 =
+        "UklGRiQAAABXQVZFZm10IBAAAAABAAEAIlYAAESsAAACABAAZGF0YQAAAAA=";
+
+      const testUri = FileSystem.cacheDirectory + "dummy.wav";
+      await FileSystem.writeAsStringAsync(testUri, dummyBase64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      const info = await FileSystem.getInfoAsync(testUri);
+      console.log("exists:", info.exists, "size:", info.size, "uri:", testUri);
+
+      // ★ここがポイント
+      await player.setSource({ uri: testUri, type: "file" });
+      await player.play();
+
+      console.log("✅ started playback with expo-audio");
+    } catch (e) {
+      console.log("❌ play error:", e);
+    }
+  })();
+}, []);
+
+
+
+
   // STT共通state
   const [isListening, setIsListening] = useState(false);
   const [partial, setPartial] = useState("");
@@ -167,18 +201,13 @@ export default function Chat() {
   const restoreIOSPlayback = async () => {
     if (Platform.OS !== "ios") return;
     try {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false, // マイク完全に解放して再生専用
-        staysActiveInBackground: false,
-        playsInSilentModeIOS: true,
-        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-        shouldDuckAndroid: true,
-        playThroughEarpieceAndroid: false,
+      await setAudioModeAsync({
+        allowsRecording: false,
+        playsInSilentMode: true,
       });
-      setLog(L => [...L, "AudioMode restored to Playback"]);
+      setLog(L => [...L, "AudioMode restored to Playback (expo-audio)"]);
     } catch (e: any) {
-      setLog(L => [...L, `AudioMode(Playback) err: ${e?.message ?? e}`]);
+      setLog(L => [...L, `AudioMode err: ${e?.message ?? e}`]);
     }
   };
 
@@ -634,65 +663,50 @@ export default function Chat() {
       }, 50); // 100ms 後に再チェック
   };
 
+  // playLoop: キューにある音声を順次再生  
   const playLoop = async () => {
+    await restoreIOSPlayback();
     if (DEBUG) setLog(L => [...L, "playLoop START"]);
     if (playingRef.current) return;
     playingRef.current = true;
-    loopBeatRef.current = Date.now();
 
     try {
-      // セッション完全リセット（再生有効化の明示）
-      await Audio.setIsEnabledAsync(false);
-      await Audio.setIsEnabledAsync(true);
-
-      // Playbackへ強制
-      await restoreIOSPlayback();
-      if (DEBUG) setLog(L => [...L, "AudioMode forcibly reset before playback"]);
-      
-      while (queueRef.current.length) {
+      while (queueRef.current.length > 0) {
         const { uri } = queueRef.current.shift()!;
+        if (DEBUG) setLog(L => [...L, `▶ replacing & playing: ${uri}`]);
 
-        let sound: Audio.Sound | null = null;
-        try {
-          const result = await Audio.Sound.createAsync({ uri });
-          sound = result.sound;
-          if (DEBUG) setLog(L => [...L, `sound loaded:`]);
-        } catch (e: any) {
-          setLog(L => [...L, `createAsync error: ${e?.message ?? e}`]);
-          continue; // この音声は飛ばす
-        }
+        await new Promise<void>(async (resolve) => {
+          try {
+            const info = await FileSystem.getInfoAsync(uri);
+            console.log("File exists:", info.exists, "size:", info.size, "uri:", uri);
 
-        await new Promise<void>((resolve) => {
-          let finished = false;
-          sound!.setOnPlaybackStatusUpdate((st) => {
-            if (st.isLoaded) loopBeatRef.current = Date.now();
-            if (st.isLoaded && st.didJustFinish && !finished) {
-              finished = true;
-              sound!.unloadAsync().then(() => {
-                loopBeatRef.current = Date.now();
-                if (DEBUG) setLog(L => [...L, `sound unloaded:`]);
-                resolve();
-              });
-            }
-          });
-          sound!.playAsync().catch((e) => {
-            setLog(L => [...L, `sound.playAsync error: ${e?.message ?? e}`]);
+            // ★ここが重要
+            await player.replace({ uri });   // ← { uri } のオブジェクトで渡す
+            await player.play();
+
+            const subEnd = player.addListener("ended", () => {
+              console.log("sound finished");
+              subEnd.remove();
+              resolve();
+            });
+
+            const subErr = player.addListener("error", (e) => {
+              console.log("player error:", e);
+              subErr.remove();
+              resolve();
+            });
+          } catch (err) {
+            console.log("player error:", err);
             resolve();
-          });
+          }
         });
       }
-    } catch (e: any) {
-      setLog(L => [...L, `playLoop error: ${e?.message ?? e}`]);
     } finally {
       playingRef.current = false;
-      loopBeatRef.current = Date.now();
-      if (DEBUG) setLog(L => [...L, "playLoop FINISHED -> playingRef reset to false"]);
-      if (queueRef.current.length > 0) {
-        if (DEBUG) setLog(L => [...L, "playLoop restarting due to leftover queue"]);
-        playLoop();
-      }
+      if (DEBUG) setLog(L => [...L, "playLoop FINISHED"]);
     }
   };
+
 
 
 
