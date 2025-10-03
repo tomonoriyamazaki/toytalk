@@ -645,7 +645,7 @@ export default function Chat() {
       await Audio.setIsEnabledAsync(true);
 
       // Playbackへ強制
-      \\await restoreIOSPlayback();
+      await restoreIOSPlayback();
       if (DEBUG) setLog(L => [...L, "AudioMode forcibly reset before playback"]);
       
       while (queueRef.current.length) {

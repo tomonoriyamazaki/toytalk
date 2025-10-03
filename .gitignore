@@ -3,6 +3,7 @@ node_modules/
 npm-degub.log
 yarn-error.log
 .expo/
+app/.expo/
 
 
 # Build artifacts
