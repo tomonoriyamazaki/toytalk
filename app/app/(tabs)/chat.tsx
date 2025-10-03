@@ -25,8 +25,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Menu, Provider } from "react-native-paper";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "@react-navigation/native";
-
-/* === 追加: Soniox用 === */
 import AudioRecord from "react-native-audio-record";
 
 /* === Soniox定数 === */
@@ -150,6 +148,7 @@ export default function Chat() {
   // 音声キュー
   const playingRef = useRef(false);
   const queueRef = useRef<Array<{ uri: string }>>([]);
+  const loopBeatRef = useRef(0);  
 
   // STT共通state
   const [isListening, setIsListening] = useState(false);
@@ -183,24 +182,6 @@ export default function Chat() {
     }
   };
 
-
-
-  // ===== 修正: ここまで =====
-
-  useEffect(() => {
-    (async () => {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false, // ←録音オフにしてPlaybackベースに
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: false,
-        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-        shouldDuckAndroid: true,
-        playThroughEarpieceAndroid: false,
-      });
-      readyRef.current = true;
-    })();
-  }, []);
 
   const ensureMicPermissionAndroid = async () => {
     if (Platform.OS !== "android") return true;
@@ -455,39 +436,14 @@ export default function Chat() {
         sonioxFinalBufRef.current = ""; sonioxNonFinalBufRef.current = "";
         setLog(L => [...L, "AudioRecord started"]);
       } catch (e: any) {
+        setIsListening(false);
         setLog(L => [...L, `AudioRecord.start failed: ${e?.message ?? e}`]);
         // 録音開始に失敗したら即終了
         try { ws.close(); } catch {}
         sonioxListeningRef.current = false;
         setIsListening(false);
-        await restoreIOSPlayback();
         return;
       }
-
-      // ウォッチドッグ: 最初の音声フレームが来なければ切断（例: 3秒）
-      if (!sonioxWatchRef.current) sonioxWatchRef.current = {};
-      sonioxWatchRef.current.firstAudioTimer = setTimeout(async () => {
-        if (!guard()) return;
-        if (bytesSent === 0) {
-          setLog(L => [...L, "No audio frames within 3s -> abort session"]);
-          try { ws.close(); } catch {}
-          sonioxListeningRef.current = false;
-          setIsListening(false);
-          await restoreIOSPlayback();
-        }
-      }, 3000);
-
-      // ウォッチドッグ: サーバ応答が長く来なければ切断（例: 8秒）
-      sonioxWatchRef.current.serverQuietTimer = setTimeout(async () => {
-        if (!guard()) return;
-        if (!gotServerMsg) {
-          setLog(L => [...L, "No server msg within 8s -> abort session"]);
-          try { ws.close(); } catch {}
-          sonioxListeningRef.current = false;
-          setIsListening(false);
-          await restoreIOSPlayback();
-        }
-      }, 8000);
     };
 
     ws.onmessage = (ev) => {
@@ -528,6 +484,7 @@ export default function Chat() {
       setLog(L => [...L, "Soniox WS error"]);
     };
 
+    // ws.closeが実行されたとき or サーバー側から想定外にWebSocket通信を切断された時に自動実行される
     ws.onclose = async (e) => {
       if (!guard()) return;
       clearWatch();
@@ -536,88 +493,33 @@ export default function Chat() {
       try { await AudioRecord.stop(); } catch {}
       sonioxListeningRef.current = false;
 
+      // 録音イベントリスナーのクリーニング
+      try { AudioRecord.removeAllListeners?.(); } catch {}
+
       // UI
       setIsListening(false);
       setLog(L => [...L, `Soniox WS closed: code=${e.code}`]);
     };
+
+
+    ws.onclose = async (e) => {
+      setLog(L => [...L, `Soniox WS closed: code=${e.code}`]);
+
+      // 録音停止
+      try { await AudioRecord.stop(); } catch {}
+      try { AudioRecord.removeAllListeners?.(); } catch {}
+
+      // 状態リセット
+      sonioxListeningRef.current = false;
+      setIsListening(false);
+    };
   };
 
 
-
-
-  const stopSonioxSTT = async () => {
+  const stopSonioxSTT = () => {
     setLog(L => [...L, "Soniox STT: stop()"]);
-    const mySession = sonioxSessionRef.current;
-
-    // ウォッチドッグ停止
-    if (sonioxWatchRef.current?.firstAudioTimer) clearTimeout(sonioxWatchRef.current.firstAudioTimer);
-    if (sonioxWatchRef.current?.serverQuietTimer) clearTimeout(sonioxWatchRef.current.serverQuietTimer);
-    sonioxWatchRef.current = null;
-
-    // ---- 1. WebSocketを確実に閉じる ----
-    try {
-      const ws = sonioxWsRef.current;
-      if (ws && (ws.readyState === 1 || ws.readyState === 0)) {
-        await new Promise<void>((resolve) => {
-          ws.onclose = () => {
-            setLog(L => [...L, "Soniox WS closed"]);
-            resolve();
-          };
-          try { ws.send(new Uint8Array(0)); } catch {}
-          try { ws.close(); } catch {}
-        });
-      }
-    } catch (e) {
-      setLog(L => [...L, `Soniox WS close error: ${String(e)}`]);
-    }
-
-
-    // ---- 2. 録音停止 ----
-    try {
-      await AudioRecord.stop();
-      setLog(L => [...L, "AudioRecord stopped"]);
-
-      // ★追加: 完全リリース
-      AudioRecord.removeAllListeners?.();
-      configureAudioRecord(); // ← 再初期化でセッションを閉じる効果を狙う
-      setLog(L => [...L, "AudioRecord fully released"]);
-    } catch (e) {
-      setLog(L => [...L, `AudioRecord.stop error: ${String(e)}`]);
-    }
-
-    sonioxListeningRef.current = false;
-    setIsListening(false);
-
-    // ---- 3. Playbackへ確実に復帰 ----
-    try {
-      await restoreIOSPlayback();
-
-      // iOSは非同期で反映されることがあるので状態を確認して待機
-      let retries = 0;
-      while (retries < 5) {
-        const mode = await Audio.getAudioModeAsync();
-        if (!mode.allowsRecordingIOS) break; // Playback状態に戻った
-        await new Promise(r => setTimeout(r, 50)); // 50ms待機
-        retries++;
-      }
-
-      setLog(L => [...L, "AudioMode confirmed Playback"]);
-    } catch (e) {
-      setLog(L => [...L, `restoreIOSPlayback error: ${String(e)}`]);
-    }
-
-    // ---- 4. 送信テキストの確定 ----
-    const textToSend = (
-      sonioxFinalBufRef.current ||
-      sonioxNonFinalBufRef.current ||
-      partial ||
-      finalText
-    ).trim();
-
-    sonioxFinalBufRef.current = "";
-    sonioxNonFinalBufRef.current = "";
+    try { sonioxWsRef.current?.close(); } catch {}
   };
-
 
 
   // STT開始/停止トグル
@@ -679,7 +581,7 @@ export default function Chat() {
         await Voice.start("ja-JP", { EXTRA_PARTIAL_RESULTS: true } as any);
       } catch (e: any) {
         setIsListening(false);
-        setLog((L) => [...L, `STT start failed: ${e?.message ?? String(e)}`]);
+        setLog((L) => [...L, `STT start failed: ${e?.message ?? e}`]);
       }
     }
   };
@@ -692,7 +594,6 @@ export default function Chat() {
         await Voice.stop();
       } catch {}
     }
-    await restoreIOSPlayback();
   };
 
   /* === 既存: 音声再生キュー/TTS === */
@@ -710,35 +611,42 @@ export default function Chat() {
       playLoop();
     } else {
       if (DEBUG) setLog(L => [...L, "enqueueAudio skipped playLoop (already playing)"]);
+
+      // ★追加: ループが生きているか監視し、固着なら強制再起動
+      const safetyKick = (delay: number) =>
+        setTimeout(() => {
+          const stale = Date.now() - (loopBeatRef.current || 0);
+          if (playingRef.current && stale > 500 && queueRef.current.length > 0) {
+            if (DEBUG) setLog(L => [...L, `watchdog: playingRef stuck (${stale}ms) -> reset & restart`]);
+            playingRef.current = false;  // 強制解除
+            playLoop();
+          }
+        }, delay);
     }
+
+      // ===== 変更点②: “キック抜け”を防ぐ安全キック（ゼロ遅延） =====
+      setTimeout(() => {
+        if (!playingRef.current && queueRef.current.length > 0) {
+          if (DEBUG) setLog(L => [...L, "force kick playLoop after delay"]);
+          playLoop();
+        }
+      }, 50); // 100ms 後に再チェック
   };
 
   const playLoop = async () => {
     if (DEBUG) setLog(L => [...L, "playLoop START"]);
     if (playingRef.current) return;
     playingRef.current = true;
+    loopBeatRef.current = Date.now();
 
     try {
-      // ★ セッション完全リセット　※効果はなさそう
+      // セッション完全リセット（再生有効化の明示）
       await Audio.setIsEnabledAsync(false);
       await Audio.setIsEnabledAsync(true);
 
       // Playbackへ強制
-      await restoreIOSPlayback();
-      
-      // ★ 再生カテゴリへ強制　※効果はなさそう
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: false,
-        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-        shouldDuckAndroid: true,
-        playThroughEarpieceAndroid: false,
-      });
-
+      \\await restoreIOSPlayback();
       if (DEBUG) setLog(L => [...L, "AudioMode forcibly reset before playback"]);
-
       
       while (queueRef.current.length) {
         const { uri } = queueRef.current.shift()!;
@@ -756,9 +664,11 @@ export default function Chat() {
         await new Promise<void>((resolve) => {
           let finished = false;
           sound!.setOnPlaybackStatusUpdate((st) => {
+            if (st.isLoaded) loopBeatRef.current = Date.now();
             if (st.isLoaded && st.didJustFinish && !finished) {
               finished = true;
               sound!.unloadAsync().then(() => {
+                loopBeatRef.current = Date.now();
                 if (DEBUG) setLog(L => [...L, `sound unloaded:`]);
                 resolve();
               });
@@ -774,7 +684,12 @@ export default function Chat() {
       setLog(L => [...L, `playLoop error: ${e?.message ?? e}`]);
     } finally {
       playingRef.current = false;
+      loopBeatRef.current = Date.now();
       if (DEBUG) setLog(L => [...L, "playLoop FINISHED -> playingRef reset to false"]);
+      if (queueRef.current.length > 0) {
+        if (DEBUG) setLog(L => [...L, "playLoop restarting due to leftover queue"]);
+        playLoop();
+      }
     }
   };
 
@@ -911,7 +826,6 @@ export default function Chat() {
         lastIndex = text.length;
         if (chunk) processChunk(chunk);
       };
-
       xhr.onerror = () => {
         setLog((L) => [...L, `XHR error`]);
         sendingRef.current = false;
