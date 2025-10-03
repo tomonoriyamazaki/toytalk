@@ -622,9 +622,6 @@ export default function Chat() {
             playLoop();
           }
         }, delay);
-
-      safetyKick(50);
-      safetyKick(300);
     }
 
       // ===== 変更点②: “キック抜け”を防ぐ安全キック（ゼロ遅延） =====
@@ -643,8 +640,12 @@ export default function Chat() {
     loopBeatRef.current = Date.now();
 
     try {
+      // セッション完全リセット（再生有効化の明示）
+      await Audio.setIsEnabledAsync(false);
+      await Audio.setIsEnabledAsync(true);
+
       // Playbackへ強制
-      await restoreIOSPlayback();
+      \\await restoreIOSPlayback();
       if (DEBUG) setLog(L => [...L, "AudioMode forcibly reset before playback"]);
       
       while (queueRef.current.length) {
