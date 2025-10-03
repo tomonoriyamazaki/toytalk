@@ -622,6 +622,7 @@ export default function Chat() {
             playLoop();
           }
         }, delay);
+      safetyKick(50);
     }
 
       // ===== 変更点②: “キック抜け”を防ぐ安全キック（ゼロ遅延） =====
