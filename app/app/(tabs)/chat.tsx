@@ -37,7 +37,7 @@ const SONIOX_KEY_URL =
   "https://ug5fcnjsxa22vtnrzlwpfgshd40nngbo.lambda-url.ap-northeast-1.on.aws/";
 
 /* === デバッグ === */
-const DEBUG = true;
+const DEBUG = false;
 const SHOW_STT_DEBUG_UI = DEBUG;
 let DEBUG_TIME = false;
 
@@ -176,9 +176,9 @@ export default function Chat() {
         shouldDuckAndroid: true,
         playThroughEarpieceAndroid: false,
       });
-      setLog(L => [...L, "AudioMode restored to Playback"]);
+      if(DEBUG)setLog(L => [...L, "AudioMode restored to Playback"]);
     } catch (e: any) {
-      setLog(L => [...L, `AudioMode(Playback) err: ${e?.message ?? e}`]);
+      if(DEBUG)setLog(L => [...L, `AudioMode(Playback) err: ${e?.message ?? e}`]);
     }
   };
 
@@ -356,7 +356,7 @@ export default function Chat() {
   };
 
   const startSonioxSTT = async () => {
-    setLog(L => [...L, "Soniox STT: start()"]);
+    if(DEBUG)setLog(L => [...L, "Soniox STT: start()"]);
 
     // すでに起動中なら無視（多重起動防止）
     if (sonioxListeningRef.current) {
@@ -410,7 +410,7 @@ export default function Chat() {
         language_hints: ["ja"],
       };
       ws.send(JSON.stringify(cfg));
-      setLog(L => [...L, "Soniox WS: OPEN + cfg sent"]);
+      if(DEBUG)setLog(L => [...L, "Soniox WS: OPEN + cfg sent"]);
 
       // 録音開始（onopen後に開始）
       configureAudioRecord();
@@ -486,24 +486,7 @@ export default function Chat() {
 
     // ws.closeが実行されたとき or サーバー側から想定外にWebSocket通信を切断された時に自動実行される
     ws.onclose = async (e) => {
-      if (!guard()) return;
-      clearWatch();
-
-      // 録音停止（安全に）
-      try { await AudioRecord.stop(); } catch {}
-      sonioxListeningRef.current = false;
-
-      // 録音イベントリスナーのクリーニング
-      try { AudioRecord.removeAllListeners?.(); } catch {}
-
-      // UI
-      setIsListening(false);
-      setLog(L => [...L, `Soniox WS closed: code=${e.code}`]);
-    };
-
-
-    ws.onclose = async (e) => {
-      setLog(L => [...L, `Soniox WS closed: code=${e.code}`]);
+      if(DEBUG)setLog(L => [...L, `Soniox WS closed: code=${e.code}`]);
 
       // 録音停止
       try { await AudioRecord.stop(); } catch {}
@@ -517,7 +500,7 @@ export default function Chat() {
 
 
   const stopSonioxSTT = () => {
-    setLog(L => [...L, "Soniox STT: stop()"]);
+    if(DEBUG)setLog(L => [...L, "Soniox STT: stop()"]);
     try { sonioxWsRef.current?.close(); } catch {}
   };
 

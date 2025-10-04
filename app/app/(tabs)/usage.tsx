@@ -1,9 +1,9 @@
 // usage.tsx
-import { SafeAreaView, View, Button, StyleSheet } from "react-native";
+import { SafeAreaView, View, Button, StyleSheet, Text } from "react-native";
 import { useState, useRef } from "react";
 import * as FileSystem from "expo-file-system";
 import AudioRecord from "react-native-audio-record";
-import { Audio } from "expo-av";
+import { Audio, InterruptionModeIOS } from "expo-av";
 
 export default function Usage() {
   const [filePath, setFilePath] = useState<string | null>(null);
@@ -50,8 +50,21 @@ export default function Usage() {
   const playRecording = async () => {
     if (!filePath) return;
 
+    // セッションリセット
+    await Audio.setIsEnabledAsync(false);
+    await Audio.setIsEnabledAsync(true);
+
+
     // Playbackモードへ切替
-    await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
+    //await Audio.setAudioModeAsync({ allowsRecordingIOS: false });　←これだとうまくいかない
+    await Audio.setAudioModeAsync({
+      allowsRecordingIOS: false,
+      playsInSilentModeIOS: true,
+      staysActiveInBackground: false,
+      interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+    });
+
+
 
     // 古い音声を解放
     if (soundRef.current) {
@@ -59,7 +72,7 @@ export default function Usage() {
       soundRef.current = null;
     }
 
-    // 新しい音声を再生
+    // 再生
     const { sound } = await Audio.Sound.createAsync({ uri: filePath });
     soundRef.current = sound;
     await sound.playAsync();
@@ -69,9 +82,22 @@ export default function Usage() {
   return (
     <SafeAreaView style={s.root}>
       <View style={s.wrap}>
+        <Text style={s.title}>※STT改善のための一時的な検証中</Text>
         <Button title="録音開始" onPress={startRecording} />
         <Button title="録音停止" onPress={stopRecording} />
         <Button title="再生" onPress={playRecording} disabled={!filePath} />
+        <Button
+          title="🔄 Force Playback"
+          onPress={async () => {
+            await Audio.setAudioModeAsync({
+              allowsRecordingIOS: false,
+              playsInSilentModeIOS: true,
+              staysActiveInBackground: false,
+              interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+            });
+            console.log("🔄 強制Playback切替");
+          }}
+        />
       </View>
     </SafeAreaView>
   );
