@@ -424,7 +424,7 @@ export default function Chat() {
         sample_rate: SONIOX_SAMPLE_RATE,
         num_channels: SONIOX_CHANNELS,
         enable_endpoint_detection: true,
-        language_hints: ["ja"],
+        language_hints: ["ja","en"],
       };
       ws.send(JSON.stringify(cfg));
       if(DEBUG)setLog(L => [...L, "Soniox WS: OPEN + cfg sent"]);
@@ -526,6 +526,15 @@ export default function Chat() {
   const stopSonioxSTT = () => {
     if(DEBUG)setLog(L => [...L, "Soniox STT: stop()"]);
     try { sonioxWsRef.current?.close(); } catch {}
+
+    // ★ partialを確定に利用
+    const latestPartial = sonioxNonFinalBufRef.current.trim();
+    if (latestPartial) {
+      setFinalText(latestPartial); // ← Finalの代わりにpartialを採用
+      historyRef.current.push({ role: "user", text: latestPartial, ts: Date.now() });
+      if (DEBUG) setLog(L => [...L, `ForceFinal(partial): ${latestPartial}`]);
+      send(latestPartial); // ← ここで送信
+    }
   };
 
 
@@ -1040,6 +1049,13 @@ export default function Chat() {
             );
           }
         })}
+        
+      {/* ★ partialを仮バブルで右側にリアルタイム表示 */}
+      {partial ? (
+        <View style={s.userBubble}>
+          <Text style={s.userBubbleText}>{partial}</Text>
+        </View>
+      ) : null}
 
         {SHOW_STT_DEBUG_UI && (
           <View style={{ marginTop: 12 }}>
