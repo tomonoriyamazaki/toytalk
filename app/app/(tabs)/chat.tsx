@@ -594,6 +594,7 @@ export default function Chat() {
         await Voice.stop();
       } catch {}
     }
+    await restoreIOSPlayback();
   };
 
   /* === 既存: 音声再生キュー/TTS === */
@@ -635,60 +636,72 @@ export default function Chat() {
   };
 
   const playLoop = async () => {
-    if (DEBUG) setLog(L => [...L, "playLoop START"]);
-    if (playingRef.current) return;
+
+    console.log("▶️ playLoop START");
+    if (playingRef.current) {
+      console.log("⏩ already playing, return");
+      return;
+    }
     playingRef.current = true;
     loopBeatRef.current = Date.now();
 
     try {
-      // セッション完全リセット（再生有効化の明示）
+      // セッション完全リセット
+      console.log("🔄 Audio session reset (disable/enable)");
       await Audio.setIsEnabledAsync(false);
       await Audio.setIsEnabledAsync(true);
 
-      // Playbackへ強制
-      await restoreIOSPlayback();
-      if (DEBUG) setLog(L => [...L, "AudioMode forcibly reset before playback"]);
-      
       while (queueRef.current.length) {
         const { uri } = queueRef.current.shift()!;
+        console.log(`🎵 dequeued: ${uri}`);
 
         let sound: Audio.Sound | null = null;
         try {
           const result = await Audio.Sound.createAsync({ uri });
           sound = result.sound;
-          if (DEBUG) setLog(L => [...L, `sound loaded:`]);
+          console.log("✅ sound loaded:", uri);
         } catch (e: any) {
-          setLog(L => [...L, `createAsync error: ${e?.message ?? e}`]);
+          console.log("❌ createAsync error:", e?.message ?? e);
           continue; // この音声は飛ばす
         }
 
         await new Promise<void>((resolve) => {
           let finished = false;
+
           sound!.setOnPlaybackStatusUpdate((st) => {
-            if (st.isLoaded) loopBeatRef.current = Date.now();
+            if (st.isLoaded) {
+              loopBeatRef.current = Date.now();
+            }
             if (st.isLoaded && st.didJustFinish && !finished) {
               finished = true;
+              console.log("🏁 didJustFinish:", uri);
               sound!.unloadAsync().then(() => {
+                console.log("🧹 sound unloaded:", uri);
                 loopBeatRef.current = Date.now();
-                if (DEBUG) setLog(L => [...L, `sound unloaded:`]);
                 resolve();
               });
             }
           });
-          sound!.playAsync().catch((e) => {
-            setLog(L => [...L, `sound.playAsync error: ${e?.message ?? e}`]);
-            resolve();
-          });
+
+          sound!.playAsync()
+            .then(() => console.log("▶️ playAsync started:", uri))
+            .catch((e) => {
+              console.log("❌ playAsync error:", e?.message ?? e);
+              resolve();
+            });
         });
+
+        console.log("✅ finished 1 file:", uri);
       }
     } catch (e: any) {
-      setLog(L => [...L, `playLoop error: ${e?.message ?? e}`]);
+      console.log("💥 playLoop error:", e?.message ?? e);
     } finally {
       playingRef.current = false;
       loopBeatRef.current = Date.now();
-      if (DEBUG) setLog(L => [...L, "playLoop FINISHED -> playingRef reset to false"]);
+      console.log("🔚 playLoop FINISHED -> playingRef reset to false");
+      console.log("📦 leftover queue length:", queueRef.current.length);
       if (queueRef.current.length > 0) {
-        if (DEBUG) setLog(L => [...L, "playLoop restarting due to leftover queue"]);
+        console.log("🔄 playLoop restarting due to leftover queue");
         playLoop();
       }
     }

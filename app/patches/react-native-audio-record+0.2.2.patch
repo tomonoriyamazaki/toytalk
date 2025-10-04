@@ -1,0 +1,23 @@
+diff --git a/node_modules/react-native-audio-record/ios/RNAudioRecord.m b/node_modules/react-native-audio-record/ios/RNAudioRecord.m
+index 7304653..ad24a67 100644
+--- a/node_modules/react-native-audio-record/ios/RNAudioRecord.m
++++ b/node_modules/react-native-audio-record/ios/RNAudioRecord.m
+@@ -56,6 +56,18 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
+         AudioQueueDispose(_recordState.mQueue, true);
+         AudioFileClose(_recordState.mAudioFile);
+     }
++
++    // ★ AVAudioSession を非アクティブに戻す処理を追加
++    NSError *error = nil;
++    [[AVAudioSession sharedInstance] setActive:NO
++                                   withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
++                                         error:&error];
++    if (error) {
++        RCTLogInfo(@"Error deactivating AVAudioSession: %@", error);
++    } else {
++        RCTLogInfo(@"AVAudioSession deactivated");
++    }
++
+     resolve(_filePath);
+     unsigned long long fileSize = [[[NSFileManager defaultManager] attributesOfItemAtPath:_filePath error:nil] fileSize];
+     RCTLogInfo(@"file path %@", _filePath);
