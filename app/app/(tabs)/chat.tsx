@@ -505,6 +505,13 @@ export default function Chat() {
     ws.onclose = async (e) => {
       if(DEBUG)setLog(L => [...L, `Soniox WS closed: code=${e.code}`]);
 
+      // ★チャット履歴保持のための一時設定
+      const leftover = curAssistantRef.current.trim();
+      if (leftover) {
+        historyRef.current.push({ role: "assistant", text: leftover, ts: Date.now() });
+        curAssistantRef.current = "";
+      }
+
       // 録音停止
       try { await AudioRecord.stop(); } catch {}
       try { AudioRecord.removeAllListeners?.(); } catch {}
