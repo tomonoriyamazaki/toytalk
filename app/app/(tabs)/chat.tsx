@@ -32,9 +32,11 @@ const SONIOX_WS_URL = "wss://stt-rt.soniox.com/transcribe-websocket"; // 公式
 const SONIOX_MODEL = "stt-rt-preview";
 const SONIOX_SAMPLE_RATE = 16000;
 const SONIOX_CHANNELS = 1;
-/** あなたのテンポラリーAPIキー発行Lambda。POSTして { ok, api_key } を受け取る想定。 */
+
+/** Soniox temporary key発行Lambda。POSTしてkey idを受け取りセットする */
 const SONIOX_KEY_URL =
   "https://ug5fcnjsxa22vtnrzlwpfgshd40nngbo.lambda-url.ap-northeast-1.on.aws/";
+
 
 /* === デバッグ === */
 const DEBUG = false;
@@ -88,6 +90,21 @@ export default function Chat() {
       })();
     }, [])
   );
+
+  // Sonioxキー発行
+  const [sonioxKey, setSonioxKey] = useState<string | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      (async () => {
+        if (sttMode === "soniox" && !sonioxKey) {
+          const key = await fetchSonioxTempKey();
+          setSonioxKey(key);
+          if (DEBUG) setLog(L => [...L, "Soniox temp key fetched"]);
+        }
+      })();
+    }, [sttMode, sonioxKey])
+  );
+
 
   // TTSモデル選択UI（既存）
   const [menuVisible, setMenuVisible] = useState(false);
@@ -401,7 +418,7 @@ export default function Chat() {
 
       // サーバへ設定送信（まず設定→次に音声）
       const cfg = {
-        api_key: await fetchSonioxTempKey(),
+        api_key: sonioxKey ?? (await fetchSonioxTempKey()),
         model: SONIOX_MODEL,
         audio_format: "pcm_s16le",
         sample_rate: SONIOX_SAMPLE_RATE,
@@ -434,7 +451,7 @@ export default function Chat() {
         setIsListening(true);
         setPartial(""); setFinalText("");
         sonioxFinalBufRef.current = ""; sonioxNonFinalBufRef.current = "";
-        setLog(L => [...L, "AudioRecord started"]);
+        if(DEBUG)setLog(L => [...L, "AudioRecord started"]);
       } catch (e: any) {
         setIsListening(false);
         setLog(L => [...L, `AudioRecord.start failed: ${e?.message ?? e}`]);
@@ -760,6 +777,7 @@ export default function Chat() {
             }
           } else if (ev === "segment") {
             const obj = JSON.parse(dataStr);
+            console.log("🛰 segment event:", obj); 
             const text: string = obj?.text ?? "";
             const final: boolean = !!obj?.final;
             const segId = obj?.id != null ? String(obj.id) : null;
@@ -780,6 +798,7 @@ export default function Chat() {
                   setLog((L) => [...L, `🧾 hist +assistant "${whole.slice(0, 40)}"`]);
               }
               curAssistantRef.current = "";
+              console.log("🧾 assistant final segment:", JSON.stringify(whole));
             }
           } else if (ev === "error") {
             setLog((L) => [...L, `Error: ${dataStr}`]);
@@ -860,6 +879,7 @@ export default function Chat() {
         voice: voiceToSend,
         messages: [...historyMessages, { role: "user", content: t }],
       };
+      console.log("🚀 payload to Lambda:", JSON.stringify(payload, null, 2));
       xhr.send(JSON.stringify(payload));
     } catch (e: any) {
       setLog((L) => [...L, `Error: ${e?.message ?? e}`]);

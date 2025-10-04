@@ -14,7 +14,7 @@ import { useEffect, useRef, useState } from "react";
 type Pos = { x: number; y: number; w: number };
 
 export default function Settings() {
-  const [sttMode, setSttMode] = useState<"local" | "soniox">("local");
+  const [sttMode, setSttMode] = useState<"local" | "soniox">("soniox");
   const [modalVisible, setModalVisible] = useState(false);
   const [dropdownPos, setDropdownPos] = useState<Pos | null>(null);
   const selectorRef = useRef<any>(null);
@@ -77,11 +77,11 @@ export default function Settings() {
       <Modal transparent visible animationType="fade">
         <Pressable style={s.overlay} onPress={() => setModalVisible(false)}>
           <View style={[s.dropdown, { top, left, width: w }]}>
-            <Pressable style={s.option} onPress={() => handleChange("local")}>
-              <Text style={s.optionText}>ローカル STT</Text>
-            </Pressable>
             <Pressable style={s.option} onPress={() => handleChange("soniox")}>
               <Text style={s.optionText}>Soniox STT</Text>
+            </Pressable>
+            <Pressable style={s.option} onPress={() => handleChange("local")}>
+              <Text style={s.optionText}>ローカル STT</Text>
             </Pressable>
           </View>
         </Pressable>
