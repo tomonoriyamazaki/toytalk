@@ -105,13 +105,15 @@ SS Bootcamp 3rd #2025
 - [ToyTalkアプリ実装はこちら](app/README.md)
 - 調査進めたところ、アプリ経由でなくても、おもちゃ（ESP32 s3という安価なマイコン）⇔中継サーバーで直接やりとりできそう。ver2の構成はとりやめて、ver3の構成にする
 
-## ラズパイ対応 ver3　※対応中
-- iOSアプリでラズパイのwifi設定をできるようにする
-- SST（音声のテキスト化）をサーバー側に移行する（あわせてVAD機能をクライアント側に実装）
+## ラズパイ対応 ver3　※対応済み
+- SST（音声のテキスト化）をサーバー側に移行する　→　実装済み（アプリで利用できることを確認。バグはあるが、アプリ側の仕様によるものでマイコンは関係なし）
+- アプリによるラズパイへのwifi設定は実装していないが、マイコン化が実現できそうなのでそちらを優先で対応する
 <img width="1373" height="456" alt="image" src="https://github.com/user-attachments/assets/04f6af68-4a57-491b-898a-42d45e6870e2" />
 
-
-
+## マイコン対応　※対応中
+- スマホアプリを経由せず、マイコン⇔API基盤（STT + LLM + STT）で音声会話できるか検証
+- wifi設定もアプリからできるようにする
+<img width="785" height="268" alt="image" src="https://github.com/user-attachments/assets/1e58348d-b7eb-4e64-aa1f-5aad99473130" />
 
 
 
