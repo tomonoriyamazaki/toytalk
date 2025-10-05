@@ -4,6 +4,7 @@ import { useState, useRef } from "react";
 import * as FileSystem from "expo-file-system";
 import AudioRecord from "react-native-audio-record";
 import { Audio, InterruptionModeIOS } from "expo-av";
+import Sound from "react-native-sound"; // ← 追加！
 
 export default function Usage() {
   const [filePath, setFilePath] = useState<string | null>(null);
@@ -46,17 +47,13 @@ export default function Usage() {
     console.log("✅ File ready:", uri);
   };
 
-  // 再生
+  // expo-avで再生
   const playRecording = async () => {
     if (!filePath) return;
 
-    // セッションリセット
     await Audio.setIsEnabledAsync(false);
     await Audio.setIsEnabledAsync(true);
 
-
-    // Playbackモードへ切替
-    //await Audio.setAudioModeAsync({ allowsRecordingIOS: false });　←これだとうまくいかない
     await Audio.setAudioModeAsync({
       allowsRecordingIOS: false,
       playsInSilentModeIOS: true,
@@ -64,28 +61,49 @@ export default function Usage() {
       interruptionModeIOS: InterruptionModeIOS.DoNotMix,
     });
 
-
-
-    // 古い音声を解放
     if (soundRef.current) {
       await soundRef.current.unloadAsync();
       soundRef.current = null;
     }
 
-    // 再生
     const { sound } = await Audio.Sound.createAsync({ uri: filePath });
     soundRef.current = sound;
     await sound.playAsync();
-    console.log("🔊 Playing:", filePath);
+    console.log("🔊 Playing (expo-av):", filePath);
+  };
+
+  // react-native-soundで再生
+  const playWithSoundLib = async () => {
+    if (!filePath) return;
+
+    // Expo環境のAudioSessionをいったん無効化（競合防止）
+    await Audio.setIsEnabledAsync(false);
+
+    const path = filePath.replace("file://", ""); // ← Soundはfile://を嫌う場合がある
+    Sound.setCategory("Playback");
+
+    const s = new Sound(path, "", (error) => {
+      if (error) {
+        console.log("❌ Failed to load with Sound:", error);
+        return;
+      }
+      console.log("✅ Loaded with Sound, duration:", s.getDuration());
+      s.play((success) => {
+        if (success) console.log("✅ Finished playing (Sound)");
+        else console.log("⚠️ Playback failed (Sound)");
+        s.release();
+      });
+    });
   };
 
   return (
     <SafeAreaView style={s.root}>
       <View style={s.wrap}>
-        <Text style={s.title}>※STT改善のための一時的な検証中</Text>
+        <Text style={s.title}>※録音＆再生テスト</Text>
         <Button title="録音開始" onPress={startRecording} />
         <Button title="録音停止" onPress={stopRecording} />
-        <Button title="再生" onPress={playRecording} disabled={!filePath} />
+        <Button title="expo-avで再生" onPress={playRecording} disabled={!filePath} />
+        <Button title="react-native-soundで再生" onPress={playWithSoundLib} disabled={!filePath} />
         <Button
           title="🔄 Force Playback"
           onPress={async () => {
@@ -106,4 +124,5 @@ export default function Usage() {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#fff" },
   wrap: { padding: 20, gap: 12 },
+  title: { fontWeight: "bold", marginBottom: 10 },
 });
