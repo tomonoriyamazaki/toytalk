@@ -26,6 +26,7 @@ import { Menu, Provider } from "react-native-paper";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "@react-navigation/native";
 import AudioRecord from "react-native-audio-record";
+import Sound from "react-native-sound";
 
 /* === Soniox定数 === */
 const SONIOX_WS_URL = "wss://stt-rt.soniox.com/transcribe-websocket"; // 公式
@@ -628,96 +629,50 @@ export default function Chat() {
       playLoop();
     } else {
       if (DEBUG) setLog(L => [...L, "enqueueAudio skipped playLoop (already playing)"]);
-
-      // ★追加: ループが生きているか監視し、固着なら強制再起動
-      const safetyKick = (delay: number) =>
-        setTimeout(() => {
-          const stale = Date.now() - (loopBeatRef.current || 0);
-          if (playingRef.current && stale > 500 && queueRef.current.length > 0) {
-            if (DEBUG) setLog(L => [...L, `watchdog: playingRef stuck (${stale}ms) -> reset & restart`]);
-            playingRef.current = false;  // 強制解除
-            playLoop();
-          }
-        }, delay);
-      safetyKick(50);
     }
-
-      // ===== 変更点②: “キック抜け”を防ぐ安全キック（ゼロ遅延） =====
-      setTimeout(() => {
-        if (!playingRef.current && queueRef.current.length > 0) {
-          if (DEBUG) setLog(L => [...L, "force kick playLoop after delay"]);
-          playLoop();
-        }
-      }, 50); // 100ms 後に再チェック
   };
 
   const playLoop = async () => {
-
-    console.log("▶️ playLoop START");
+    console.log("▶️ playLoop START (react-native-sound)");
     if (playingRef.current) {
       console.log("⏩ already playing, return");
       return;
     }
     playingRef.current = true;
     loopBeatRef.current = Date.now();
-
     try {
-      // セッション完全リセット
-      console.log("🔄 Audio session reset (disable/enable)");
-      await Audio.setIsEnabledAsync(false);
-      await Audio.setIsEnabledAsync(true);
-
+      Sound.setCategory("Playback");
       while (queueRef.current.length) {
         const { uri } = queueRef.current.shift()!;
-        console.log(`🎵 dequeued: ${uri}`);
-
-        let sound: Audio.Sound | null = null;
-        try {
-          const result = await Audio.Sound.createAsync({ uri });
-          sound = result.sound;
-          console.log("✅ sound loaded:", uri);
-        } catch (e: any) {
-          console.log("❌ createAsync error:", e?.message ?? e);
-          continue; // この音声は飛ばす
-        }
-
+        const path = uri.replace("file://", "");
+        console.log(`🎵 dequeued (Sound): ${path}`);
         await new Promise<void>((resolve) => {
-          let finished = false;
-
-          sound!.setOnPlaybackStatusUpdate((st) => {
-            if (st.isLoaded) {
+          const s = new Sound(path, "", (error) => {
+            if (error) {
+              console.log("❌ Sound load error:", error);
+              resolve();
+              return;
+            }
+            console.log("✅ Sound loaded:", path);
+            loopBeatRef.current = Date.now();
+            s.play((success) => {
+              if (success) console.log("🏁 Finished playing:", path);
+              else console.log("⚠️ Playback failed:", path);
+              s.release();
               loopBeatRef.current = Date.now();
-            }
-            if (st.isLoaded && st.didJustFinish && !finished) {
-              finished = true;
-              console.log("🏁 didJustFinish:", uri);
-              sound!.unloadAsync().then(() => {
-                console.log("🧹 sound unloaded:", uri);
-                loopBeatRef.current = Date.now();
-                resolve();
-              });
-            }
-          });
-
-          sound!.playAsync()
-            .then(() => console.log("▶️ playAsync started:", uri))
-            .catch((e) => {
-              console.log("❌ playAsync error:", e?.message ?? e);
               resolve();
             });
+          });
         });
-
-        console.log("✅ finished 1 file:", uri);
       }
     } catch (e: any) {
-      console.log("💥 playLoop error:", e?.message ?? e);
+      console.log("💥 playLoop(Sound) error:", e?.message ?? e);
     } finally {
       playingRef.current = false;
       loopBeatRef.current = Date.now();
-      console.log("🔚 playLoop FINISHED -> playingRef reset to false");
-      console.log("📦 leftover queue length:", queueRef.current.length);
+      console.log("🔚 playLoop FINISHED (Sound)");
       if (queueRef.current.length > 0) {
-        console.log("🔄 playLoop restarting due to leftover queue");
+        console.log("🔄 playLoop restarting (Sound)");
         playLoop();
       }
     }
