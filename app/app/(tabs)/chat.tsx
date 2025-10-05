@@ -40,8 +40,8 @@ const SONIOX_KEY_URL =
 
 
 /* === デバッグ === */
-const DEBUG = false;
 const SHOW_STT_DEBUG_UI = DEBUG;
+let DEBUG = false;
 let DEBUG_TIME = false;
 
 type Turn = { role: "user" | "assistant"; text: string; ts: number };
@@ -79,6 +79,7 @@ export default function Chat() {
   const [debugTime, setDebugTime] = useState(DEBUG_TIME);
   useEffect(() => {
     DEBUG_TIME = debugTime;
+    DEBUG = debugTime;
   }, [debugTime]);
 
   // STTモード
@@ -480,18 +481,27 @@ export default function Chat() {
         }
 
         const tokens: Array<{ text: string; is_final?: boolean }> = data.tokens || [];
-        let finalAppended = ""; let nonFinalCurrent = "";
+        let nonFinalCurrent = "";
         for (const t of tokens) {
           const txt = t.text ?? "";
           if (!txt) continue;
-          t.is_final ? (finalAppended += txt) : (nonFinalCurrent += txt);
+          // ★ is_final関係なく、常にpartialとして扱う
+          // "<end>" はSTT終了シグナルなので破棄
+          if (txt.trim() === "<end>") {
+            // ★ Sonioxのエンド通知。即座に自分でクローズ
+            if (DEBUG) setLog(L => [...L, "Soniox: <end> detected, closing WS"]);
+            try { ws.close(); } catch {}
+            continue;
+          }
+          nonFinalCurrent += txt;
         }
-        if (finalAppended) {
-          sonioxFinalBufRef.current += finalAppended;
-          setFinalText(sonioxFinalBufRef.current.trim());
+        if (nonFinalCurrent.trim()) {
+          sonioxNonFinalBufRef.current = nonFinalCurrent;
+          setPartial(nonFinalCurrent);
+        } else {
+          // 空chunkなら破棄せず、最後のpartialを保持したままにする
+          if (DEBUG) setLog(L => [...L, "Soniox: skip empty nonFinal"]);
         }
-        sonioxNonFinalBufRef.current = nonFinalCurrent;
-        setPartial(nonFinalCurrent);
       } catch (e: any) {
         setLog(L => [...L, `Soniox parse err: ${e?.message ?? e}`]);
       }
@@ -520,22 +530,22 @@ export default function Chat() {
       // 状態リセット
       sonioxListeningRef.current = false;
       setIsListening(false);
+
+      const partialOnly = sonioxNonFinalBufRef.current.trim();
+      if (partialOnly) {
+        //会話履歴に表示
+        setLog(L => [...L, JSON.stringify({ type: "user", text: partialOnly })]);
+        setPartial("");
+        if (DEBUG) setLog(L => [...L, `🚀 Send partial-only (fast): ${partialOnly}`]);
+        send(partialOnly);
+      }
     };
   };
 
 
   const stopSonioxSTT = () => {
     if(DEBUG)setLog(L => [...L, "Soniox STT: stop()"]);
-    try { sonioxWsRef.current?.close(); } catch {}
-
-    // ★ partialを確定に利用
-    const latestPartial = sonioxNonFinalBufRef.current.trim();
-    if (latestPartial) {
-      setFinalText(latestPartial); // ← Finalの代わりにpartialを採用
-      historyRef.current.push({ role: "user", text: latestPartial, ts: Date.now() });
-      if (DEBUG) setLog(L => [...L, `ForceFinal(partial): ${latestPartial}`]);
-      send(latestPartial); // ← ここで送信
-    }
+    try { sonioxWsRef.current?.close(); } catch {}  
   };
 
 
@@ -560,7 +570,6 @@ export default function Chat() {
         setLog(L => [...L, `Audio.setAudioModeAsync error: ${String(e)}`]); // ★追加
       }
     }
-
 
     if (sttMode === "soniox") {
       // 体感フィードバック
@@ -685,9 +694,7 @@ export default function Chat() {
     const t = (textArg ?? msg).trim();
     if (!t) return;
 
-    historyRef.current.push({ role: "user", text: t, ts: Date.now() });
     if (DEBUG_HISTORY) setLog((L) => [...L, `🧾 hist +user "${t.slice(0, 40)}"`]);
-
     if (sendingRef.current) {
       if (DEBUG) setLog((L) => [...L, "skip: sending in flight"]);
       return;
@@ -697,7 +704,6 @@ export default function Chat() {
     if (DEBUG) setLog((L) => [...L, `→ POST ${t}`]);
     if (DEBUG_TIME) sendStartAtRef.current = Date.now();
     setMsg("");
-    setLog((L) => [...L, JSON.stringify({ type: "user", text: t })]);
 
     try {
       const xhr = new XMLHttpRequest();
