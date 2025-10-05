@@ -105,7 +105,7 @@ export default function Settings() {
 
         <View style={{ height: 32 }} />
         <Text style={s.title}>バージョン</Text>
-        <Text style={s.item}>・ver0.5.2   20251005：設定にてSoniox STT（音声認識）を追加</Text>
+        <Text style={s.item}>・ver0.5.3   20251005：STT（音声認識）を選択できるように。</Text>
         <Text style={s.item}>・ver0.4.2   20250907：ボイス追加：Google TTS/Gemini Speech Generation</Text>
         <Text style={s.item}>・ver0.3.0   20250901：マイク機能追加</Text>
         <Text style={s.item}>・ver0.2.0   20250831：会話機能追加。マイクは利用不可</Text>

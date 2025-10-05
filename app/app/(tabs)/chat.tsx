@@ -312,6 +312,8 @@ export default function Chat() {
     if (!t) return;
 
     if (!isListening) {
+      setLog(L => [...L, JSON.stringify({ type: "user", text: t })]);
+
       if (t !== lastSentRef.current && !sendingRef.current) {
         lastSentRef.current = t;
         (async () => {
@@ -833,7 +835,6 @@ export default function Chat() {
         const tail = text.slice(lastIndex);
         if (tail) processChunk(tail);
         const out = accText.trim();
-        if (out) setLog((L) => [...L, out]);
         if (DEBUG) setLog((L) => [...L, "=== stream done ==="]);
         sendingRef.current = false;
       };
@@ -996,20 +997,20 @@ export default function Chat() {
               isUser = true;
             }
           } catch {}
-        if (isUser) {
-            return (
-              <View key={i} style={s.userBubble}>
-                <Text style={s.userBubbleText}>{content}</Text>
-              </View>
-            );
-          } else {
-            return (
-              <Text key={i} style={s.line}>
-                {content}
-              </Text>
-            );
-          }
-        })}
+          if (isUser) {
+              return (
+                <View key={i} style={s.userBubble}>
+                  <Text style={s.userBubbleText}>{content}</Text>
+                </View>
+              );
+            } else {
+              return (
+                <Text key={i} style={s.line}>
+                  {content}
+                </Text>
+              );
+            }
+          })}
         
       {/* ★ partialを仮バブルで右側にリアルタイム表示 */}
       {partial ? (
