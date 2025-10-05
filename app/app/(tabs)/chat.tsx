@@ -689,27 +689,54 @@ export default function Chat() {
         console.log("🔄 playLoop restarting (Sound)");
         playLoop();
       } else {
-        // 🎙️ 再生完了後に自動録音再開（STTモード別対応）
         console.log("🎙️ Auto restart STT after playback");
-          setTimeout(async() => {
-          if (!sendingRef.current) {  // 送信中でないときのみ
-            if (sttMode === "soniox") {
-              startSonioxSTT();
-            } else if (sttMode === "local") {
-              console.log("🎤 preparing local STT restart");
-              try {
-                // 念のため一度セッション破棄（iOS録音モードを解除してから）
-                await Voice.destroy().catch(()=>{});
-                await new Promise(res => setTimeout(res, 800)); // 🕐 ちょい待機
-                await startSTT(); // 再開
-              } catch(e) {
-                console.log("⚠️ Local STT restart error:", e);
-              }
-            }
-          } else {
+
+        const doAutoRestart = async () => {
+          if (sendingRef.current) {
             console.log("⏸️ sending in progress, skip auto-restart");
+            return;
           }
-        }, 100);
+
+          if (sttMode === "soniox") {
+            startSonioxSTT();
+          } else if (sttMode === "local") {
+            console.log("🎤 preparing local STT restart");
+            try {
+              // 🎧 セッション破棄（安全のため）
+              await Voice.destroy().catch(() => {});
+              await new Promise(res => setTimeout(res, 100)); // 少し待つ
+
+              // 🎙️ リスナーを再登録（重要！）
+              Voice.removeAllListeners?.();
+              Voice.onSpeechStart = () => {
+                setIsListening(true);
+                setPartial("");
+                setFinalText("");
+              };
+              Voice.onSpeechEnd = () => {
+                setIsListening(false);
+                const textToSend = (finalText || partial).trim();
+                if (textToSend) send(textToSend);
+              };
+              Voice.onSpeechResults = (e) => {
+                const text = e.value?.[0] ?? "";
+                setFinalText(text);
+              };
+              Voice.onSpeechPartialResults = (e) => {
+                const text = e.value?.[0] ?? "";
+                setPartial(text);
+              };
+
+              // 🎤 再度録音スタート
+              await Voice.start("ja-JP", { EXTRA_PARTIAL_RESULTS: true });
+              console.log("🎧 Local STT restarted successfully");
+            } catch (e) {
+              console.log("⚠️ Local STT restart error:", e);
+            }
+          }
+        };
+
+        setTimeout(doAutoRestart, 100); // 再生後1秒待って再開
       }
     }
   };
