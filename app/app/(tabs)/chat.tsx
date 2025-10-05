@@ -272,6 +272,9 @@ export default function Chat() {
         sttDetectAtRef.current = null;
       }
       const textToSend = (finalText || partial).trim();
+
+      setPartial(""); 
+
       if (textToSend) {
         (async () => {
           try {
