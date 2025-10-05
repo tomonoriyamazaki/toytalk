@@ -688,6 +688,28 @@ export default function Chat() {
       if (queueRef.current.length > 0) {
         console.log("🔄 playLoop restarting (Sound)");
         playLoop();
+      } else {
+        // 🎙️ 再生完了後に自動録音再開（STTモード別対応）
+        console.log("🎙️ Auto restart STT after playback");
+          setTimeout(async() => {
+          if (!sendingRef.current) {  // 送信中でないときのみ
+            if (sttMode === "soniox") {
+              startSonioxSTT();
+            } else if (sttMode === "local") {
+              console.log("🎤 preparing local STT restart");
+              try {
+                // 念のため一度セッション破棄（iOS録音モードを解除してから）
+                await Voice.destroy().catch(()=>{});
+                await new Promise(res => setTimeout(res, 800)); // 🕐 ちょい待機
+                await startSTT(); // 再開
+              } catch(e) {
+                console.log("⚠️ Local STT restart error:", e);
+              }
+            }
+          } else {
+            console.log("⏸️ sending in progress, skip auto-restart");
+          }
+        }, 100);
       }
     }
   };
