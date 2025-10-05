@@ -273,6 +273,7 @@ export default function Chat() {
       }
       const textToSend = (finalText || partial).trim();
 
+      // ローカルSTTで、入力テキストの表示を正す
       setPartial(""); 
 
       if (textToSend) {
@@ -316,7 +317,7 @@ export default function Chat() {
 
     if (!isListening) {
       setLog(L => [...L, JSON.stringify({ type: "user", text: t })]);
-
+      
       if (t !== lastSentRef.current && !sendingRef.current) {
         lastSentRef.current = t;
         (async () => {
@@ -1065,7 +1066,7 @@ export default function Chat() {
           })}
         
       {/* ★ partialを仮バブルで右側にリアルタイム表示 */}
-      {partial ? (
+      {partial && !sendingRef.current ? (
         <View style={s.userBubble}>
           <Text style={s.userBubbleText}>{partial}</Text>
         </View>
