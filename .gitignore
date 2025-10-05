@@ -2,14 +2,13 @@
 node_modules/
 npm-degub.log
 yarn-error.log
-.expo/
-app/.expo/
+**/.expo/
 
 
 # Build artifacts
 dist/
-build/
+**/build/
 *.zip
 
 # key
-.env
+*.env
