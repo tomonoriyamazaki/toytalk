@@ -1,7 +1,10 @@
 {
-  "editor.codeActionsOnSave": {
-    "source.fixAll": "explicit",
-    "source.organizeImports": "explicit",
-    "source.sortMembers": "explicit"
-  }
+  "arduino.path": "C:\\Users\\exodj\\AppData\\Local\\Programs\\Arduino IDE",
+  "arduino.commandPath": "Arduino IDE.exe",
+  "arduino.additionalUrls": [
+    "https://espressif.github.io/arduino-esp32/package_esp32_index.json",
+    "https://files.seeedstudio.com/arduino/package_seeeduino_index.json"
+  ],
+  "arduino.defaultBaudRate": 115200,
+  "arduino.enableUSBDetection": true
 }
