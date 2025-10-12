@@ -16,10 +16,11 @@ const char* SONIOX_WS_URL = "stt-rt.soniox.com";
 const int SONIOX_WS_PORT = 443;
 String sonioxKey;
 
-// === I2S設定 ===
-#define PIN_BCLK 7
-#define PIN_WS 6
-#define PIN_DATA 5
+// === I2S設定（新配線） ===
+#define PIN_WS    3   // マイク WS / アンプ LRC（共有）
+#define PIN_BCLK  4   // マイク SCK / アンプ BCLK（共有）
+#define PIN_DATA  9   // マイク SD（I2S Data In）
+#define PIN_AMP_SD 6  // アンプ Shutdown制御
 #define SAMPLE_RATE 16000
 
 WebSocketsClient ws;
@@ -34,9 +35,13 @@ bool armed = false;
 void setup() {
   Serial.begin(921600);
   delay(500);
-  Serial.println("\n🚀 Soniox RealTime STT Start");
+  Serial.println("\n🚀 Soniox RealTime STT Start (GPIO3,4,9)");
 
-  // WiFi 接続
+  // アンプをOFF（録音中ノイズ防止）
+  pinMode(PIN_AMP_SD, OUTPUT);
+  digitalWrite(PIN_AMP_SD, LOW);
+
+  // === WiFi 接続 ===
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   while (WiFi.status() != WL_CONNECTED) {
@@ -45,7 +50,7 @@ void setup() {
   }
   Serial.printf("\n✅ WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
 
-  // Lambda から temp key 取得
+  // === Lambdaから Soniox temp key取得 ===
   HTTPClient http;
   http.begin(LAMBDA_URL);
   int code = http.GET();
@@ -55,6 +60,7 @@ void setup() {
   }
   String payload = http.getString();
   http.end();
+
   DynamicJsonDocument doc(512);
   if (deserializeJson(doc, payload)) {
     Serial.println("⚠️ JSON parse error");
@@ -63,7 +69,7 @@ void setup() {
   sonioxKey = doc["api_key"].as<String>();
   Serial.println("✅ Soniox temp key: " + sonioxKey);
 
-  // I2S 初期化
+  // === I2S 初期化 ===
   i2s_config_t cfg = {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
     .sample_rate = SAMPLE_RATE,
@@ -77,17 +83,21 @@ void setup() {
     .tx_desc_auto_clear = false,
     .fixed_mclk = 0
   };
+
   i2s_pin_config_t pins = {
-    .bck_io_num = PIN_BCLK,
-    .ws_io_num = PIN_WS,
+    .bck_io_num = PIN_BCLK,   // GPIO4
+    .ws_io_num = PIN_WS,      // GPIO3
     .data_out_num = I2S_PIN_NO_CHANGE,
-    .data_in_num = PIN_DATA
+    .data_in_num = PIN_DATA   // GPIO9
   };
-  i2s_driver_install(I2S_NUM_0, &cfg, 0, NULL);
-  i2s_set_pin(I2S_NUM_0, &pins);
+
+  esp_err_t err = i2s_driver_install(I2S_NUM_0, &cfg, 0, NULL);
+  if (err != ESP_OK) Serial.printf("❌ i2s_driver_install failed: %d\n", err);
+  err = i2s_set_pin(I2S_NUM_0, &pins);
+  if (err != ESP_OK) Serial.printf("❌ i2s_set_pin failed: %d\n", err);
   i2s_start(I2S_NUM_0);
 
-  // WebSocket 接続
+  // === WebSocket接続 ===
   Serial.println("🌐 Connecting Soniox WebSocket...");
   ws.beginSSL(SONIOX_WS_URL, SONIOX_WS_PORT, "/transcribe-websocket");
   ws.setExtraHeaders(("Authorization: Bearer " + sonioxKey).c_str());
@@ -115,20 +125,18 @@ void loop() {
 
   // 2) 無音検出 → 確定文出力
   if (armed && partialText.length() > 0 && (millis() - lastPartialMs) >= END_SILENCE_MS) {
-    // 重複確定を防ぐ
     if (partialText != lastFinalText) {
       Serial.println("\n✅ 確定文:");
       Serial.println(partialText);
       lastFinalText = partialText;
     }
-    // リセット
     armed = false;
     partialText = "";
   }
 }
 
 // === WebSocketイベント ===
-void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
+void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
     case WStype_CONNECTED:
       Serial.println("✅ Connected to Soniox!");
@@ -150,7 +158,6 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
 
     case WStype_TEXT: {
       String msg = (char*)payload;
-
       if (msg.indexOf("\"tokens\"") >= 0) {
         String newText = "";
         int pos = 0;
@@ -162,30 +169,12 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
           if (token != "\\u003cend\\u003e") newText += token;
         }
 
-        // 置き換え対象：case WStype_TEXT 内の処理
         if (newText.length() > 0) {
-          // 差分検出
-          int overlap = 0;
-          while (overlap < partialText.length() && overlap < newText.length()) {
-            if (partialText.substring(partialText.length() - overlap) == newText.substring(0, overlap)) {
-              break;
-            }
-            overlap++;
-          }
-
-          // 差分だけを追記（全文置き換えではない）
           if (newText.startsWith(partialText)) {
-            // 正常に延長
             partialText = newText;
           } else {
-            // 重複部分を除去して追加
-            if (overlap > 0 && overlap < newText.length()) {
-              partialText += newText.substring(overlap);
-            } else if (newText != partialText) {
-              partialText = newText; // 全く違う文なら置き換え
-            }
+            partialText = newText;
           }
-
           lastPartialMs = millis();
           armed = true;
           Serial.println("📝 " + partialText);
@@ -197,9 +186,5 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
     case WStype_DISCONNECTED:
       Serial.println("❌ Soniox disconnected");
       break;
-
-    default:
-      break;
   }
 }
-
