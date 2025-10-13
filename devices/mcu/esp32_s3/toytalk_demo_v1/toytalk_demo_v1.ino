@@ -90,10 +90,14 @@ void sendToLambdaAndPlay(String text) {
   String dataAccum = "";
   bool inData = false;
 
-  while (client.connected() || client.available()) {
+  unsigned long lastDataMs = millis();
+  const unsigned long TIMEOUT_MS = 2000; // 2秒無通信で終了
+
+  while (true) {
     while (client.available()) {
       char c = client.read();
       line += c;
+      lastDataMs = millis(); // データが来たら更新
 
       // 行終端判定
       if (line.endsWith("\n")) {
@@ -105,64 +109,116 @@ void sendToLambdaAndPlay(String text) {
         } 
         else if (line.startsWith("data:")) {
           // data行を蓄積（複数行対応）
-          dataAccum += line.substring(5);
+          String chunk = line.substring(5);
+          dataAccum += chunk;
           dataAccum += "\n";
-        } 
-        else if (line.length() == 0) {
-          // 空行 = イベント終了
-          if (eventType == "tts" && dataAccum.length() > 0) {
-            Serial.println("🎧 got TTS event");
-            Serial.printf("📦 raw data len = %d\n", dataAccum.length());
 
-            int lastBrace = dataAccum.lastIndexOf('{');
-            String jsonStr = (lastBrace >= 0) ? dataAccum.substring(lastBrace) : dataAccum;
-            jsonStr.trim();
-
-            Serial.println("🧾 JSON content preview:");
-            Serial.println(jsonStr.substring(0, 200));
-            Serial.println("🧾 b64 content preview:");
-            Serial.println(dataAccum.substring(0, 200));
-            Serial.println(dataAccum.substring(dataAccum.length() - 200));
-            Serial.println("--- end preview ---");
-
-            DynamicJsonDocument doc(32768);
-            auto err = deserializeJson(doc, jsonStr);
-            if (err) {
-              Serial.printf("❌ JSON parse error: %s\n", err.c_str());
-            } else {
-              const char* b64 = doc["b64"];
-              if (b64) {
-                size_t len = strlen(b64);
-                Serial.printf("🧩 got b64 len=%d\n", len);
-
-                size_t outLen = len * 3 / 4;
-                uint8_t* pcm = (uint8_t*)malloc(outLen);
-                size_t decLen = 0;
-
-                int rc = mbedtls_base64_decode(pcm, outLen, &decLen, (const unsigned char*)b64, len);
-                Serial.printf("🔍 decode rc=%d, outLen=%d, decLen=%d\n", rc, outLen, decLen);
-
-                if (rc == 0 && decLen > 0) {
-                  size_t written;
-                  digitalWrite(PIN_AMP_SD, HIGH);
-                  delay(20);
-                  i2s_write(I2S_NUM_1, pcm, decLen, &written, portMAX_DELAY);
-                  Serial.printf("🔊 I2S wrote %d bytes (rate %d)\n", written, SAMPLE_RATE);
-                } else {
-                  Serial.println("⚠️ decode failed or no data to play");
-                }
-                free(pcm);
-              } else {
-                Serial.println("⚠️ no b64 field found in JSON line");
-              }
-            }
-
-            // 終了処理
-            dataAccum = "";
-            eventType = "";
+          // b64途中ログ用にJSONが途中でも"b64"が含まれていたら出力
+          if (chunk.indexOf("\"id\"") >= 0) {
+            int idStart = chunk.indexOf("\"id\":");
+            int idEnd = chunk.indexOf(",", idStart);
+            String idStr = (idStart >= 0 && idEnd > idStart)
+                ? chunk.substring(idStart + 5, idEnd)
+                : "?";
+            Serial.printf("🧩 partial event id=%s, chunk len=%d\n", idStr.c_str(), chunk.length());
           }
 
-          // イベントごとにリセット
+          // Base64文字列の途中プレビュー（b64が含まれている場合のみ）
+          if (chunk.indexOf("b64") >= 0 || chunk.startsWith("\"") || chunk.startsWith("//")) {
+            String preview = chunk;
+            preview.replace("\n", "");
+            preview.replace("\r", "");
+            if (preview.length() > 80) preview = preview.substring(0, 80) + "...";
+            Serial.printf("   └📦 partial b64 chunk (len=%d): %s\n", chunk.length(), preview.c_str());
+          }
+        }
+        else if (line.length() == 0) {
+          // 空行 = イベント終了。ただしJSONの閉じカッコ未到達なら待機
+          int openBrace = dataAccum.indexOf("{");
+          int closeBrace = dataAccum.lastIndexOf("}");
+          if (openBrace < 0 || closeBrace < openBrace || dataAccum.indexOf("\"b64\"") < 0) {
+            Serial.printf("⏸ waiting... len=%d (incomplete JSON, open=%d close=%d)\n", dataAccum.length(), openBrace, closeBrace);
+            line = "";
+            continue; // まだ来てない → 次のchunkを待つ
+          } else {
+            if (eventType == "tts" && dataAccum.length() > 0) {
+              Serial.println("🎧 got TTS event");
+              Serial.printf("📦 raw data len = %d\n", dataAccum.length());
+
+              int lastBrace = dataAccum.lastIndexOf('{');
+              String jsonStr = (lastBrace >= 0) ? dataAccum.substring(lastBrace) : dataAccum;
+              jsonStr.trim();
+
+              Serial.println("🧾 JSON content preview:");
+              Serial.println(jsonStr.substring(0, 200));
+              Serial.println("🧾 b64 content preview:");
+              Serial.println(dataAccum.substring(0, 200));
+              Serial.println(dataAccum.substring(dataAccum.length() - 200));
+              Serial.println("--- end preview ---");
+
+              DynamicJsonDocument doc(32768);
+              auto err = deserializeJson(doc, jsonStr);
+              if (err) {
+                Serial.printf("❌ JSON parse error: %s\n", err.c_str());
+              } else {
+                const char* b64 = doc["b64"];
+                const char* fmt = doc["format"];
+                if (b64) {
+                  String cleanB64 = String(b64);
+                  cleanB64.replace("\n", "");
+                  cleanB64.replace("\r", "");
+                  cleanB64.trim();
+
+                  size_t len = cleanB64.length();
+                  Serial.printf("🧩 cleaned b64 len=%d\n", len);
+
+                  // Base64末尾チェック（"="や"}"が来ていれば完結している）
+                  if (!cleanB64.endsWith("=") && cleanB64.indexOf("}") < 0) {
+                    Serial.println("⚠️ b64 incomplete, skipping playback until next chunk");
+                  } else {
+                    size_t outLen = len * 3 / 4 + 8;
+                    uint8_t* pcm = (uint8_t*)malloc(outLen);
+                    size_t decLen = 0;
+
+                    int rc = mbedtls_base64_decode(
+                      pcm, outLen, &decLen,
+                      (const unsigned char*)cleanB64.c_str(), len
+                    );
+                    Serial.printf("🔍 decode rc=%d, outLen=%d, decLen=%d\n", rc, outLen, decLen);
+
+                    if (rc == 0 && decLen > 0) {
+                      bool isWav = fmt && (strcmp(fmt, "wav") == 0);
+                      const uint8_t* playPtr = pcm;
+                      size_t playLen = decLen;
+
+                      if (isWav && decLen > 44) {
+                        playPtr = pcm + 44;
+                        playLen = decLen - 44;
+                        Serial.println("🎧 Detected WAV header, skipping 44 bytes");
+                      }
+
+                      size_t written;
+                      digitalWrite(PIN_AMP_SD, HIGH);
+                      delay(10);
+                      uint8_t silence[256] = {0};
+                      i2s_write(I2S_NUM_1, silence, sizeof(silence), &written, portMAX_DELAY);
+                      i2s_write(I2S_NUM_1, playPtr, playLen, &written, portMAX_DELAY);
+                      Serial.printf("🔊 I2S wrote %d bytes (rate %d)\n", written, SAMPLE_RATE);
+                      delay(50);
+                      digitalWrite(PIN_AMP_SD, LOW);
+                    } else {
+                      Serial.println("⚠️ decode failed or no data to play");
+                    }
+                    free(pcm);
+                  }
+                } else {
+                  Serial.println("⚠️ no b64 field found in JSON line");
+                }
+              }
+              dataAccum = "";
+              eventType = "";
+            }
+          }
           line = "";
         }
 
@@ -170,6 +226,15 @@ void sendToLambdaAndPlay(String text) {
       }
 
     }
+    
+    // 接続が閉じられていても、しばらくは受信を待つ
+    if (!client.connected() && client.available() == 0) {
+      if (millis() - lastDataMs > TIMEOUT_MS) {
+        Serial.println("⏹ No more data (timeout)");
+        break;
+      }
+    }
+
     delay(1);
   }
   
