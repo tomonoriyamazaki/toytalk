@@ -7,7 +7,6 @@
 #define PIN_AMP_SD 6
 
 // モノラルPCM → ステレオPCM 変換
-// (L=mono, R=mono)
 void monoToStereo(int16_t* mono, int16_t* stereo, size_t samples) {
   for (size_t i = 0; i < samples; i++) {
     stereo[2*i]     = mono[i]; // Left
@@ -27,8 +26,8 @@ void setup() {
       .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
       .sample_rate = 24000,
       .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-      .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,  // ★ステレオ明示
-      .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+      .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,  
+      .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB),
       .intr_alloc_flags = 0,
       .dma_buf_count = 8,
       .dma_buf_len = 1024,
@@ -49,11 +48,13 @@ void setup() {
   i2s_set_clk(I2S_NUM_1, 24000, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
 
   // ===== モノラルPCM → ステレオPCM =====
-  size_t mono_bytes = c__Users_exodj_Documents_Audacity_raw_pcm_test_1s_pcm_len;
+  size_t mono_bytes   = c__Users_exodj_Documents_Audacity_raw_pcm_test_1s_pcm_len;
   size_t mono_samples = mono_bytes / 2;
 
   int16_t* mono = (int16_t*)c__Users_exodj_Documents_Audacity_raw_pcm_test_1s_pcm;
-  int16_t* stereo = (int16_t*) malloc(mono_bytes * 2);   // ★2倍メモリ
+
+  size_t stereo_bytes = mono_bytes * 2;     // ★ステレオ＝2倍
+  int16_t* stereo = (int16_t*) malloc(stereo_bytes);
 
   monoToStereo(mono, stereo, mono_samples);
 
@@ -61,13 +62,12 @@ void setup() {
   esp_err_t ret = i2s_write(
     I2S_NUM_1,
     stereo,
-    mono_bytes * 2,  // ★ステレオなので2倍量
+    stereo_bytes,    // ★修正：byte単位
     &written,
     portMAX_DELAY
   );
 
   Serial.printf("I2S written = %d bytes\n", written);
-
   free(stereo);
 }
 
