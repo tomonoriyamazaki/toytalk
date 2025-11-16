@@ -115,40 +115,53 @@ void handleTtsEventBlock(const String& evBlock) {
   Serial.println("🎯--- [tts event detected] ---");
   Serial.printf("📨 event block len=%d\n", evBlock.length());
 
-  int b64Start = evBlock.indexOf("\"b64\":\"");
-  if (b64Start < 0) {
-    Serial.println("⚠️ no \"b64\" found in tts event");
+  // evBlock の中にある "b64":"xxxxx" をすべて抽出して結合
+  String b64all = "";
+  int searchPos = 0;
+
+  while (true) {
+    int b64Start = evBlock.indexOf("\"b64\":\"", searchPos);
+    if (b64Start < 0) break;
+    b64Start += 7;
+
+    int b64End = evBlock.indexOf("\"", b64Start);
+    if (b64End <= b64Start) break;
+
+    // 部分 b64 を追加
+    String part = evBlock.substring(b64Start, b64End);
+    part.replace("\n", "");
+    part.replace("\r", "");
+    part.replace("\\n", "");
+    part.replace("\\r", "");
+    part.trim();
+
+    b64all += part;
+    searchPos = b64End + 1;
+  }
+
+  Serial.printf("📏 b64 total length = %d chars\n", b64all.length());
+
+  // ====== ここから下は従来の PCM 変換処理（必要なら残す） ======
+
+  if (b64all.length() == 0) {
+    Serial.println("⚠️ no b64 found");
     return;
   }
-  b64Start += 7;
-  int b64End = evBlock.indexOf("\"", b64Start);
-  if (b64End <= b64Start) {
-    Serial.println("⚠️ invalid b64 range");
-    return;
-  }
 
-  String b64 = evBlock.substring(b64Start, b64End);
-  b64.replace("\n", "");
-  b64.replace("\r", "");
-  b64.replace("\\n", "");
-  b64.replace("\\r", "");
-  b64.trim();
-
-  Serial.printf("🎧 b64.len=%d\n", (int)b64.length());
-
-  size_t outLen = b64.length() * 3 / 4 + 8;
+  size_t outLen = b64all.length() * 3 / 4 + 8;
   uint8_t* pcm = (uint8_t*)malloc(outLen);
   if (!pcm) {
-    Serial.println("💥 malloc failed for PCM");
+    Serial.println("💥 malloc failed");
     return;
   }
 
   size_t decLen = 0;
   int rc = mbedtls_base64_decode(
     pcm, outLen, &decLen,
-    (const unsigned char*)b64.c_str(),
-    b64.length()
+    (const unsigned char*)b64all.c_str(),
+    b64all.length()
   );
+
   Serial.printf("🎧 decode rc=%d decLen=%d\n", rc, (int)decLen);
 
   if (rc != 0 || decLen == 0) {
@@ -157,18 +170,18 @@ void handleTtsEventBlock(const String& evBlock) {
     return;
   }
 
-  // キューに積む
   AudioChunk chunk;
   chunk.data   = pcm;
   chunk.length = decLen;
 
   if (xQueueSend(audioQueue, &chunk, portMAX_DELAY) != pdTRUE) {
-    Serial.println("⚠️ audioQueue full, dropping chunk");
+    Serial.println("⚠️ audioQueue full, dropping");
     free(pcm);
   } else {
     Serial.printf("📥 queued PCM chunk len=%d bytes\n", (int)decLen);
   }
 }
+
 
 // ==== SSE の segment イベントから text をログに出す ====
 void handleSegmentEventBlock(const String& evBlock) {
@@ -183,106 +196,115 @@ void handleSegmentEventBlock(const String& evBlock) {
   Serial.printf("💬 segment text: %s\n", text.c_str());
 }
 
+
+// ==== chunkサイズを読んで、そのバイト数だけ本文を読む ====
+bool readChunk(WiFiClientSecure &client, String &out)
+{
+  out = "";
+
+  // chunkサイズ行を読む（例: "ffa", "2000", "61"）
+  String sizeLine = client.readStringUntil('\n');
+  sizeLine.trim();
+  if (sizeLine.length() == 0) return false;
+
+  // hex → 数値
+  int chunkSize = strtol(sizeLine.c_str(), NULL, 16);
+  if (chunkSize <= 0) return false;  // 0 = 終端
+
+  // chunk本体
+  for (int i = 0; i < chunkSize; i++) {
+    while (!client.available()) delay(1);
+    char c = client.read();
+    out += c;
+  }
+
+  // chunk末尾の "\r\n" を読み捨てる
+  while (client.available()) {
+    char c = client.peek();
+    if (c == '\r' || c == '\n') client.read();
+    else break;
+  }
+
+  return true;
+}
+
+
 // ==== Lambda通信（SSE受信 → PCMをキューへ） ====
 // ★ここを整理＆修正
-void sendToLambdaAndPlay(const String& text) {
+void sendToLambdaAndPlay(const String& text)
+{
   Serial.println("🚀 Sending to Lambda: " + text);
 
   WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(5000); // 行単位読み取りのタイムアウト
+  client.setTimeout(5000);
 
   if (!client.connect(LAMBDA_HOST, 443)) {
     Serial.println("❌ connect failed");
     return;
   }
 
-  // JSONペイロード
-  String payload = "{\"model\":\"OpenAI\",\"voice\":\"nova\","
-                   "\"messages\":[{\"role\":\"user\",\"content\":\"" + text + "\"}]}";
+  String payload =
+    "{\"model\":\"OpenAI\",\"voice\":\"nova\","
+    "\"messages\":[{\"role\":\"user\",\"content\":\"" + text + "\"}]}";
 
   String req =
-    String("POST ") + LAMBDA_PATH + " HTTP/1.1\r\n" +
-    "Host: " + LAMBDA_HOST + "\r\n" +
-    "Content-Type: application/json\r\n" +
-    "Accept: text/event-stream\r\n" +
-    "Connection: close\r\n" +
-    "Content-Length: " + payload.length() + "\r\n\r\n" +
-    payload;
+    String("POST ") + LAMBDA_PATH + " HTTP/1.1\r\n"
+    "Host: " + LAMBDA_HOST + "\r\n"
+    "Content-Type: application/json\r\n"
+    "Accept: text/event-stream\r\n"
+    "Connection: close\r\n"
+    "Content-Length: " + payload.length() + "\r\n\r\n"
+    + payload;
 
   client.print(req);
   Serial.println("📡 Waiting SSE...");
 
-  // ==== 1. HTTPレスポンスヘッダを読み飛ばす ====
-  while (client.connected()) {
+  // HTTP header skip
+  while (true) {
     String line = client.readStringUntil('\n');
-    if (line.length() == 0) break;
-    if (line == "\r") break; // 空行 = ヘッダ終端
+    if (line.length() == 0 || line == "\r") break;
   }
 
-  // ==== 2. SSE本体（chunked）を行単位で読む ====
-  String evbuf;
-  unsigned long lastDataMs = millis();
-  const unsigned long TIMEOUT_MS = 15000;
+  // ==== 2. SSE本体（行ごとに読むだけ） ====
+  String evbuf = "";
 
   while (client.connected() || client.available()) {
-    if (!client.available()) {
-      if (millis() - lastDataMs > TIMEOUT_MS) {
-        Serial.println("⏹ No more data (timeout)");
-        break;
-      }
-      delay(10);
-      continue;
-    }
 
-    String line = client.readStringUntil('\n');
-    lastDataMs = millis();
-
-    String trimmed = line;
-    trimmed.trim();
-
-    // 空行 → 1イベントの終端
-    if (trimmed.length() == 0) {
-      if (evbuf.length() == 0) {
-        continue;
+      if (!client.available()) {
+          delay(5);
+          continue;
       }
 
-      // ★ 追加：イベント中身をそのまま出力 ★
-      Serial.println("===== EVENT BLOCK (RAW) =====");
-      Serial.println(evbuf);
+      String line = client.readStringUntil('\n');
 
-      // イベント種別判定
-      if (evbuf.indexOf("event: segment") >= 0) {
-        handleSegmentEventBlock(evbuf);
-      } else if (evbuf.indexOf("event: tts") >= 0) {
-        handleTtsEventBlock(evbuf);
+      // ログ：受信した行をそのまま表示
+      Serial.print("[RAW] ");
+      Serial.println(line);
+
+      // 空行 → 1イベントの終端
+      String trimmed = line;
+      trimmed.trim();
+
+      if (trimmed.length() == 0) {
+          if (evbuf.length() > 0) {
+              Serial.println("===== EVENT BLOCK =====");
+              Serial.println(evbuf);
+              Serial.println("===== END EVENT BLOCK =====");
+              evbuf = "";
+          }
+          continue;
       }
 
-      evbuf = "";
-      continue;
-    }
-
-
-    // chunk サイズ行（例: "94", "ffa", "2000"）は無視
-    bool isChunkSize = true;
-    for (int i = 0; i < trimmed.length(); ++i) {
-      char ch = trimmed.charAt(i);
-      if (!isxdigit((unsigned char)ch)) {
-        isChunkSize = false;
-        break;
-      }
-    }
-    if (isChunkSize) {
-      // 例: "94", "ffa" など → 何もしない
-      continue;
-    }
-
-    // 上記どれにも当てはまらない → イベント本文としてバッファに追加
-    evbuf += line;
+      // イベント本文として追加
+      evbuf += line;
   }
 
   Serial.println("🏁 SSE Stream ended");
+
 }
+
+
 
 // ==== SETUP ====
 void setup() {
