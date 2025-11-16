@@ -141,8 +141,6 @@ void handleTtsEventBlock(const String& evBlock) {
 
   Serial.printf("📏 b64 total length = %d chars\n", b64all.length());
 
-  // ====== ここから下は従来の PCM 変換処理（必要なら残す） ======
-
   if (b64all.length() == 0) {
     Serial.println("⚠️ no b64 found");
     return;
@@ -182,7 +180,6 @@ void handleTtsEventBlock(const String& evBlock) {
   }
 }
 
-
 // ==== SSE の segment イベントから text をログに出す ====
 void handleSegmentEventBlock(const String& evBlock) {
   int tPos = evBlock.indexOf("\"text\":\"");
@@ -196,41 +193,7 @@ void handleSegmentEventBlock(const String& evBlock) {
   Serial.printf("💬 segment text: %s\n", text.c_str());
 }
 
-
-// ==== chunkサイズを読んで、そのバイト数だけ本文を読む ====
-bool readChunk(WiFiClientSecure &client, String &out)
-{
-  out = "";
-
-  // chunkサイズ行を読む（例: "ffa", "2000", "61"）
-  String sizeLine = client.readStringUntil('\n');
-  sizeLine.trim();
-  if (sizeLine.length() == 0) return false;
-
-  // hex → 数値
-  int chunkSize = strtol(sizeLine.c_str(), NULL, 16);
-  if (chunkSize <= 0) return false;  // 0 = 終端
-
-  // chunk本体
-  for (int i = 0; i < chunkSize; i++) {
-    while (!client.available()) delay(1);
-    char c = client.read();
-    out += c;
-  }
-
-  // chunk末尾の "\r\n" を読み捨てる
-  while (client.available()) {
-    char c = client.peek();
-    if (c == '\r' || c == '\n') client.read();
-    else break;
-  }
-
-  return true;
-}
-
-
 // ==== Lambda通信（SSE受信 → PCMをキューへ） ====
-// ★ここを整理＆修正
 void sendToLambdaAndPlay(const String& text)
 {
   Serial.println("🚀 Sending to Lambda: " + text);
@@ -266,45 +229,64 @@ void sendToLambdaAndPlay(const String& text)
     if (line.length() == 0 || line == "\r") break;
   }
 
-  // ==== 2. SSE本体（行ごとに読むだけ） ====
+  // ==== SSE本体 ====
   String evbuf = "";
 
+  auto isChunkSizeLine = [](const String& s) -> bool {
+    if (s.length() == 0) return false;
+    for (int i = 0; i < s.length(); ++i) {
+      char c = s[i];
+      if (!isxdigit((unsigned char)c)) {
+        return false;
+      }
+    }
+    // ここまで来たら「全部16進数字だけの行」→ chunk size とみなす
+    return true;
+  };
+
   while (client.connected() || client.available()) {
+    if (!client.available()) {
+      delay(5);
+      continue;
+    }
 
-      if (!client.available()) {
-          delay(5);
-          continue;
+    String line = client.readStringUntil('\n');
+
+    Serial.print("[RAW] ");
+    Serial.println(line);
+
+    String trimmed = line;
+    trimmed.trim();
+
+    // 空行 → 1イベント終端
+    if (trimmed.length() == 0) {
+      if (evbuf.length() > 0) {
+        Serial.println("===== EVENT BLOCK =====");
+        Serial.println(evbuf);
+        Serial.println("===== END EVENT BLOCK =====");
+
+        if (evbuf.indexOf("event: tts") >= 0) {
+          handleTtsEventBlock(evbuf);
+        } else if (evbuf.indexOf("event: segment") >= 0) {
+          handleSegmentEventBlock(evbuf);
+        }
+
+        evbuf = "";
       }
+      continue;
+    }
 
-      String line = client.readStringUntil('\n');
+    // 「61」「1ffa」「4000」みたいな chunk サイズ行は無視
+    if (isChunkSizeLine(trimmed)) {
+      continue;
+    }
 
-      // ログ：受信した行をそのまま表示
-      Serial.print("[RAW] ");
-      Serial.println(line);
-
-      // 空行 → 1イベントの終端
-      String trimmed = line;
-      trimmed.trim();
-
-      if (trimmed.length() == 0) {
-          if (evbuf.length() > 0) {
-              Serial.println("===== EVENT BLOCK =====");
-              Serial.println(evbuf);
-              Serial.println("===== END EVENT BLOCK =====");
-              evbuf = "";
-          }
-          continue;
-      }
-
-      // イベント本文として追加
-      evbuf += line;
+    // それ以外はそのままイベントバッファに積む（data: 行も b64 続きの行も全部）
+    evbuf += line;
   }
 
   Serial.println("🏁 SSE Stream ended");
-
 }
-
-
 
 // ==== SETUP ====
 void setup() {
