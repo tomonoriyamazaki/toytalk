@@ -1,406 +1,476 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+#include <WebSocketsClient.h>
 #include <ArduinoJson.h>
-#include "mbedtls/base64.h"
 #include <driver/i2s.h>
+#include "mbedtls/base64.h"
 
-// ==== WiFi設定 ====
+// ==== WiFi ====
 const char* WIFI_SSID = "Buffalo-G-5830";
 const char* WIFI_PASS = "sh6s3kagpp48s";
 
-// ==== Lambda ====
+// ==== Lambda (TTS) ====
 const char* LAMBDA_HOST = "hbik6fueesqaftzkehtbwrr2ra0ucusi.lambda-url.ap-northeast-1.on.aws";
 const char* LAMBDA_PATH = "/";
 
-// ==== I2S ====
+// ==== Lambda (Soniox Key) ====
+const char* SONIOX_LAMBDA_URL = "https://ug5fcnjsxa22vtnrzlwpfgshd40nngbo.lambda-url.ap-northeast-1.on.aws/";
+
+// ==== Soniox ====
+const char* SONIOX_WS_URL = "stt-rt.soniox.com";
+const int SONIOX_WS_PORT = 443;
+String sonioxKey;
+
+// ==== I2S PIN ====
 #define PIN_WS     3
 #define PIN_BCLK   4
 #define PIN_DATA   9
 #define PIN_DOUT   5
 #define PIN_AMP_SD 6
-#define SAMPLE_RATE 24000
+#define SAMPLE_RATE_STT 16000
+#define SAMPLE_RATE_TTS 24000
 
-// ==== I2S再生設定 ====
-void setupI2SPlay() {
+// ==== Soniox STT 状態 ====
+WebSocketsClient ws;
+String partialText = "";
+String lastFinalText = "";
+unsigned long lastPartialMs = 0;
+const unsigned long END_SILENCE_MS = 800;
+bool armed = false;
+bool isRecording = false;
+
+// ==== TTS 受信状態 ====
+String curEvent = "";
+int curId = -1;
+String curB64 = "";
+bool inTtsJson = false;
+
+// ==== 音量調整 ====
+const float VOLUME = 0.3;
+
+// ==== mono → stereo 変換（音量調整付き） ====
+void monoToStereo(int16_t* mono, int16_t* stereo, size_t samples) {
+  for (size_t i = 0; i < samples; i++) {
+    int16_t sample = (int16_t)(mono[i] * VOLUME);
+    stereo[2*i]     = sample;
+    stereo[2*i + 1] = sample;
+  }
+}
+
+// ==== I2S 録音設定 (STT) ====
+void setupI2SRecord() {
   i2s_config_t cfg = {
-    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
-    .sample_rate = SAMPLE_RATE,
-    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+    .sample_rate = SAMPLE_RATE_STT,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
     .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
     .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB),
     .intr_alloc_flags = 0,
     .dma_buf_count = 8,
     .dma_buf_len = 512,
-    .use_apll = false,
+    .use_apll = true,
+    .tx_desc_auto_clear = false,
+    .fixed_mclk = 0
+  };
+
+  i2s_pin_config_t pins = {
+    .bck_io_num = PIN_BCLK,
+    .ws_io_num = PIN_WS,
+    .data_out_num = I2S_PIN_NO_CHANGE,
+    .data_in_num = PIN_DATA
+  };
+
+  esp_err_t err = i2s_driver_install(I2S_NUM_0, &cfg, 0, NULL);
+  if (err != ESP_OK) Serial.printf("❌ i2s_driver_install failed: %d\n", err);
+  err = i2s_set_pin(I2S_NUM_0, &pins);
+  if (err != ESP_OK) Serial.printf("❌ i2s_set_pin failed: %d\n", err);
+  i2s_start(I2S_NUM_0);
+}
+
+// ==== I2S 再生設定 (TTS) ====
+void setupI2SPlay() {
+  pinMode(PIN_AMP_SD, OUTPUT);
+  digitalWrite(PIN_AMP_SD, HIGH);
+
+  i2s_config_t cfg = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+    .sample_rate = SAMPLE_RATE_TTS,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+    .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB),
+    .intr_alloc_flags = 0,
+    .dma_buf_count = 8,
+    .dma_buf_len = 1024,
+    .use_apll = true,
     .tx_desc_auto_clear = true,
     .fixed_mclk = 0
   };
+
   i2s_pin_config_t pins = {
     .bck_io_num = PIN_BCLK,
     .ws_io_num = PIN_WS,
     .data_out_num = PIN_DOUT,
     .data_in_num = I2S_PIN_NO_CHANGE
   };
+
   i2s_driver_install(I2S_NUM_1, &cfg, 0, NULL);
   i2s_set_pin(I2S_NUM_1, &pins);
-  i2s_start(I2S_NUM_1);
+  i2s_set_clk(I2S_NUM_1, SAMPLE_RATE_TTS, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
 }
 
-// ==== id単位のb64をデコードしてI2S再生 ====
-void flushCurrentId(const String& id, String &b64accum, const String &fmt, int chunkCount) {
-  if (b64accum.length() == 0) {
-    Serial.printf("⚠️ id=%s no b64 to play\n", id.c_str());
-    return;
-  }
-  Serial.printf("🎬 FLUSH id=%s totalB64=%d chunks=%d\n", id.c_str(), b64accum.length(), chunkCount);
+// ==== TTS イベント終了処理 ====
+void handleEventEnd() {
+  if (curEvent == "tts" && curId >= 0 && curB64.length() > 0) {
+    Serial.println("===== COMPLETE PCM =====");
+    Serial.printf("id=%d, b64_len=%d\n", curId, curB64.length());
 
-  String cleanB64 = b64accum;
-  cleanB64.replace("\n", "");
-  cleanB64.replace("\r", "");
-  cleanB64.trim();
+    size_t out_len = 0;
+    int maxOut = curB64.length();
+    uint8_t* mono_pcm = (uint8_t*)ps_malloc(maxOut);
 
-  const size_t len = cleanB64.length();
-  const size_t outLen = len * 3 / 4 + 8;
-  uint8_t* pcm = (uint8_t*)malloc(outLen);
-  if (!pcm) {
-    Serial.println("💥 malloc failed");
-    b64accum = "";
-    return;
-  }
-  size_t decLen = 0;
-  int rc = mbedtls_base64_decode(pcm, outLen, &decLen, (const unsigned char*)cleanB64.c_str(), len);
-  Serial.printf("🔍 decode rc=%d, b64.len=%d, pcm.decLen=%d\n", rc, (int)len, (int)decLen);
+    if (!mono_pcm) {
+      Serial.println("[ERR] ps_malloc failed");
+      curEvent = "";
+      curId = -1;
+      curB64 = "";
+      inTtsJson = false;
+      return;
+    }
 
-  if (rc == 0 && decLen > 0) {
-    digitalWrite(PIN_AMP_SD, HIGH);
-    delay(8);
-    size_t written;
-    i2s_write(I2S_NUM_1, pcm, decLen, &written, portMAX_DELAY);
-    Serial.printf("🔊 I2S played %d bytes\n", (int)written);
-    delay(20);
-    digitalWrite(PIN_AMP_SD, LOW);
-  } else {
-    Serial.println("⚠️ decode failed or no data to play");
+    int ret = mbedtls_base64_decode(
+      mono_pcm, maxOut, &out_len,
+      (const unsigned char*)curB64.c_str(),
+      curB64.length()
+    );
+
+    Serial.printf("[DECODE] ret=%d, out_len=%d\n", ret, out_len);
+
+    if (ret != 0 || out_len == 0) {
+      Serial.println("[ERR] decode failed");
+      free(mono_pcm);
+      curEvent = "";
+      curId = -1;
+      curB64 = "";
+      inTtsJson = false;
+      return;
+    }
+
+    size_t samples = out_len / 2;
+    size_t stereo_bytes = samples * 4;
+    int16_t* stereo = (int16_t*)ps_malloc(stereo_bytes);
+
+    if (!stereo) {
+      Serial.println("[ERR] stereo ps_malloc failed");
+      free(mono_pcm);
+      curEvent = "";
+      curId = -1;
+      curB64 = "";
+      inTtsJson = false;
+      return;
+    }
+
+    monoToStereo((int16_t*)mono_pcm, stereo, samples);
+
+    size_t written = 0;
+    i2s_write(I2S_NUM_1, stereo, stereo_bytes, &written, portMAX_DELAY);
+    Serial.printf("[I2S] written=%d bytes\n", written);
+
+    free(stereo);
+    free(mono_pcm);
+    Serial.println("========================");
   }
-  free(pcm);
-  b64accum = "";
+
+  curEvent = "";
+  curId = -1;
+  curB64 = "";
+  inTtsJson = false;
 }
 
-// ==== 1イベントブロックを処理（空行で閉じたSSEイベント） ====
-void processEventBlock(const String& evBlock, String &currentId, String &curFmt, String &curB64, int &chunkIdx) {
-  // イベント種別（なければ "message" 相当）
-  String eventType = "";
-  // このイベントの data: を結合したJSON
-  String payload = "";
+// ==== SSE行ごとの処理 ====
+void processLine(String line) {
+  line.trim();
 
-  // 行ごとに走査
-  int start = 0;
-  while (true) {
-    int nl = evBlock.indexOf('\n', start);
-    String line = (nl >= 0) ? evBlock.substring(start, nl) : evBlock.substring(start);
-    // 素の行（CR除去）
-    if (line.endsWith("\r")) line.remove(line.length() - 1);
-    // event:
-    if (line.startsWith("event:")) {
-      eventType = line.substring(6);
-      eventType.trim();
+  // chunk-size(hex) 行スキップ
+  bool isHex = true;
+  if (line.length() > 0) {
+    for (int i = 0; i < line.length(); i++) {
+      if (!isxdigit(line[i])) { isHex = false; break; }
     }
-    // data:
-    if (line.startsWith("data:")) {
-      String d = line.substring(5);
-      // data: は複数行ある想定 → 改行で結合
-      payload += d;
-      payload += "\n";
-    }
-    if (nl < 0) break;
-    start = nl + 1;
+  }
+  if (isHex && line.length() <= 4) return;
+
+  // event:
+  if (line.startsWith("event:")) {
+    curEvent = line.substring(6);
+    curEvent.trim();
+    return;
   }
 
-  payload.trim();
-  if (payload.length() == 0) return;
+  // data:
+  if (line.startsWith("data:")) {
+    String d = line.substring(5);
+    d.trim();
 
-  // b64を含む巨大イベントからb64部分だけ抽出（tts専用）
-  if (eventType == "tts" && payload.indexOf("\"b64\"") >= 0) {
-    Serial.println("🎧 [tts event detected — extracting b64 and playing directly]");
-
-    // b64抽出
-    int b64Start = payload.indexOf("\"b64\":\"") + 7;
-    int b64End = payload.indexOf("\"", b64Start);
-    Serial.printf("🧠 b64Start=%d b64End=%d payload.len=%d\n", b64Start, b64End, payload.length());
-
-    if (b64End > b64Start) {
-      String b64 = payload.substring(b64Start, b64End);
-      b64.replace("\n", "");
-      b64.replace("\r", "");
-      b64.trim();
-
-      int previewHead = min(50, (int)b64.length());
-      int previewTail = min(50, (int)b64.length());
-      Serial.printf("🧩 b64.head(%d): %.50s\n", previewHead, b64.substring(0, previewHead).c_str());
-      Serial.printf("🧩 b64.tail(%d): %.50s\n", previewTail, b64.substring(b64.length() - previewTail).c_str());
-      Serial.printf("🎧 b64.len=%d\n", (int)b64.length());
-
-      // --- デコードして再生 ---
-      size_t outLen = b64.length() * 3 / 4 + 8;
-      uint8_t* pcm = (uint8_t*)malloc(outLen);
-      if (pcm) {
-        size_t decLen = 0;
-        int rc = mbedtls_base64_decode(pcm, outLen, &decLen,
-                                       (const unsigned char*)b64.c_str(),
-                                       b64.length());
-        Serial.printf("🎧 decode rc=%d decLen=%d\n", rc, (int)decLen);
-        if (rc == 0 && decLen > 0) {
-          digitalWrite(PIN_AMP_SD, HIGH);
-          delay(8);
-          size_t written;
-          i2s_write(I2S_NUM_1, pcm, decLen, &written, portMAX_DELAY);
-          Serial.printf("🔊 I2S played %d bytes\n", (int)written);
-          delay(20);
-          digitalWrite(PIN_AMP_SD, LOW);
-        } else {
-          Serial.printf("⚠️ base64 decode failed rc=%d\n", rc);
-        }
-        free(pcm);
-      } else {
-        Serial.println("💥 malloc failed");
+    if (curEvent == "tts" && d.startsWith("{")) {
+      int p = d.indexOf("\"id\":");
+      if (p >= 0) {
+        p += 5;
+        int e = p;
+        while (e < d.length() && isdigit(d[e])) e++;
+        curId = d.substring(p, e).toInt();
       }
-    } else {
-      Serial.println("⚠️ no b64 found in payload");
+
+      int b = d.indexOf("\"b64\":\"");
+      if (b >= 0) {
+        b += 7;
+        String part = d.substring(b);
+        part.replace("\"", "");
+        curB64 += part;
+      }
+
+      inTtsJson = true;
     }
-    Serial.println("--- tts process end ---");
-    return; // ttsイベント処理完了
-  }
-
-
-  // === 通常イベントは従来どおりJSONで処理 ===
-  DynamicJsonDocument doc(32768);
-  DeserializationError err = deserializeJson(doc, payload);
-  if (err) {
-    Serial.printf("❌ JSON parse error: %s\n", err.c_str());
     return;
   }
 
+  // TTS JSON 途中チャンク
+  if (curEvent == "tts" && inTtsJson) {
+    if (line.endsWith("\"}")) {
+      String tmp = line;
+      tmp.replace("\"}", "");
+      curB64 += tmp;
+      handleEventEnd();
+      return;
+    }
 
-  // idの取り方（数値/文字列どちらもケア）
-  String newId = "";
-  if (doc["id"].is<const char*>()) newId = String(doc["id"].as<const char*>());
-  else if (doc["id"].is<long>())   newId = String((long)doc["id"]);
-
-  // id 切替検出 → 旧idを flush
-  if (newId.length() > 0 && currentId.length() > 0 && newId != currentId) {
-    Serial.printf("🔁 id change %s → %s\n", currentId.c_str(), newId.c_str());
-    flushCurrentId(currentId, curB64, curFmt, chunkIdx);
-    curFmt = "";
-    chunkIdx = 0;
-  }
-  if (newId.length() > 0 && newId != currentId) {
-    currentId = newId;
-    Serial.printf("🆔 current id=%s\n", currentId.c_str());
-  }
-
-  // format
-  if (doc["format"].is<const char*>()) {
-    curFmt = String(doc["format"].as<const char*>());
-    Serial.printf("🎚 format=%s\n", curFmt.c_str());
-  }
-
-  // b64
-  if (doc["b64"].is<const char*>()) {
-    const char* b64 = doc["b64"].as<const char*>();
-    size_t pieceLen = strlen(b64);
-    chunkIdx++;
-    curB64.reserve(curB64.length() + pieceLen + 8);
-    curB64 += b64;
-    Serial.printf("   🔸 id=%s chunk#%d piece.len=%d total=%d\n",
-                  currentId.c_str(), chunkIdx, (int)pieceLen, (int)curB64.length());
-  }
-
-  // final が来たら明示的に flush（Lambda側が付けないなら id切替/終端でflush）
-  if (doc["final"].is<bool>() && (bool)doc["final"] == true) {
-    Serial.printf("✅ id=%s final=true → flush now\n", currentId.c_str());
-    flushCurrentId(currentId, curB64, curFmt, chunkIdx);
-    curFmt = "";
-    chunkIdx = 0;
-    currentId = "";
+    curB64 += line;
+    return;
   }
 }
 
-// ==== Lambda通信 ====
-void sendToLambdaAndPlay(String text) {
+// ==== Lambda に送信 & SSE 受信 ====
+void sendToLambdaAndPlay(const String& text) {
   Serial.println("🚀 Sending to Lambda: " + text);
+
+  // 録音停止
+  if (isRecording) {
+    ws.disconnect();
+    isRecording = false;
+    Serial.println("🛑 Stopped recording for TTS");
+  }
+
+  // I2S再生モードに切り替え
+  i2s_driver_uninstall(I2S_NUM_0);
+  setupI2SPlay();
 
   WiFiClientSecure client;
   client.setInsecure();
+
   if (!client.connect(LAMBDA_HOST, 443)) {
     Serial.println("❌ connect failed");
     return;
   }
 
-  // JSONペイロード
-  String payload = "{\"model\":\"OpenAI\",\"voice\":\"nova\",\"messages\":[{\"role\":\"user\",\"content\":\"" + text + "\"}]}";
+  String payload =
+    "{\"model\":\"OpenAI\",\"voice\":\"nova\","
+    "\"messages\":[{\"role\":\"user\",\"content\":\"" + text + "\"}]}";
+
   String req =
-    String("POST ") + LAMBDA_PATH + " HTTP/1.1\r\n" +
-    "Host: " + LAMBDA_HOST + "\r\n" +
-    "Content-Type: application/json\r\n" +
-    "Accept: text/event-stream\r\n" +
-    "Connection: close\r\n" +
-    "Content-Length: " + payload.length() + "\r\n\r\n" +
-    payload;
+    String("POST ") + LAMBDA_PATH + " HTTP/1.1\r\n"
+    "Host: " + LAMBDA_HOST + "\r\n"
+    "Content-Type: application/json\r\n"
+    "Accept: text/event-stream\r\n"
+    "Connection: close\r\n"
+    "Content-Length: " + payload.length() + "\r\n\r\n"
+    + payload;
+
   client.print(req);
 
-  Serial.println("📡 Waiting SSE...");
-
-  // ここから：イベントブロック組み立て（空行で1イベント完結）
-  String evbuf = "";               // イベントブロック蓄積（ヘッダ＋data行）
-  String currentId = "";           // いま収集中のid
-  String curFmt = "";              // いま収集中のformat
-  String curB64 = "";              // id単位で結合するb64
-  int    chunkIdx = 0;             // id単位のチャンク数
-
-  unsigned long lastDataMs = millis();
-  const unsigned long TIMEOUT_MS = 15000; // ★ここ（要求通り場所を明示）
-
+  // HTTPヘッダ飛ばす
   while (true) {
-    while (client.available()) {
-      char c = client.read();
-      evbuf += c;
-      lastDataMs = millis();
+    String line = client.readStringUntil('\n');
+    if (line.length() == 0 || line == "\r") break;
+  }
 
-      // 2連続改行 = 1イベント完結（CRLF/LF両対応）
-      bool end1 = evbuf.endsWith("\n\n");
-      bool end2 = evbuf.endsWith("\r\n\r\n");
-      if (end1 || end2) {
+  Serial.println("📨 SSE START");
 
-        // segmentイベントのとき：text内容だけ抜き出してログ出力
-        if (evbuf.indexOf("event: segment") >= 0 && evbuf.indexOf("\"text\"") >= 0) {
-          int tPos = evbuf.indexOf("\"text\":\"");
-          if (tPos >= 0) {
-            int tEnd = evbuf.indexOf("\"", tPos + 8);
-            if (tEnd > tPos) {
-              String text = evbuf.substring(tPos + 8, tEnd);
-              text.replace("\\n", "\n");
-              text.replace("\\\"", "\"");
-              Serial.printf("💬 segment text: %s\n", text.c_str());
-            }
-          }
+  // SSEボディ
+  while (client.connected() || client.available()) {
+    if (client.available()) {
+      String line = client.readStringUntil('\n');
+      processLine(line);
+    } else {
+      delay(1);
+    }
+  }
+
+  Serial.println("🏁 SSE END");
+  handleEventEnd();
+
+  // 再生完了後、録音再開
+  delay(500);
+  startSTTRecording();
+}
+
+// ==== Soniox WebSocketイベント ====
+void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
+  switch (type) {
+    case WStype_CONNECTED:
+      Serial.println("✅ Connected to Soniox!");
+      {
+        String startMsg =
+          "{\"api_key\":\"" + sonioxKey + "\","
+          "\"model\":\"stt-rt-preview\","
+          "\"audio_format\":\"pcm_s16le\","
+          "\"sample_rate\":16000,"
+          "\"num_channels\":1,"
+          "\"enable_partial_results\":true,"
+          "\"enable_endpoint_detection\":true,"
+          "\"language_hints\":[\"ja\",\"en\"]"
+          "}";
+        ws.sendTXT(startMsg);
+        Serial.println("📤 Sent start message to Soniox");
+      }
+      isRecording = true;
+      break;
+
+    case WStype_TEXT: {
+      String msg = (char*)payload;
+      if (msg.indexOf("\"tokens\"") >= 0) {
+        String newText = "";
+        int pos = 0;
+        while ((pos = msg.indexOf("\"text\":\"", pos)) >= 0) {
+          pos += 8;
+          int end = msg.indexOf("\"", pos);
+          if (end < 0) break;
+          String token = msg.substring(pos, end);
+          if (token != "\\u003cend\\u003e") newText += token;
         }
 
-        // ttsイベントのとき：ログ出力、b64出力、PCMデコード、再生
-        if (evbuf.indexOf("event: tts") >= 0) {
-          Serial.println("🎯--- [tts event detected — printing full preview] ---");
-          Serial.printf("📨 event block received len=%d\n", evbuf.length());
-          Serial.printf("🧾 event block preview (first 300):\n%s\n", evbuf.substring(0, 300).c_str());
-          int tailStart = std::max(0, (int)evbuf.length() - 300);
-          Serial.printf("🧾 event block preview (last 300):\n%s\n", evbuf.substring(tailStart).c_str());
-
-          // b64抽出
-          // イベント内のbase64開始までの文字数 / Endまでの文字数を取得
-          int b64Start = evbuf.indexOf("\"b64\":\"") + 7;
-          int b64End = evbuf.indexOf("\"", b64Start);
-          Serial.printf("🧠 b64Start=%d b64End=%d payload.len=%d\n", b64Start, b64End, payload.length());
-
-          if (b64End > b64Start) {
-            String b64 = evbuf.substring(b64Start, b64End);
-            b64.replace("\n", "");
-            b64.replace("\r", "");
-            b64.replace("\\n", "");
-            b64.replace("\\r", "");
-            b64.trim();
-
-            int previewHead = min(50, (int)b64.length());
-            int previewTail = min(50, (int)b64.length());
-            Serial.printf("🧩 b64.head(%d): %.50s\n", previewHead, b64.substring(0, previewHead).c_str());
-            Serial.printf("🧩 b64.tail(%d): %.50s\n", previewTail, b64.substring(b64.length() - previewTail).c_str());
-            Serial.printf("🎧 b64.len=%d\n", (int)b64.length());
-
-            // --- デコードして再生 ---
-            size_t outLen = b64.length() * 3 / 4 + 8;
-            uint8_t* pcm = (uint8_t*)malloc(outLen);
-            if (pcm) {
-              size_t decLen = 0;
-              int rc = mbedtls_base64_decode(pcm, outLen, &decLen,
-                                            (const unsigned char*)b64.c_str(),
-                                            b64.length());
-              Serial.printf("🎧 decode rc=%d decLen=%d\n", rc, (int)decLen);
-              if (rc == 0 && decLen > 0) {
-                digitalWrite(PIN_AMP_SD, HIGH);
-                delay(8);
-                size_t written;
-                i2s_write(I2S_NUM_1, pcm, decLen, &written, portMAX_DELAY);
-                Serial.printf("🔊 I2S played %d bytes\n", (int)written);
-                delay(20);
-                digitalWrite(PIN_AMP_SD, LOW);
-              } else {
-                Serial.printf("⚠️ base64 decode failed rc=%d\n", rc);
-              }
-              free(pcm);
-            } else {
-              Serial.println("💥 malloc failed");
-            }
+        if (newText.length() > 0) {
+          if (newText.startsWith(partialText)) {
+            partialText = newText;
           } else {
-            Serial.println("⚠️ no b64 found in payload");
+            partialText = newText;
           }
-          Serial.println("--- tts process end ---");
-          return; // ttsイベント処理完了
+          lastPartialMs = millis();
+          armed = true;
+          Serial.println("📝 " + partialText);
         }
-
-
-        // 空行だけのブロックはスキップ
-        String tmp = evbuf; tmp.trim();
-        if (tmp.length() == 0) {
-          Serial.println("🔚 [empty event block]");
-          evbuf = "";
-          continue;
-        }
-        // 処理
-        processEventBlock(evbuf, currentId, curFmt, curB64, chunkIdx);
-        // 次のイベントへ
-        evbuf = "";
       }
+      break;
     }
 
-    // ストリーム終端タイムアウト
-    if (!client.connected() && client.available() == 0) {
-      if (millis() - lastDataMs > TIMEOUT_MS) {
-        Serial.println("⏹ No more data (timeout)");
-        break;
-      }
-    }
-    delay(1);
-  }
+    case WStype_DISCONNECTED:
+      Serial.println("❌ Soniox disconnected");
+      isRecording = false;
+      break;
 
-  // 終了時、取り残しがあればflush
-  if (curB64.length() > 0 && currentId.length() > 0) {
-    Serial.printf("🧹 stream-end flush id=%s total=%d chunks=%d\n", currentId.c_str(), (int)curB64.length(), chunkIdx);
-    flushCurrentId(currentId, curB64, curFmt, chunkIdx);
+    case WStype_BIN:
+    case WStype_ERROR:
+    case WStype_FRAGMENT_TEXT_START:
+    case WStype_FRAGMENT_BIN_START:
+    case WStype_FRAGMENT:
+    case WStype_FRAGMENT_FIN:
+      break;
   }
+}
 
-  Serial.println("🏁 SSE Stream ended");
-  digitalWrite(PIN_AMP_SD, LOW);
+// ==== STT録音開始 ====
+void startSTTRecording() {
+  Serial.println("🎙️ Starting STT recording...");
+
+  // 既存のI2Sドライバーをアンインストール（再開時）
+  i2s_driver_uninstall(I2S_NUM_0);
+  i2s_driver_uninstall(I2S_NUM_1);
+
+  setupI2SRecord();
+
+  ws.beginSSL(SONIOX_WS_URL, SONIOX_WS_PORT, "/transcribe-websocket");
+  ws.onEvent(webSocketEvent);
+  ws.enableHeartbeat(15000, 3000, 2);
+
+  partialText = "";
+  lastFinalText = "";
+  armed = false;
 }
 
 // ==== SETUP ====
 void setup() {
   Serial.begin(921600);
-  delay(300);
-  Serial.println("\n🚀 ToyTalk Unified STT→TTS Start");
+  delay(500);
+  Serial.println("\n🚀 ToyTalk Conversation (STT→LLM→TTS)");
 
   pinMode(PIN_AMP_SD, OUTPUT);
   digitalWrite(PIN_AMP_SD, LOW);
 
+  // WiFi接続
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   while (WiFi.status() != WL_CONNECTED) {
-    delay(400);
+    delay(500);
     Serial.print(".");
   }
   Serial.printf("\n✅ WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
 
+  // Soniox temp key取得
+  HTTPClient http;
+  http.begin(SONIOX_LAMBDA_URL);
+  int code = http.GET();
+  if (code != 200) {
+    Serial.printf("❌ HTTP fail %d\n", code);
+    return;
+  }
+  String resp = http.getString();
+  http.end();
+
+  DynamicJsonDocument doc(512);
+  if (deserializeJson(doc, resp)) {
+    Serial.println("⚠️ JSON parse error");
+    return;
+  }
+  sonioxKey = doc["api_key"].as<String>();
+  Serial.println("✅ Soniox temp key obtained");
+
+  // I2S再生設定
   setupI2SPlay();
 
-  // テストトリガ
-  sendToLambdaAndPlay("こんにちは、私はトイトークです。");
+  // STT録音開始
+  delay(1000);
+  startSTTRecording();
 }
 
-void loop() {}
+// ==== LOOP ====
+void loop() {
+  ws.loop();
+
+  // 録音データをWebSocketに送信
+  if (isRecording && WiFi.status() == WL_CONNECTED && ws.isConnected()) {
+    static uint32_t lastSend = 0;
+    if (millis() - lastSend > 5) {
+      int32_t raw[512];
+      int16_t pcm[512];
+      size_t n = 0;
+      i2s_read(I2S_NUM_0, (void*)raw, sizeof(raw), &n, portMAX_DELAY);
+      int samples = n / sizeof(int32_t);
+      for (int i = 0; i < samples; i++) {
+        pcm[i] = (int16_t)(raw[i] >> 14);
+      }
+      ws.sendBIN((uint8_t*)pcm, samples * sizeof(int16_t));
+      lastSend = millis();
+    }
+  }
+
+  // 無音検出 → 確定文出力（フォールバック）
+  if (armed && partialText.length() > 0 && (millis() - lastPartialMs) >= END_SILENCE_MS) {
+    if (partialText != lastFinalText) {
+      Serial.println("\n✅ 確定文（無音検出）:");
+      Serial.println(partialText);
+      lastFinalText = partialText;
+      sendToLambdaAndPlay(partialText);
+    }
+    armed = false;
+    partialText = "";
+  }
+}
