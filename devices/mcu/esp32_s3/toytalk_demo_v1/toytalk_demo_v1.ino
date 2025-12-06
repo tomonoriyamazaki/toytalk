@@ -44,6 +44,7 @@ bool isRecording = false;
 String curEvent = "";
 int curId = -1;
 String curB64 = "";
+String responseText = "";
 bool inTtsJson = false;
 
 // ==== 音量調整 ====
@@ -124,6 +125,9 @@ void handleEventEnd() {
   if (curEvent == "tts" && curId >= 0 && curB64.length() > 0) {
     Serial.println("===== COMPLETE PCM =====");
     Serial.printf("id=%d, b64_len=%d\n", curId, curB64.length());
+    if (responseText.length() > 0) {
+      Serial.println("[TEXT] " + responseText);
+    }
 
     size_t out_len = 0;
     int maxOut = curB64.length();
@@ -184,6 +188,7 @@ void handleEventEnd() {
   curEvent = "";
   curId = -1;
   curB64 = "";
+  responseText = "";
   inTtsJson = false;
 }
 
@@ -211,6 +216,20 @@ void processLine(String line) {
   if (line.startsWith("data:")) {
     String d = line.substring(5);
     d.trim();
+
+    // segmentイベントの処理（テキストを蓄積）
+    if (curEvent == "segment" && d.startsWith("{")) {
+      int p = d.indexOf("\"text\":\"");
+      if (p >= 0) {
+        p += 8;
+        int e = d.indexOf("\"", p);
+        if (e >= 0) {
+          String segmentText = d.substring(p, e);
+          responseText += segmentText;
+        }
+      }
+      return;
+    }
 
     if (curEvent == "tts" && d.startsWith("{")) {
       int p = d.indexOf("\"id\":");
@@ -363,7 +382,7 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
     }
 
     case WStype_DISCONNECTED:
-      Serial.println("❌ Soniox disconnected");
+      Serial.println("✅ Soniox disconnected");
       isRecording = false;
       break;
 
