@@ -23,11 +23,14 @@ int curId = -1;
 String curB64 = "";
 bool inTtsJson = false;
 
-// ===== mono → stereo 変換 =====
+// ===== mono → stereo 変換（音量調整付き） =====
 void monoToStereo(int16_t* mono, int16_t* stereo, size_t samples) {
+  const float VOLUME = 0.3;  // 30%に減衰（0.0-1.0）GAINピン未接続対策
+
   for (size_t i = 0; i < samples; i++) {
-    stereo[2*i]     = mono[i];
-    stereo[2*i + 1] = mono[i];
+    int16_t sample = (int16_t)(mono[i] * VOLUME);
+    stereo[2*i]     = sample;
+    stereo[2*i + 1] = sample;
   }
 }
 
@@ -281,7 +284,7 @@ void setup() {
   Serial.printf("\n✅ WiFi connected: %s\n", WiFi.localIP().toString().c_str());
 
   // ---- テスト送信 ----
-  sendSimpleSSE("こんにちは、テストです");
+  sendSimpleSSE("こんにちは。テストです");
 }
 
 void loop() {
