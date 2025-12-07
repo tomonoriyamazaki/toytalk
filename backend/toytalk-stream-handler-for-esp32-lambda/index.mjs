@@ -58,17 +58,43 @@
     return /[。！？!?]\s*$/.test(s);
   }
 
-  // OpenAI TTS → base64
-  async function ttsToBase64OpenAI(text, voice, ttsModel) {
+// OpenAI TTS → base64
+async function ttsToBase64OpenAI(text, voice, ttsModel) {
+  try {
     const tts = await openai.audio.speech.create({
       model: ttsModel,
       input: text,
       voice,
-      format: TTS_FORMAT
+      // 🔽 ここを format ではなく response_format に変更
+      response_format: "pcm"
     });
+
     const buf = Buffer.from(await tts.arrayBuffer());
+    console.log(`[TTS] PCM size: ${buf.length} bytes`);
+
+    // 🔽 先頭が MP3 だったら（FF F3 / ID3 など）フォールバックで WAV 再取得
+    if (buf[0] === 0xFF && (buf[1] === 0xF3 || buf[1] === 0xFB || buf[0] === 0x49)) {
+      console.warn("[TTS] PCM not returned, retrying as WAV");
+      const tts2 = await openai.audio.speech.create({
+        model: ttsModel.replace("mini", "tts"), // miniで失敗したら大モデルに切替
+        input: text,
+        voice,
+        format: "wav"
+      });
+      const buf2 = Buffer.from(await tts2.arrayBuffer());
+      return buf2.toString("base64");
+    }
+
+    // ここまで来たら本物のPCM
     return buf.toString("base64");
+
+  } catch (err) {
+    console.error("[TTS] OpenAI PCM fetch failed:", err);
+    throw err;
   }
+}
+
+
 
   // PCM16 (LINEAR16) を WAV へラップして base64 を返す
   function pcm16ToWavBase64(pcmB64, sampleRate = 24000, channels = 1) {
@@ -191,7 +217,9 @@
       throw new Error(msg);
     }
     // json.audioContent は PCM16 (raw)。→ WAV に包んで返す
+    console.log("TTS Content-Type:", tts.headers.get("content-type"));
     return pcm16ToWavBase64(json.audioContent, sampleRateHertz, 1);
+    console.log("TTS Content-Type:", tts.headers.get("content-type"));
   }
 
 
@@ -271,13 +299,21 @@
     if (DEBUG_TIME) {
       send(res, "mark", { k: "llm_start", t: Date.now() });
     }
+
+    // システムプロンプトを追加（会話履歴がある場合は挨拶を省略）
+    const systemPrompt = {
+      role: "system",
+      content: "あなたは子供向けの友好的な音声アシスタントです。簡潔に答えて、自然に会話を続けてください。"
+    };
+    const messagesWithSystem = [systemPrompt, ...messages];
+
     let llmStream;
     if (cfg.llmVendor === "openai") {
       const llm = await openai.chat.completions.create({
         model: cfg.llmModel,
         temperature: 0.7,
         stream: true,
-        messages,
+        messages: messagesWithSystem,
       });
       llmStream = (async function* () {
         for await (const chunk of llm) {
@@ -323,7 +359,7 @@
         let b64, fmt;
         if (cfg.ttsVendor === "openai") {
           b64 = await ttsToBase64OpenAI(t, voice, cfg.ttsModel);
-          fmt = "wav";
+          fmt = TTS_FORMAT;
         } else if (cfg.ttsVendor === "google") {
           const g = resolveGoogleTtsFromBody(body);
           const w = await ttsToBase64Google(t, g);
@@ -337,6 +373,7 @@
           throw new Error("Unknown ttsVendor");
         }
         send(res, "tts", { id: segSeq, format: fmt, b64 });
+        console.log(`[Lambda] id=${segSeq}, b64.length=${b64?.length ?? 0}, text="${t}"`);
       } catch (e) {
         send(res, "error", { message: `TTS failed: ${e?.message || e}` });
       }

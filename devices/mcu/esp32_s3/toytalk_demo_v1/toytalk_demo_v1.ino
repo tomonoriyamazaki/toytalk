@@ -47,8 +47,34 @@ String curB64 = "";
 String responseText = "";
 bool inTtsJson = false;
 
+// ==== 会話履歴 (直近5回分) ====
+const int MAX_HISTORY = 5;
+struct Message {
+  String role;
+  String content;
+};
+Message conversationHistory[MAX_HISTORY * 2];  // user + assistant のペアで5回分
+int historyCount = 0;
+
 // ==== 音量調整 ====
 const float VOLUME = 0.3;
+
+// ==== 会話履歴に追加 ====
+void addToHistory(const String& role, const String& content) {
+  // 履歴が最大数に達したら古いものを削除（2つずつ：user + assistant）
+  if (historyCount >= MAX_HISTORY * 2) {
+    for (int i = 0; i < historyCount - 2; i++) {
+      conversationHistory[i] = conversationHistory[i + 2];
+    }
+    historyCount -= 2;
+  }
+
+  conversationHistory[historyCount].role = role;
+  conversationHistory[historyCount].content = content;
+  historyCount++;
+
+  Serial.printf("💾 Added to history [%s]: %s\n", role.c_str(), content.c_str());
+}
 
 // ==== mono → stereo 変換（音量調整付き） ====
 void monoToStereo(int16_t* mono, int16_t* stereo, size_t samples) {
@@ -129,6 +155,12 @@ void handleEventEnd() {
       Serial.println("[TEXT] " + responseText);
     }
 
+    // PSRAM使用状況
+    size_t psram_total = ESP.getPsramSize();
+    size_t psram_free_before = ESP.getFreePsram();
+    Serial.printf("[PSRAM] Total=%d KB, Free=%d KB, Used=%d KB\n",
+                  psram_total/1024, psram_free_before/1024, (psram_total-psram_free_before)/1024);
+
     size_t out_len = 0;
     int maxOut = curB64.length();
     uint8_t* mono_pcm = (uint8_t*)ps_malloc(maxOut);
@@ -176,12 +208,22 @@ void handleEventEnd() {
 
     monoToStereo((int16_t*)mono_pcm, stereo, samples);
 
+    // ピーク時のPSRAM使用状況
+    size_t psram_free_peak = ESP.getFreePsram();
+    Serial.printf("[PSRAM PEAK] Free=%d KB, Used=%d KB\n",
+                  psram_free_peak/1024, (psram_total-psram_free_peak)/1024);
+
     size_t written = 0;
     i2s_write(I2S_NUM_1, stereo, stereo_bytes, &written, portMAX_DELAY);
     Serial.printf("[I2S] written=%d bytes\n", written);
 
     free(stereo);
     free(mono_pcm);
+
+    // 解放後のPSRAM使用状況
+    size_t psram_free_after = ESP.getFreePsram();
+    Serial.printf("[PSRAM AFTER] Free=%d KB, Used=%d KB\n",
+                  psram_free_after/1024, (psram_total-psram_free_after)/1024);
     Serial.println("========================");
   }
 
@@ -291,9 +333,23 @@ void sendToLambdaAndPlay(const String& text) {
     return;
   }
 
+  // 会話履歴を含むメッセージ配列を構築
+  String messagesJson = "[";
+  for (int i = 0; i < historyCount; i++) {
+    if (i > 0) messagesJson += ",";
+    messagesJson += "{\"role\":\"" + conversationHistory[i].role + "\",";
+    messagesJson += "\"content\":\"" + conversationHistory[i].content + "\"}";
+  }
+  // 現在のユーザー入力を追加
+  if (historyCount > 0) messagesJson += ",";
+  messagesJson += "{\"role\":\"user\",\"content\":\"" + text + "\"}";
+  messagesJson += "]";
+
   String payload =
     "{\"model\":\"OpenAI\",\"voice\":\"nova\","
-    "\"messages\":[{\"role\":\"user\",\"content\":\"" + text + "\"}]}";
+    "\"messages\":" + messagesJson + "}";
+
+  Serial.printf("📝 History count: %d\n", historyCount);
 
   String req =
     String("POST ") + LAMBDA_PATH + " HTTP/1.1\r\n"
@@ -326,6 +382,12 @@ void sendToLambdaAndPlay(const String& text) {
 
   Serial.println("🏁 SSE END");
   handleEventEnd();
+
+  // 会話履歴に追加（ユーザー入力とアシスタント応答）
+  addToHistory("user", text);
+  if (responseText.length() > 0) {
+    addToHistory("assistant", responseText);
+  }
 
   // 再生完了後、録音再開
   delay(500);
