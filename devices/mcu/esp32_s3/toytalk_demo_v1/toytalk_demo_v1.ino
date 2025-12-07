@@ -207,8 +207,8 @@ void setupI2SPlay() {
     .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
     .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB),
     .intr_alloc_flags = 0,
-    .dma_buf_count = 8,
-    .dma_buf_len = 1024,
+    .dma_buf_count = 32,    // 8 → 32 に増加（バッファ数を増やす）
+    .dma_buf_len = 1024,    // 最大値のまま
     .use_apll = true,
     .tx_desc_auto_clear = true,
     .fixed_mclk = 0
@@ -464,7 +464,7 @@ void sendToLambdaAndPlay(const String& text) {
 
     // 現在のチャンクを小さいバッファで再生
     if (hasCurrentChunk) {
-      const size_t PLAY_CHUNK_SIZE = 4096;  // 4KB ずつ再生
+      const size_t PLAY_CHUNK_SIZE = 16384;  // 4KB → 16KB に増加
       size_t remainingBytes = currentPlayChunk.stereoBytes - playOffset;
 
       if (remainingBytes > 0) {
