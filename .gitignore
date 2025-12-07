@@ -17,3 +17,4 @@ dist/
 *_autosave-*
 ~*.kicad_*.lck
 #auto_saved_files#
+devices/KiCad/toytalk_demo_v1/toytalk_demo_v1/#auto_saved_files#
