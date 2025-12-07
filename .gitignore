@@ -12,3 +12,8 @@ dist/
 
 # key
 *.env
+
+# KiCad temporary files
+*_autosave-*
+~*.kicad_*.lck
+#auto_saved_files#
