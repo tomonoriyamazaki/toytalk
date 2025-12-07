@@ -415,7 +415,12 @@ void sendToLambdaAndPlay(const String& text) {
   int playedChunks = 0;    // 再生済みチャンク数
   int lastChunkId = 0;     // 最後に受信したチャンクID
 
-  while (!sseComplete || playedChunks < expectedChunks) {
+  // 再生状態管理（staticからループ外変数に変更）
+  AudioChunk currentPlayChunk = {0};
+  size_t playOffset = 0;
+  bool hasCurrentChunk = false;
+
+  while (!sseComplete || playedChunks < expectedChunks || hasCurrentChunk) {
     // SSE受信処理
     if (!sseComplete && (client.connected() || client.available())) {
       if (client.available()) {
@@ -439,9 +444,6 @@ void sendToLambdaAndPlay(const String& text) {
     }
 
     // 再生キューをチェック（ノンブロッキング）
-    static AudioChunk currentPlayChunk = {0};
-    static size_t playOffset = 0;
-    static bool hasCurrentChunk = false;
 
     // 現在再生中のチャンクがなければ、キューから取得
     if (!hasCurrentChunk) {
@@ -464,7 +466,7 @@ void sendToLambdaAndPlay(const String& text) {
 
     // 現在のチャンクを小さいバッファで再生
     if (hasCurrentChunk) {
-      const size_t PLAY_CHUNK_SIZE = 16384;  // 4KB → 16KB に増加
+      const size_t PLAY_CHUNK_SIZE = 4096;  // 一旦4KBに戻す
       size_t remainingBytes = currentPlayChunk.stereoBytes - playOffset;
 
       if (remainingBytes > 0) {
@@ -484,20 +486,52 @@ void sendToLambdaAndPlay(const String& text) {
       if (playOffset >= currentPlayChunk.stereoBytes) {
         Serial.printf("[I2S] Total written=%d bytes\n", playOffset);
 
+        // 最後のチャンクの場合、DMAバッファが空になるまで待つ
+        if (playedChunks + 1 == expectedChunks && sseComplete) {
+          Serial.println("[PLAY] Last chunk - waiting for DMA buffer flush...");
+          delay(700);  // DMAバッファ(32KB)のフラッシュ待ち + 十分な安全マージン
+        }
+
         // メモリ解放
         free(currentPlayChunk.stereoData);
-        playedChunks++;
 
-        Serial.printf("[PLAY] Finished id=%d (%d/%d)\n", currentPlayChunk.id, playedChunks, expectedChunks);
+        Serial.printf("[PLAY] Finished id=%d (%d/%d)\n", currentPlayChunk.id, playedChunks + 1, expectedChunks);
 
         // 次のチャンクの準備
         hasCurrentChunk = false;
         playOffset = 0;
+        playedChunks++;
       }
     }
   }
 
+  // ループ終了後、再生キューに残っているチャンクを処理
+  Serial.println("🔊 Checking for remaining chunks...");
+  AudioChunk finalChunk;
+  while (xQueueReceive(playQueue, &finalChunk, 100 / portTICK_PERIOD_MS) == pdTRUE) {
+    Serial.printf("[PLAY] Playing final chunk id=%d, bytes=%d\n", finalChunk.id, finalChunk.stereoBytes);
+
+    size_t offset = 0;
+    while (offset < finalChunk.stereoBytes) {
+      size_t remaining = finalChunk.stereoBytes - offset;
+      size_t writeSize = (remaining < 16384) ? remaining : 16384;
+      size_t written = 0;
+
+      i2s_write(I2S_NUM_1, (uint8_t*)finalChunk.stereoData + offset, writeSize, &written, portMAX_DELAY);
+      offset += written;
+    }
+
+    Serial.printf("[I2S] Final chunk written=%d bytes\n", offset);
+    free(finalChunk.stereoData);
+    playedChunks++;
+    Serial.printf("[PLAY] Finished final chunk id=%d (%d/%d)\n", finalChunk.id, playedChunks, expectedChunks);
+  }
+
   Serial.println("🔊 Playback complete");
+
+  // I2S DMAバッファに残っているデータを全て再生するまで待つ
+  delay(350);
+  Serial.println("🔊 Buffer flushed");
 
   // 会話履歴に追加（ユーザー入力とアシスタント応答）
   addToHistory("user", text);
@@ -506,7 +540,7 @@ void sendToLambdaAndPlay(const String& text) {
   }
 
   // 再生完了後、録音再開
-  delay(500);
+  delay(150);
   startSTTRecording();
 }
 
@@ -649,7 +683,7 @@ void setup() {
     "DecodeTask",         // タスク名
     16384,                // スタックサイズ (16KB)
     NULL,                 // パラメータ
-    2,                    // 優先度（高め）
+    1,                    // 優先度（低め - I2S再生を優先）
     &decodeTaskHandle,    // タスクハンドル
     0                     // Core 0で実行
   );
