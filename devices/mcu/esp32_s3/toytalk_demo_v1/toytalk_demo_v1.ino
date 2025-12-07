@@ -198,7 +198,8 @@ void setupI2SRecord() {
 // ==== I2S 再生設定 (TTS) ====
 void setupI2SPlay() {
   pinMode(PIN_AMP_SD, OUTPUT);
-  digitalWrite(PIN_AMP_SD, HIGH);
+  digitalWrite(PIN_AMP_SD, LOW);  // まずLOWで初期化
+  delay(10);  // アンプがGAIN設定を読み取る時間を確保
 
   i2s_config_t cfg = {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
@@ -224,6 +225,10 @@ void setupI2SPlay() {
   i2s_driver_install(I2S_NUM_1, &cfg, 0, NULL);
   i2s_set_pin(I2S_NUM_1, &pins);
   i2s_set_clk(I2S_NUM_1, SAMPLE_RATE_TTS, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
+
+  // I2S設定完了後にアンプを有効化
+  digitalWrite(PIN_AMP_SD, HIGH);
+  delay(10);  // アンプ起動待ち
 }
 
 // ==== TTS イベント終了処理（パイプライン版） ====
