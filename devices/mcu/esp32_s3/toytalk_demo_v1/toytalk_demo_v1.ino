@@ -439,28 +439,61 @@ void sendToLambdaAndPlay(const String& text) {
     }
 
     // 再生キューをチェック（ノンブロッキング）
-    AudioChunk playChunk;
-    if (xQueueReceive(playQueue, &playChunk, 0) == pdTRUE) {
-      Serial.printf("[PLAY] Playing id=%d, bytes=%d\n", playChunk.id, playChunk.stereoBytes);
+    static AudioChunk currentPlayChunk = {0};
+    static size_t playOffset = 0;
+    static bool hasCurrentChunk = false;
 
-      // PSRAM使用状況
-      size_t psram_total = ESP.getPsramSize();
-      size_t psram_free = ESP.getFreePsram();
-      Serial.printf("[PSRAM] Free=%d KB, Used=%d KB\n",
-                    psram_free/1024, (psram_total-psram_free)/1024);
+    // 現在再生中のチャンクがなければ、キューから取得
+    if (!hasCurrentChunk) {
+      if (xQueueReceive(playQueue, &currentPlayChunk, 0) == pdTRUE) {
+        Serial.printf("[PLAY] Start playing id=%d, bytes=%d\n", currentPlayChunk.id, currentPlayChunk.stereoBytes);
 
-      size_t written = 0;
-      i2s_write(I2S_NUM_1, playChunk.stereoData, playChunk.stereoBytes, &written, portMAX_DELAY);
-      Serial.printf("[I2S] written=%d bytes\n", written);
+        // PSRAM使用状況
+        size_t psram_total = ESP.getPsramSize();
+        size_t psram_free = ESP.getFreePsram();
+        Serial.printf("[PSRAM] Free=%d KB, Used=%d KB\n",
+                      psram_free/1024, (psram_total-psram_free)/1024);
 
-      // 再生完了後にメモリ解放
-      free(playChunk.stereoData);
-      playedChunks++;
+        playOffset = 0;
+        hasCurrentChunk = true;
+      } else if (!sseComplete) {
+        // 再生データがまだない場合は少し待つ
+        delay(1);
+      }
+    }
 
-      Serial.printf("[PLAY] Finished id=%d (%d/%d)\n", playChunk.id, playedChunks, expectedChunks);
-    } else if (!sseComplete) {
-      // 再生データがまだない場合は少し待つ
-      delay(1);
+    // 現在のチャンクを小さいバッファで再生
+    if (hasCurrentChunk) {
+      const size_t PLAY_CHUNK_SIZE = 4096;  // 4KB ずつ再生
+      size_t remainingBytes = currentPlayChunk.stereoBytes - playOffset;
+
+      if (remainingBytes > 0) {
+        size_t writeSize = (remainingBytes < PLAY_CHUNK_SIZE) ? remainingBytes : PLAY_CHUNK_SIZE;
+        size_t written = 0;
+
+        i2s_write(I2S_NUM_1,
+                  (uint8_t*)currentPlayChunk.stereoData + playOffset,
+                  writeSize,
+                  &written,
+                  portMAX_DELAY);
+
+        playOffset += written;
+      }
+
+      // チャンク再生完了チェック
+      if (playOffset >= currentPlayChunk.stereoBytes) {
+        Serial.printf("[I2S] Total written=%d bytes\n", playOffset);
+
+        // メモリ解放
+        free(currentPlayChunk.stereoData);
+        playedChunks++;
+
+        Serial.printf("[PLAY] Finished id=%d (%d/%d)\n", currentPlayChunk.id, playedChunks, expectedChunks);
+
+        // 次のチャンクの準備
+        hasCurrentChunk = false;
+        playOffset = 0;
+      }
     }
   }
 
