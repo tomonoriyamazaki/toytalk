@@ -57,7 +57,7 @@ Message conversationHistory[MAX_HISTORY * 2];  // user + assistant のペアで5
 int historyCount = 0;
 
 // ==== 音量調整 ====
-const float VOLUME = 0.3;
+const float VOLUME = 0.4;
 
 // ==== パイプライン処理用 ====
 struct AudioChunk {
