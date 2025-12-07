@@ -413,18 +413,28 @@ void sendToLambdaAndPlay(const String& text) {
   bool sseComplete = false;
   int expectedChunks = 0;  // 受信した総チャンク数
   int playedChunks = 0;    // 再生済みチャンク数
+  int lastChunkId = 0;     // 最後に受信したチャンクID
 
   while (!sseComplete || playedChunks < expectedChunks) {
     // SSE受信処理
     if (!sseComplete && (client.connected() || client.available())) {
       if (client.available()) {
+        int prevId = curId;  // processLine前のIDを保存
         String line = client.readStringUntil('\n');
         processLine(line);
+        // 新しいチャンクが追加されたら記録
+        if (curId > prevId && curId > lastChunkId) {
+          lastChunkId = curId;
+        }
       }
     } else if (!sseComplete) {
       Serial.println("🏁 SSE END");
       handleEventEnd();
-      expectedChunks = curId;  // 最後のチャンクIDを記録
+      // 最後のチャンクを記録
+      if (lastChunkId > 0) {
+        expectedChunks = lastChunkId;
+      }
+      Serial.printf("[MAIN] Expected chunks: %d\n", expectedChunks);
       sseComplete = true;
     }
 
