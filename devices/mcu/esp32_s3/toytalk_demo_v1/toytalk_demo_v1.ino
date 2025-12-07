@@ -59,6 +59,86 @@ int historyCount = 0;
 // ==== 音量調整 ====
 const float VOLUME = 0.3;
 
+// ==== パイプライン処理用 ====
+struct AudioChunk {
+  int id;
+  char* b64;            // String → char* に変更
+  size_t b64Len;
+  int16_t* stereoData;  // デコード済みステレオPCM
+  size_t stereoBytes;
+};
+
+QueueHandle_t encodeQueue;  // Base64データを受け取るキュー
+QueueHandle_t playQueue;    // デコード済みデータを受け取るキュー
+TaskHandle_t decodeTaskHandle = NULL;
+
+// ==== デコードタスク（FreeRTOS） ====
+void decodeTask(void* parameter) {
+  AudioChunk chunk;
+
+  while (true) {
+    // エンコードキューからBase64データを受信（ブロッキング）
+    if (xQueueReceive(encodeQueue, &chunk, portMAX_DELAY) == pdTRUE) {
+      Serial.printf("[DECODE TASK] Processing id=%d, b64_len=%d\n", chunk.id, chunk.b64Len);
+
+      // Base64デコード
+      size_t out_len = 0;
+      int maxOut = chunk.b64Len;
+      uint8_t* mono_pcm = (uint8_t*)ps_malloc(maxOut);
+
+      if (!mono_pcm) {
+        Serial.println("[DECODE TASK] ps_malloc failed");
+        free(chunk.b64);  // b64メモリ解放
+        continue;
+      }
+
+      int ret = mbedtls_base64_decode(
+        mono_pcm, maxOut, &out_len,
+        (const unsigned char*)chunk.b64,
+        chunk.b64Len
+      );
+
+      // Base64文字列のメモリを解放
+      free(chunk.b64);
+
+      if (ret != 0 || out_len == 0) {
+        Serial.println("[DECODE TASK] decode failed");
+        free(mono_pcm);
+        continue;
+      }
+
+      // ステレオ変換
+      size_t samples = out_len / 2;
+      size_t stereo_bytes = samples * 4;
+      int16_t* stereo = (int16_t*)ps_malloc(stereo_bytes);
+
+      if (!stereo) {
+        Serial.println("[DECODE TASK] stereo ps_malloc failed");
+        free(mono_pcm);
+        continue;
+      }
+
+      monoToStereo((int16_t*)mono_pcm, stereo, samples);
+      free(mono_pcm);
+
+      // デコード済みデータを再生キューに送信
+      AudioChunk decoded;
+      decoded.id = chunk.id;
+      decoded.b64 = NULL;
+      decoded.b64Len = 0;
+      decoded.stereoData = stereo;
+      decoded.stereoBytes = stereo_bytes;
+
+      if (xQueueSend(playQueue, &decoded, portMAX_DELAY) != pdTRUE) {
+        Serial.println("[DECODE TASK] Failed to send to play queue");
+        free(stereo);
+      } else {
+        Serial.printf("[DECODE TASK] Sent to play queue: id=%d, bytes=%d\n", decoded.id, decoded.stereoBytes);
+      }
+    }
+  }
+}
+
 // ==== 会話履歴に追加 ====
 void addToHistory(const String& role, const String& content) {
   // 履歴が最大数に達したら古いものを削除（2つずつ：user + assistant）
@@ -146,7 +226,7 @@ void setupI2SPlay() {
   i2s_set_clk(I2S_NUM_1, SAMPLE_RATE_TTS, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
 }
 
-// ==== TTS イベント終了処理 ====
+// ==== TTS イベント終了処理（パイプライン版） ====
 void handleEventEnd() {
   if (curEvent == "tts" && curId >= 0 && curB64.length() > 0) {
     Serial.println("===== COMPLETE PCM =====");
@@ -155,76 +235,35 @@ void handleEventEnd() {
       Serial.println("[TEXT] " + responseText);
     }
 
-    // PSRAM使用状況
-    size_t psram_total = ESP.getPsramSize();
-    size_t psram_free_before = ESP.getFreePsram();
-    Serial.printf("[PSRAM] Total=%d KB, Free=%d KB, Used=%d KB\n",
-                  psram_total/1024, psram_free_before/1024, (psram_total-psram_free_before)/1024);
-
-    size_t out_len = 0;
-    int maxOut = curB64.length();
-    uint8_t* mono_pcm = (uint8_t*)ps_malloc(maxOut);
-
-    if (!mono_pcm) {
-      Serial.println("[ERR] ps_malloc failed");
+    // Base64文字列をヒープにコピー
+    size_t len = curB64.length();
+    char* b64Copy = (char*)malloc(len + 1);
+    if (!b64Copy) {
+      Serial.println("[MAIN] malloc failed for b64Copy");
       curEvent = "";
       curId = -1;
       curB64 = "";
+      responseText = "";
       inTtsJson = false;
       return;
     }
+    memcpy(b64Copy, curB64.c_str(), len);
+    b64Copy[len] = '\0';
 
-    int ret = mbedtls_base64_decode(
-      mono_pcm, maxOut, &out_len,
-      (const unsigned char*)curB64.c_str(),
-      curB64.length()
-    );
+    // デコードキューにBase64データを送信
+    AudioChunk chunk;
+    chunk.id = curId;
+    chunk.b64 = b64Copy;
+    chunk.b64Len = len;
+    chunk.stereoData = NULL;
+    chunk.stereoBytes = 0;
 
-    Serial.printf("[DECODE] ret=%d, out_len=%d\n", ret, out_len);
-
-    if (ret != 0 || out_len == 0) {
-      Serial.println("[ERR] decode failed");
-      free(mono_pcm);
-      curEvent = "";
-      curId = -1;
-      curB64 = "";
-      inTtsJson = false;
-      return;
+    if (xQueueSend(encodeQueue, &chunk, portMAX_DELAY) == pdTRUE) {
+      Serial.printf("[MAIN] Sent to encode queue: id=%d\n", chunk.id);
+    } else {
+      Serial.println("[MAIN] Failed to send to encode queue");
+      free(b64Copy);  // 送信失敗時はメモリ解放
     }
-
-    size_t samples = out_len / 2;
-    size_t stereo_bytes = samples * 4;
-    int16_t* stereo = (int16_t*)ps_malloc(stereo_bytes);
-
-    if (!stereo) {
-      Serial.println("[ERR] stereo ps_malloc failed");
-      free(mono_pcm);
-      curEvent = "";
-      curId = -1;
-      curB64 = "";
-      inTtsJson = false;
-      return;
-    }
-
-    monoToStereo((int16_t*)mono_pcm, stereo, samples);
-
-    // ピーク時のPSRAM使用状況
-    size_t psram_free_peak = ESP.getFreePsram();
-    Serial.printf("[PSRAM PEAK] Free=%d KB, Used=%d KB\n",
-                  psram_free_peak/1024, (psram_total-psram_free_peak)/1024);
-
-    size_t written = 0;
-    i2s_write(I2S_NUM_1, stereo, stereo_bytes, &written, portMAX_DELAY);
-    Serial.printf("[I2S] written=%d bytes\n", written);
-
-    free(stereo);
-    free(mono_pcm);
-
-    // 解放後のPSRAM使用状況
-    size_t psram_free_after = ESP.getFreePsram();
-    Serial.printf("[PSRAM AFTER] Free=%d KB, Used=%d KB\n",
-                  psram_free_after/1024, (psram_total-psram_free_after)/1024);
-    Serial.println("========================");
   }
 
   curEvent = "";
@@ -370,18 +409,52 @@ void sendToLambdaAndPlay(const String& text) {
 
   Serial.println("📨 SSE START");
 
-  // SSEボディ
-  while (client.connected() || client.available()) {
-    if (client.available()) {
-      String line = client.readStringUntil('\n');
-      processLine(line);
-    } else {
+  // SSE受信と並行して再生
+  bool sseComplete = false;
+  int expectedChunks = 0;  // 受信した総チャンク数
+  int playedChunks = 0;    // 再生済みチャンク数
+
+  while (!sseComplete || playedChunks < expectedChunks) {
+    // SSE受信処理
+    if (!sseComplete && (client.connected() || client.available())) {
+      if (client.available()) {
+        String line = client.readStringUntil('\n');
+        processLine(line);
+      }
+    } else if (!sseComplete) {
+      Serial.println("🏁 SSE END");
+      handleEventEnd();
+      expectedChunks = curId;  // 最後のチャンクIDを記録
+      sseComplete = true;
+    }
+
+    // 再生キューをチェック（ノンブロッキング）
+    AudioChunk playChunk;
+    if (xQueueReceive(playQueue, &playChunk, 0) == pdTRUE) {
+      Serial.printf("[PLAY] Playing id=%d, bytes=%d\n", playChunk.id, playChunk.stereoBytes);
+
+      // PSRAM使用状況
+      size_t psram_total = ESP.getPsramSize();
+      size_t psram_free = ESP.getFreePsram();
+      Serial.printf("[PSRAM] Free=%d KB, Used=%d KB\n",
+                    psram_free/1024, (psram_total-psram_free)/1024);
+
+      size_t written = 0;
+      i2s_write(I2S_NUM_1, playChunk.stereoData, playChunk.stereoBytes, &written, portMAX_DELAY);
+      Serial.printf("[I2S] written=%d bytes\n", written);
+
+      // 再生完了後にメモリ解放
+      free(playChunk.stereoData);
+      playedChunks++;
+
+      Serial.printf("[PLAY] Finished id=%d (%d/%d)\n", playChunk.id, playedChunks, expectedChunks);
+    } else if (!sseComplete) {
+      // 再生データがまだない場合は少し待つ
       delay(1);
     }
   }
 
-  Serial.println("🏁 SSE END");
-  handleEventEnd();
+  Serial.println("🔊 Playback complete");
 
   // 会話履歴に追加（ユーザー入力とアシスタント応答）
   addToHistory("user", text);
@@ -516,6 +589,33 @@ void setup() {
 
   // I2S再生設定
   setupI2SPlay();
+
+  // パイプライン処理用のキューとタスクを初期化
+  encodeQueue = xQueueCreate(5, sizeof(AudioChunk));  // 最大5チャンクをバッファ
+  playQueue = xQueueCreate(5, sizeof(AudioChunk));
+
+  if (encodeQueue == NULL || playQueue == NULL) {
+    Serial.println("❌ Failed to create queues");
+    return;
+  }
+  Serial.println("✅ Queues created");
+
+  // デコードタスクを起動（Core 0で実行）
+  xTaskCreatePinnedToCore(
+    decodeTask,           // タスク関数
+    "DecodeTask",         // タスク名
+    16384,                // スタックサイズ (16KB)
+    NULL,                 // パラメータ
+    2,                    // 優先度（高め）
+    &decodeTaskHandle,    // タスクハンドル
+    0                     // Core 0で実行
+  );
+
+  if (decodeTaskHandle == NULL) {
+    Serial.println("❌ Failed to create decode task");
+    return;
+  }
+  Serial.println("✅ Decode task created on Core 0");
 
   // STT録音開始
   delay(1000);
