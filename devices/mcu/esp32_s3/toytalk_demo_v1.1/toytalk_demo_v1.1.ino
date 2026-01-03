@@ -509,6 +509,9 @@ void sendToLambdaAndPlay(const String& text) {
     addToHistory("assistant", responseText);
   }
 
+  // 再生I2Sドライバーをクリーンにアンインストール
+  i2s_driver_uninstall(I2S_NUM_1);
+
   // 再生完了後、録音再開
   delay(150);
   startSTTRecording();
@@ -582,10 +585,9 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
 void startSTTRecording() {
   Serial.println("🎙️ Starting STT recording...");
 
-  // STT録音用I2Sドライバー（I2S_NUM_0）をアンインストール
-  // 注: I2S_NUM_1（再生用）はアンインストールしない（最後の音声が切れるのを防ぐ）
-  i2s_driver_uninstall(I2S_NUM_0);
-
+  // I2S_NUM_0は既にsendToLambdaAndPlay()でアンインストール済み
+  // I2S_NUM_1もsendToLambdaAndPlay()のバッファフラッシュ後にアンインストール済み
+  // ここでは新しくI2S_NUM_0（録音用）をセットアップするだけ
   setupI2SRecord();
 
   ws.beginSSL(SONIOX_WS_URL, SONIOX_WS_PORT, "/transcribe-websocket");
