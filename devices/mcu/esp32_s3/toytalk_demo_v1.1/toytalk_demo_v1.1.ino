@@ -500,7 +500,7 @@ void sendToLambdaAndPlay(const String& text) {
   Serial.println("🔊 Playback complete");
 
   // I2S DMAバッファに残っているデータを全て再生するまで待つ
-  delay(350);
+  delay(2000);
   Serial.println("🔊 Buffer flushed");
 
   // 会話履歴に追加（ユーザー入力とアシスタント応答）
@@ -510,6 +510,7 @@ void sendToLambdaAndPlay(const String& text) {
   }
 
   // 再生I2Sドライバーをクリーンにアンインストール
+  i2s_stop(I2S_NUM_1);
   i2s_driver_uninstall(I2S_NUM_1);
 
   // 再生完了後、録音再開
