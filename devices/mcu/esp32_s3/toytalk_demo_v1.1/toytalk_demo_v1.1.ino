@@ -582,9 +582,9 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
 void startSTTRecording() {
   Serial.println("🎙️ Starting STT recording...");
 
-  // 既存のI2Sドライバーをアンインストール（再開時）
+  // STT録音用I2Sドライバー（I2S_NUM_0）をアンインストール
+  // 注: I2S_NUM_1（再生用）はアンインストールしない（最後の音声が切れるのを防ぐ）
   i2s_driver_uninstall(I2S_NUM_0);
-  i2s_driver_uninstall(I2S_NUM_1);
 
   setupI2SRecord();
 
