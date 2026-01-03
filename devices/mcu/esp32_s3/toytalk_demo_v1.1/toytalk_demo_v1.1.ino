@@ -58,60 +58,6 @@ int historyCount = 0;
 // ==== 音量調整 ====
 const float VOLUME = 0.4;
 
-// ==== パイプライン処理用 ====
-struct AudioChunk {
-  int id;
-  uint8_t* monoPcm;     // 生のmono PCMデータ
-  size_t monoBytes;
-  int16_t* stereoData;  // ステレオ変換後のPCM
-  size_t stereoBytes;
-};
-
-QueueHandle_t encodeQueue;  // mono PCMデータを受け取るキュー
-QueueHandle_t playQueue;    // stereo変換済みデータを受け取るキュー
-TaskHandle_t decodeTaskHandle = NULL;
-
-// ==== Stereo変換タスク（FreeRTOS） ====
-void decodeTask(void* parameter) {
-  AudioChunk chunk;
-
-  while (true) {
-    // エンコードキューからmono PCMデータを受信（ブロッキング）
-    if (xQueueReceive(encodeQueue, &chunk, portMAX_DELAY) == pdTRUE) {
-      Serial.printf("[STEREO TASK] Processing id=%d, mono_bytes=%d\n", chunk.id, chunk.monoBytes);
-
-      // ステレオ変換
-      size_t samples = chunk.monoBytes / 2;  // 16-bit samples
-      size_t stereo_bytes = samples * 4;     // 2ch × 16bit = 4 bytes per sample
-      int16_t* stereo = (int16_t*)ps_malloc(stereo_bytes);
-
-      if (!stereo) {
-        Serial.println("[STEREO TASK] ps_malloc failed");
-        free(chunk.monoPcm);
-        continue;
-      }
-
-      monoToStereo((int16_t*)chunk.monoPcm, stereo, samples);
-      free(chunk.monoPcm);  // mono PCMメモリ解放
-
-      // ステレオデータを再生キューに送信
-      AudioChunk converted;
-      converted.id = chunk.id;
-      converted.monoPcm = NULL;
-      converted.monoBytes = 0;
-      converted.stereoData = stereo;
-      converted.stereoBytes = stereo_bytes;
-
-      if (xQueueSend(playQueue, &converted, portMAX_DELAY) != pdTRUE) {
-        Serial.println("[STEREO TASK] Failed to send to play queue");
-        free(stereo);
-      } else {
-        Serial.printf("[STEREO TASK] Sent to play queue: id=%d, stereo_bytes=%d\n", converted.id, converted.stereoBytes);
-      }
-    }
-  }
-}
-
 // ==== 会話履歴に追加 ====
 void addToHistory(const String& role, const String& content) {
   // 履歴が最大数に達したら古いものを削除（2つずつ：user + assistant）
@@ -426,28 +372,35 @@ void processPCM(WiFiClientSecure& client, uint32_t length) {
     return;
   }
 
-  Serial.printf("[PCM] Received %d bytes [0x%02X 0x%02X 0x%02X...]\n",
-                bytesRead, pcmData[0], pcmData[1], pcmData[2]);
+  // チャンク即再生方式：受信したらすぐstereo変換→再生
+  size_t samples = bytesRead / 2;  // 16-bit samples
+  size_t stereoBytes = samples * 4;  // 2ch × 16bit = 4 bytes per sample
 
-  // エンコードキュー (mono PCM) に送信
-  AudioChunk chunk;
-  chunk.id = curSegmentId;
-  chunk.monoPcm = pcmData;
-  chunk.monoBytes = bytesRead;
-  chunk.stereoData = NULL;
-  chunk.stereoBytes = 0;
-
-  if (xQueueSend(encodeQueue, &chunk, portMAX_DELAY) == pdTRUE) {
-    Serial.printf("[PCM] Sent to encode queue: id=%d, bytes=%d\n", chunk.id, chunk.monoBytes);
-  } else {
-    Serial.println("[PCM] Failed to send to encode queue");
+  // stereoバッファ確保
+  int16_t* stereo = (int16_t*)malloc(stereoBytes);
+  if (!stereo) {
+    Serial.println("[PCM] stereo malloc failed!");
     free(pcmData);
+    return;
   }
+
+  // mono→stereo変換
+  monoToStereo((int16_t*)pcmData, stereo, samples);
+  free(pcmData);  // monoデータはもう不要
+
+  // 即座にI2S再生
+  size_t written = 0;
+  i2s_write(I2S_NUM_1, (uint8_t*)stereo, stereoBytes, &written, portMAX_DELAY);
+
+  Serial.printf("[PCM] Played chunk: %d bytes (written=%d)\n", stereoBytes, written);
+
+  free(stereo);  // 再生完了、メモリ解放
 }
 
 // ==== Lambda に送信 & SSE 受信 ====
 void sendToLambdaAndPlay(const String& text) {
   Serial.println("🚀 Sending to Lambda: " + text);
+  responseText = "";  // 新しい回答用にリセット
 
   // 録音停止
   if (isRecording) {
@@ -509,146 +462,45 @@ void sendToLambdaAndPlay(const String& text) {
   g_currentChunkSize = -1;
   g_bytesReadFromChunk = 0;
 
-  // バイナリ受信と並行して再生
-  bool streamComplete = false;
-  int expectedChunks = 0;
-  int playedChunks = 0;
-  int lastChunkId = 0;
+  // バイナリストリーム受信ループ（即座再生方式）
+  while (client.connected() || client.available()) {
+    // ヘッダー読み取り
+    uint8_t header[5];
+    size_t read = readBytesAcrossChunks(client, header, 5);
 
-  // 再生状態管理
-  AudioChunk currentPlayChunk = {0};
-  size_t playOffset = 0;
-  bool hasCurrentChunk = false;
-
-  while (!streamComplete || playedChunks < expectedChunks || hasCurrentChunk) {
-    // バイナリプロトコル受信処理
-    if (!streamComplete && (client.connected() || client.available())) {
-      // ヘッダー読み取り
-      uint8_t header[5];
-      size_t read = readBytesAcrossChunks(client, header, 5);
-
-      if (read == 0) {
-        Serial.println("🏁 BINARY STREAM END");
-        if (lastChunkId > 0) expectedChunks = lastChunkId;
-        Serial.printf("[MAIN] Expected chunks: %d\n", expectedChunks);
-        streamComplete = true;
-        continue;
-      }
-
-      if (read != 5) {
-        Serial.printf("[BINARY] Header incomplete: %d/5 bytes\n", read);
-        streamComplete = true;
-        continue;
-      }
-
-      uint8_t type = header[0];
-      uint32_t length = (header[1]) | (header[2] << 8) | (header[3] << 16) | (header[4] << 24);
-
-      Serial.printf("[BINARY] type=0x%02X, length=%d\n", type, length);
-
-      if (type == 0x01) {
-        processMetadata(client, length);
-      } else if (type == 0x02) {
-        processPCM(client, length);
-        lastChunkId = curSegmentId;
-      } else {
-        Serial.printf("[BINARY] Unknown type: 0x%02X, skip %d bytes\n", type, length);
-        uint8_t* dummy = (uint8_t*)malloc(length);
-        if (dummy) {
-          readBytesAcrossChunks(client, dummy, length);
-          free(dummy);
-        }
-      }
+    if (read == 0) {
+      Serial.println("🏁 BINARY STREAM END");
+      break;
     }
 
-  // 再生キューをチェック（ノンブロッキング）
-
-  // 現在再生中のチャンクがなければ、キューから取得
-  if (!hasCurrentChunk) {
-    if (xQueueReceive(playQueue, &currentPlayChunk, 0) == pdTRUE) {
-      Serial.printf("[PLAY] Start playing id=%d, bytes=%d\n", currentPlayChunk.id, currentPlayChunk.stereoBytes);
-
-      // PSRAM使用状況
-      size_t psram_total = ESP.getPsramSize();
-      size_t psram_free = ESP.getFreePsram();
-      Serial.printf("[PSRAM] Free=%d KB, Used=%d KB\n",
-                    psram_free/1024, (psram_total-psram_free)/1024);
-
-      playOffset = 0;
-      hasCurrentChunk = true;
-    } else if (!streamComplete) {
-      // 再生データがまだない場合は少し待つ
-      delay(1);
-    }
-  }
-
-  // 現在のチャンクを小さいバッファで再生
-  if (hasCurrentChunk) {
-    const size_t PLAY_CHUNK_SIZE = 4096;  // 一旦4KBに戻す
-    size_t remainingBytes = currentPlayChunk.stereoBytes - playOffset;
-
-    if (remainingBytes > 0) {
-      size_t writeSize = (remainingBytes < PLAY_CHUNK_SIZE) ? remainingBytes : PLAY_CHUNK_SIZE;
-      size_t written = 0;
-
-      i2s_write(I2S_NUM_1,
-                (uint8_t*)currentPlayChunk.stereoData + playOffset,
-                writeSize,
-                &written,
-                portMAX_DELAY);
-
-      playOffset += written;
+    if (read != 5) {
+      Serial.printf("[BINARY] Header incomplete: %d/5 bytes\n", read);
+      break;
     }
 
-    // チャンク再生完了チェック
-    if (playOffset >= currentPlayChunk.stereoBytes) {
-      Serial.printf("[I2S] Total written=%d bytes\n", playOffset);
+    uint8_t type = header[0];
+    uint32_t length = (header[1]) | (header[2] << 8) | (header[3] << 16) | (header[4] << 24);
 
-      // 最後のチャンクの場合、DMAバッファが空になるまで待つ
-      if (playedChunks + 1 == expectedChunks && streamComplete) {
-        Serial.println("[PLAY] Last chunk - waiting for DMA buffer flush...");
-        delay(700);  // DMAバッファ(32KB)のフラッシュ待ち + 十分な安全マージン
+    Serial.printf("[BINARY] type=0x%02X, length=%d\n", type, length);
+
+    if (type == 0x01) {
+      processMetadata(client, length);
+    } else if (type == 0x02) {
+      processPCM(client, length);  // 即座に変換して再生
+    } else {
+      Serial.printf("[BINARY] Unknown type: 0x%02X, skip %d bytes\n", type, length);
+      uint8_t* dummy = (uint8_t*)malloc(length);
+      if (dummy) {
+        readBytesAcrossChunks(client, dummy, length);
+        free(dummy);
       }
-
-      // メモリ解放
-      free(currentPlayChunk.stereoData);
-
-      Serial.printf("[PLAY] Finished id=%d (%d/%d)\n", currentPlayChunk.id, playedChunks + 1, expectedChunks);
-
-      // 次のチャンクの準備
-      hasCurrentChunk = false;
-      playOffset = 0;
-      playedChunks++;
     }
-  }
-  }
-
-  // ループ終了後、再生キューに残っているチャンクを処理
-  Serial.println("🔊 Checking for remaining chunks...");
-  AudioChunk finalChunk;
-  while (xQueueReceive(playQueue, &finalChunk, 100 / portTICK_PERIOD_MS) == pdTRUE) {
-  Serial.printf("[PLAY] Playing final chunk id=%d, bytes=%d\n", finalChunk.id, finalChunk.stereoBytes);
-
-  size_t offset = 0;
-  while (offset < finalChunk.stereoBytes) {
-    size_t remaining = finalChunk.stereoBytes - offset;
-    size_t writeSize = (remaining < 16384) ? remaining : 16384;
-    size_t written = 0;
-
-    i2s_write(I2S_NUM_1, (uint8_t*)finalChunk.stereoData + offset, writeSize, &written, portMAX_DELAY);
-    offset += written;
-  }
-
-  Serial.printf("[I2S] Final chunk written=%d bytes\n", offset);
-  free(finalChunk.stereoData);
-    playedChunks++;
-    Serial.printf("[PLAY] Finished final chunk id=%d (%d/%d)\n", finalChunk.id, playedChunks, expectedChunks);
   }
 
   Serial.println("🔊 Playback complete");
 
   // I2S DMAバッファに残っているデータを全て再生するまで待つ
-  delay(350);
+  delay(2000);
   Serial.println("🔊 Buffer flushed");
 
   // 会話履歴に追加（ユーザー入力とアシスタント応答）
@@ -656,6 +508,10 @@ void sendToLambdaAndPlay(const String& text) {
   if (responseText.length() > 0) {
     addToHistory("assistant", responseText);
   }
+
+  // 再生I2Sドライバーをクリーンにアンインストール
+  i2s_stop(I2S_NUM_1);
+  i2s_driver_uninstall(I2S_NUM_1);
 
   // 再生完了後、録音再開
   delay(150);
@@ -730,10 +586,9 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
 void startSTTRecording() {
   Serial.println("🎙️ Starting STT recording...");
 
-  // 既存のI2Sドライバーをアンインストール（再開時）
-  i2s_driver_uninstall(I2S_NUM_0);
-  i2s_driver_uninstall(I2S_NUM_1);
-
+  // I2S_NUM_0は既にsendToLambdaAndPlay()でアンインストール済み
+  // I2S_NUM_1もsendToLambdaAndPlay()のバッファフラッシュ後にアンインストール済み
+  // ここでは新しくI2S_NUM_0（録音用）をセットアップするだけ
   setupI2SRecord();
 
   ws.beginSSL(SONIOX_WS_URL, SONIOX_WS_PORT, "/transcribe-websocket");
@@ -784,33 +639,6 @@ void setup() {
 
   // I2S再生設定
   setupI2SPlay();
-
-  // パイプライン処理用のキューとタスクを初期化
-  encodeQueue = xQueueCreate(5, sizeof(AudioChunk));  // 最大5チャンクをバッファ
-  playQueue = xQueueCreate(5, sizeof(AudioChunk));
-
-  if (encodeQueue == NULL || playQueue == NULL) {
-    Serial.println("❌ Failed to create queues");
-    return;
-  }
-  Serial.println("✅ Queues created");
-
-  // デコードタスクを起動（Core 0で実行）
-  xTaskCreatePinnedToCore(
-    decodeTask,           // タスク関数
-    "DecodeTask",         // タスク名
-    16384,                // スタックサイズ (16KB)
-    NULL,                 // パラメータ
-    1,                    // 優先度（低め - I2S再生を優先）
-    &decodeTaskHandle,    // タスクハンドル
-    0                     // Core 0で実行
-  );
-
-  if (decodeTaskHandle == NULL) {
-    Serial.println("❌ Failed to create decode task");
-    return;
-  }
-  Serial.println("✅ Decode task created on Core 0");
 
   // STT録音開始
   delay(1000);
