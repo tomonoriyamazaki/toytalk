@@ -211,43 +211,69 @@ static int g_bytesReadFromChunk = 0;
 
 // ==== HTTPチャンクサイズ読み取り ====
 int readChunkSize(WiFiClientSecure& client) {
-  String line = "";
-  unsigned long startTime = millis();
+  const int MAX_RETRIES = 3;
+  
+  for (int retry = 0; retry < MAX_RETRIES; retry++) {
+    String line = "";
+    unsigned long startTime = millis();
 
-  // チャンクサイズ行を読み取る（最大5秒待機）
-  while (client.connected() && (millis() - startTime < 5000)) {
-    if (client.available()) {
-      char c = client.read();
-      if (c == '\n') {
-        break;
-      } else if (c != '\r') {
-        line += c;
+    // チャンクサイズ行を読み取る（最大5秒待機）
+    while (client.connected() && (millis() - startTime < 5000)) {
+      if (client.available()) {
+        char c = client.read();
+        if (c == '\n') {
+          break;
+        } else if (c != '\r') {
+          line += c;
+        }
+      } else {
+        delay(1);
       }
     }
-  }
 
-  // 16進数文字列を整数に変換
-  if (line.length() == 0) {
-    return -1;  // エラー
-  }
-
-  int chunkSize = 0;
-  for (int i = 0; i < line.length(); i++) {
-    char c = line.charAt(i);
-    if (c >= '0' && c <= '9') {
-      chunkSize = chunkSize * 16 + (c - '0');
-    } else if (c >= 'a' && c <= 'f') {
-      chunkSize = chunkSize * 16 + (c - 'a' + 10);
-    } else if (c >= 'A' && c <= 'F') {
-      chunkSize = chunkSize * 16 + (c - 'A' + 10);
-    } else {
-      // セミコロンやその他の文字が来たら終了
-      break;
+    // 16進数文字列を整数に変換
+    if (line.length() == 0) {
+      Serial.printf("[CHUNK] Read empty line (retry %d/%d)\n", retry + 1, MAX_RETRIES);
+      if (retry < MAX_RETRIES - 1) {
+        delay(100);  // 少し待ってリトライ
+        continue;
+      }
+      return -1;  // 最終的にエラー
     }
-  }
 
-  Serial.printf("[CHUNK] Size: %d (0x%s)\n", chunkSize, line.c_str());
-  return chunkSize;
+    int chunkSize = 0;
+    bool validHex = false;
+    for (int i = 0; i < line.length(); i++) {
+      char c = line.charAt(i);
+      if (c >= '0' && c <= '9') {
+        chunkSize = chunkSize * 16 + (c - '0');
+        validHex = true;
+      } else if (c >= 'a' && c <= 'f') {
+        chunkSize = chunkSize * 16 + (c - 'a' + 10);
+        validHex = true;
+      } else if (c >= 'A' && c <= 'F') {
+        chunkSize = chunkSize * 16 + (c - 'A' + 10);
+        validHex = true;
+      } else {
+        // セミコロンやその他の文字が来たら終了
+        break;
+      }
+    }
+
+    if (!validHex) {
+      Serial.printf("[CHUNK] Invalid hex line: '%s' (retry %d/%d)\n", line.c_str(), retry + 1, MAX_RETRIES);
+      if (retry < MAX_RETRIES - 1) {
+        delay(100);
+        continue;
+      }
+      return -1;
+    }
+
+    Serial.printf("[CHUNK] Size: %d (0x%s)\n", chunkSize, line.c_str());
+    return chunkSize;
+  }
+  
+  return -1;  // すべてのリトライ失敗
 }
 
 // ==== チャンク境界を超えてデータを読む ====
