@@ -696,7 +696,7 @@ void setup() {
 
   // LED初期化（WiFi接続後に設定するため、ここでは初期化のみ）
   strip.begin();
-  strip.setBrightness(3);  // 輝度を下げる
+  strip.setBrightness(1);  // 輝度を最小に（CPU負荷軽減）
   strip.show();
 
   // ボタン初期化
@@ -753,9 +753,10 @@ void loop() {
   ws.loop();
 
   // LED更新（エラー時の点滅処理）
-  if (currentLEDState == LED_ERROR) {
-    updateLED();
-  }
+  // ※ CPU負荷軽減のため無効化（strip.show()がパフォーマンスに影響）
+  // if (currentLEDState == LED_ERROR) {
+  //   updateLED();
+  // }
 
   // ボタンチェック（デバウンス処理付き）
   int reading = digitalRead(PIN_BUTTON);
