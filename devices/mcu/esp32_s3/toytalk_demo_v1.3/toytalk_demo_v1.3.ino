@@ -422,8 +422,8 @@ void processMetadata(WiFiClientSecure& client, uint32_t length) {
 void processPCM(WiFiClientSecure& client, uint32_t length) {
   Serial.printf("[PCM] Streaming %d bytes, Free heap: %d\n", length, ESP.getFreeHeap());
 
-  // ストリーミング再生用のバッファ（32KB）
-  const size_t STREAM_CHUNK_SIZE = 32768;  // 32KB = 約0.34秒分の音声
+  // ストリーミング再生用のバッファ（64KB）
+  const size_t STREAM_CHUNK_SIZE = 65536;  // 64KB = 約0.68秒分の音声
   uint32_t remaining = length;
   uint32_t totalPlayed = 0;
 
