@@ -217,7 +217,7 @@ void setupI2SPlay() {
     .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
     .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB),
     .intr_alloc_flags = 0,
-    .dma_buf_count = 64,    // バッファを増やして途切れ防止（64KB = 約0.68秒）
+    .dma_buf_count = 32,    // 内部RAM制約のため32に維持（32KB = 約0.34秒）
     .dma_buf_len = 1024,
     .use_apll = true,
     .tx_desc_auto_clear = true,
