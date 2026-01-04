@@ -491,8 +491,8 @@ void sendToLambdaAndPlay(const String& text) {
   Serial.printf("💾 Free heap: %d bytes\n", ESP.getFreeHeap());
   responseText = "";
 
-  // 処理中状態に設定
-  setLEDState(LED_PROCESSING);
+  // 処理中状態は省略（LED更新を最小化）
+  // setLEDState(LED_PROCESSING);
 
   if (isRecording) {
     ws.disconnect();
@@ -674,8 +674,8 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
 void startSTTRecording() {
   Serial.println("🎙️ Starting STT recording...");
 
-  // 待機状態に設定（録音が開始されるまで）
-  setLEDState(LED_STANDBY);
+  // 即座に録音状態に設定（待機状態をスキップ）
+  setLEDState(LED_RECORDING);
 
   setupI2SRecord();
 
