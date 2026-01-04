@@ -1,0 +1,797 @@
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <WebSocketsClient.h>
+#include <ArduinoJson.h>
+#include <driver/i2s.h>
+#include <Adafruit_NeoPixel.h>
+
+// ==== WiFi ====
+const char* WIFI_SSID = "Buffalo-G-5830";
+const char* WIFI_PASS = "sh6s3kagpp48s";
+
+// ==== Lambda (TTS) - Binary Streaming ====
+const char* LAMBDA_HOST = "koufofwm3w4tidbe52crbyhpyq0cshss.lambda-url.ap-northeast-1.on.aws";
+const char* LAMBDA_PATH = "/";
+
+// ==== Lambda (Soniox Key) ====
+const char* SONIOX_LAMBDA_URL = "https://ug5fcnjsxa22vtnrzlwpfgshd40nngbo.lambda-url.ap-northeast-1.on.aws/";
+
+// ==== Soniox ====
+const char* SONIOX_WS_URL = "stt-rt.soniox.com";
+const int SONIOX_WS_PORT = 443;
+String sonioxKey;
+
+// ==== I2S PIN ====
+#define PIN_WS     3
+#define PIN_BCLK   4
+#define PIN_DATA   9
+#define PIN_DOUT   5
+#define PIN_AMP_SD 6
+#define SAMPLE_RATE_STT 16000
+#define SAMPLE_RATE_TTS 24000
+
+// ==== LED & Button ====
+#define PIN_LED    8
+#define PIN_BUTTON 7
+#define NUM_LEDS   1
+
+Adafruit_NeoPixel strip(NUM_LEDS, PIN_LED, NEO_GRB + NEO_KHZ800);
+
+// LED状態
+enum LEDState {
+  LED_STANDBY,      // 青：待機中
+  LED_RECORDING,    // 赤：録音中
+  LED_PROCESSING,   // 黄：処理中
+  LED_PLAYING,      // 緑：再生中
+  LED_ERROR         // 白点滅：エラー
+};
+
+LEDState currentLEDState = LED_STANDBY;
+unsigned long lastBlinkMs = 0;
+bool blinkOn = false;
+
+// ボタン状態
+int lastButtonReading = HIGH;
+int buttonState = HIGH;
+int lastButtonState = HIGH;
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 50;
+
+// ==== Soniox STT 状態 ====
+WebSocketsClient ws;
+String partialText = "";
+String lastFinalText = "";
+unsigned long lastPartialMs = 0;
+const unsigned long END_SILENCE_MS = 800;
+bool armed = false;
+bool isRecording = false;
+
+// ==== TTS 受信状態 ====
+int curSegmentId = -1;
+String responseText = "";
+uint8_t* currentPcmBuffer = NULL;
+size_t currentPcmSize = 0;
+
+// ==== 会話履歴 (直近5回分) ====
+const int MAX_HISTORY = 5;
+struct Message {
+  String role;
+  String content;
+};
+Message conversationHistory[MAX_HISTORY * 2];
+int historyCount = 0;
+
+// ==== 音量調整 ====
+const float VOLUME = 0.4;
+
+// ==== LED制御関数 ====
+void setLEDState(LEDState state) {
+  // 同じ状態なら何もしない（strip.show()の呼び出しを最小化）
+  if (currentLEDState == state) return;
+
+  currentLEDState = state;
+  blinkOn = false;
+  lastBlinkMs = millis();
+  updateLEDImmediate();  // 状態遷移時は即座に更新
+}
+
+// 状態遷移時に即座にLED更新（strip.show()を1回だけ呼ぶ）
+void updateLEDImmediate() {
+  switch (currentLEDState) {
+    case LED_STANDBY:
+      strip.setPixelColor(0, strip.Color(0, 0, 255));  // 青
+      strip.show();
+      break;
+
+    case LED_RECORDING:
+      strip.setPixelColor(0, strip.Color(255, 0, 0));  // 赤
+      strip.show();
+      break;
+
+    case LED_PROCESSING:
+      strip.setPixelColor(0, strip.Color(255, 255, 0));  // 黄
+      strip.show();
+      break;
+
+    case LED_PLAYING:
+      strip.setPixelColor(0, strip.Color(0, 255, 0));  // 緑
+      strip.show();
+      break;
+
+    case LED_ERROR:
+      strip.setPixelColor(0, strip.Color(255, 255, 255));  // 白
+      strip.show();
+      break;
+  }
+}
+
+// loop()から呼ばれる更新（エラー時の点滅のみ）
+void updateLED() {
+  // エラー状態の点滅処理のみloop()で実行
+  if (currentLEDState == LED_ERROR) {
+    if (millis() - lastBlinkMs > 250) {
+      blinkOn = !blinkOn;
+      lastBlinkMs = millis();
+      if (blinkOn) {
+        strip.setPixelColor(0, strip.Color(255, 255, 255));  // 白
+      } else {
+        strip.setPixelColor(0, strip.Color(0, 0, 0));  // 消灯
+      }
+      strip.show();
+    }
+  }
+}
+
+// ==== 会話履歴に追加 ====
+void addToHistory(const String& role, const String& content) {
+  if (historyCount >= MAX_HISTORY * 2) {
+    for (int i = 0; i < historyCount - 2; i++) {
+      conversationHistory[i] = conversationHistory[i + 2];
+    }
+    historyCount -= 2;
+  }
+
+  conversationHistory[historyCount].role = role;
+  conversationHistory[historyCount].content = content;
+  historyCount++;
+
+  Serial.printf("💾 Added to history [%s]: %s\n", role.c_str(), content.c_str());
+}
+
+// ==== mono → stereo 変換（音量調整付き） ====
+void monoToStereo(int16_t* mono, int16_t* stereo, size_t samples) {
+  for (size_t i = 0; i < samples; i++) {
+    int16_t sample = (int16_t)(mono[i] * VOLUME);
+    stereo[2*i]     = sample;
+    stereo[2*i + 1] = sample;
+  }
+}
+
+// ==== I2S 録音設定 (STT) ====
+void setupI2SRecord() {
+  i2s_config_t cfg = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+    .sample_rate = SAMPLE_RATE_STT,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+    .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB),
+    .intr_alloc_flags = 0,
+    .dma_buf_count = 8,
+    .dma_buf_len = 512,
+    .use_apll = true,
+    .tx_desc_auto_clear = false,
+    .fixed_mclk = 0
+  };
+
+  i2s_pin_config_t pins = {
+    .bck_io_num = PIN_BCLK,
+    .ws_io_num = PIN_WS,
+    .data_out_num = I2S_PIN_NO_CHANGE,
+    .data_in_num = PIN_DATA
+  };
+
+  esp_err_t err = i2s_driver_install(I2S_NUM_0, &cfg, 0, NULL);
+  if (err != ESP_OK) {
+    Serial.printf("❌ i2s_driver_install failed: %d\n", err);
+    setLEDState(LED_ERROR);
+  }
+  err = i2s_set_pin(I2S_NUM_0, &pins);
+  if (err != ESP_OK) {
+    Serial.printf("❌ i2s_set_pin failed: %d\n", err);
+    setLEDState(LED_ERROR);
+  }
+  i2s_start(I2S_NUM_0);
+}
+
+// ==== I2S 再生設定 (TTS) ====
+void setupI2SPlay() {
+  pinMode(PIN_AMP_SD, OUTPUT);
+  digitalWrite(PIN_AMP_SD, LOW);
+  delay(10);
+
+  i2s_config_t cfg = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+    .sample_rate = SAMPLE_RATE_TTS,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+    .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB),
+    .intr_alloc_flags = 0,
+    .dma_buf_count = 32,    // v1.1と同じ（PSRAM有効なのでメモリ十分）
+    .dma_buf_len = 1024,
+    .use_apll = true,
+    .tx_desc_auto_clear = true,
+    .fixed_mclk = 0
+  };
+
+  i2s_pin_config_t pins = {
+    .bck_io_num = PIN_BCLK,
+    .ws_io_num = PIN_WS,
+    .data_out_num = PIN_DOUT,
+    .data_in_num = I2S_PIN_NO_CHANGE
+  };
+
+  i2s_driver_install(I2S_NUM_1, &cfg, 0, NULL);
+  i2s_set_pin(I2S_NUM_1, &pins);
+  i2s_set_clk(I2S_NUM_1, SAMPLE_RATE_TTS, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
+
+  digitalWrite(PIN_AMP_SD, HIGH);
+  delay(10);
+}
+
+// ==== チャンク管理用グローバル変数 ====
+static int g_currentChunkSize = -1;
+static int g_bytesReadFromChunk = 0;
+
+// ==== HTTPチャンクサイズ読み取り ====
+int readChunkSize(WiFiClientSecure& client) {
+  const int MAX_RETRIES = 3;
+
+  for (int retry = 0; retry < MAX_RETRIES; retry++) {
+    String line = "";
+    unsigned long startTime = millis();
+
+    while (client.connected() && (millis() - startTime < 5000)) {
+      if (client.available()) {
+        char c = client.read();
+        if (c == '\n') {
+          break;
+        } else if (c != '\r') {
+          line += c;
+        }
+      } else {
+        delay(1);
+      }
+    }
+
+    if (line.length() == 0) {
+      Serial.printf("[CHUNK] Read empty line (retry %d/%d)\n", retry + 1, MAX_RETRIES);
+      if (retry < MAX_RETRIES - 1) {
+        delay(100);
+        continue;
+      }
+      return -1;
+    }
+
+    int chunkSize = 0;
+    bool validHex = false;
+    for (int i = 0; i < line.length(); i++) {
+      char c = line.charAt(i);
+      if (c >= '0' && c <= '9') {
+        chunkSize = chunkSize * 16 + (c - '0');
+        validHex = true;
+      } else if (c >= 'a' && c <= 'f') {
+        chunkSize = chunkSize * 16 + (c - 'a' + 10);
+        validHex = true;
+      } else if (c >= 'A' && c <= 'F') {
+        chunkSize = chunkSize * 16 + (c - 'A' + 10);
+        validHex = true;
+      } else {
+        break;
+      }
+    }
+
+    if (!validHex) {
+      Serial.printf("[CHUNK] Invalid hex line: '%s' (retry %d/%d)\n", line.c_str(), retry + 1, MAX_RETRIES);
+      if (retry < MAX_RETRIES - 1) {
+        delay(100);
+        continue;
+      }
+      return -1;
+    }
+
+    Serial.printf("[CHUNK] Size: %d (0x%s)\n", chunkSize, line.c_str());
+    return chunkSize;
+  }
+
+  return -1;
+}
+
+// ==== チャンク境界を超えてデータを読む ====
+size_t readBytesAcrossChunks(WiFiClientSecure& client, uint8_t* buffer, size_t length) {
+  size_t totalRead = 0;
+  unsigned long startTime = millis();
+  const unsigned long TIMEOUT_MS = 10000;
+
+  while (totalRead < length) {
+    if (millis() - startTime > TIMEOUT_MS) {
+      Serial.printf("[READ] Timeout after %d bytes\n", totalRead);
+      return totalRead;
+    }
+
+    if (g_currentChunkSize == -1 || g_bytesReadFromChunk >= g_currentChunkSize) {
+      if (g_currentChunkSize > 0) {
+        while (!client.available() && client.connected() && (millis() - startTime < TIMEOUT_MS)) {
+          delay(1);
+        }
+        client.read();
+        client.read();
+      }
+
+      g_currentChunkSize = readChunkSize(client);
+      g_bytesReadFromChunk = 0;
+
+      if (g_currentChunkSize == 0) {
+        return totalRead;
+      } else if (g_currentChunkSize < 0) {
+        Serial.println("[READ] Chunk read error");
+        return totalRead;
+      }
+    }
+
+    int remainingInChunk = g_currentChunkSize - g_bytesReadFromChunk;
+    int toRead = min((int)(length - totalRead), remainingInChunk);
+
+    while (!client.available() && client.connected() && (millis() - startTime < TIMEOUT_MS)) {
+      delay(1);
+    }
+
+    if (!client.connected() && !client.available()) {
+      Serial.println("[READ] Connection closed");
+      return totalRead;
+    }
+
+    int available = client.available();
+    if (available > 0) {
+      int actualRead = min(toRead, available);
+      size_t read = client.readBytes(buffer + totalRead, actualRead);
+      totalRead += read;
+      g_bytesReadFromChunk += read;
+    }
+  }
+
+  return totalRead;
+}
+
+// ==== バイナリプロトコル: メタデータ処理 (type=0x01) ====
+void processMetadata(WiFiClientSecure& client, uint32_t length) {
+  if (length == 0 || length > 4096) {
+    Serial.printf("[META] Invalid length: %d\n", length);
+    return;
+  }
+
+  char* jsonBuf = (char*)malloc(length + 1);
+  if (!jsonBuf) {
+    Serial.println("[META] malloc failed");
+    return;
+  }
+
+  size_t bytesRead = readBytesAcrossChunks(client, (uint8_t*)jsonBuf, length);
+  jsonBuf[bytesRead] = '\0';
+
+  if (bytesRead != length) {
+    Serial.printf("[META] Read mismatch: expected=%d, got=%d\n", length, bytesRead);
+    free(jsonBuf);
+    return;
+  }
+
+  String json = String(jsonBuf);
+  Serial.printf("[META] %s\n", jsonBuf);
+
+  if (json.indexOf("\"event\":\"segment\"") >= 0) {
+    int p = json.indexOf("\"text\":\"");
+    if (p >= 0) {
+      p += 8;
+      int e = json.indexOf("\"", p);
+      if (e >= 0) {
+        String segmentText = json.substring(p, e);
+        responseText += segmentText;
+        Serial.printf("[SEGMENT] Text: %s\n", segmentText.c_str());
+      }
+    }
+    int idPos = json.indexOf("\"id\":");
+    if (idPos >= 0) {
+      idPos += 5;
+      curSegmentId = json.substring(idPos, json.indexOf(",", idPos)).toInt();
+    }
+  }
+
+  if (json.indexOf("\"event\":\"tts_start\"") >= 0) {
+    int sizePos = json.indexOf("\"size\":");
+    if (sizePos >= 0) {
+      sizePos += 7;
+      currentPcmSize = json.substring(sizePos, json.indexOf("}", sizePos)).toInt();
+      Serial.printf("[TTS_START] id=%d, size=%d\n", curSegmentId, currentPcmSize);
+    }
+  }
+
+  free(jsonBuf);
+}
+
+// ==== バイナリプロトコル: PCMデータ処理 (type=0x02) ====
+void processPCM(WiFiClientSecure& client, uint32_t length) {
+  Serial.printf("[PCM] Receiving %d bytes, Free heap: %d\n", length, ESP.getFreeHeap());
+
+  uint8_t* pcmData = (uint8_t*)ps_malloc(length);
+  if (!pcmData) {
+    Serial.printf("[PCM] ps_malloc failed, trying malloc... (Free: %d)\n", ESP.getFreeHeap());
+    pcmData = (uint8_t*)malloc(length);
+    if (!pcmData) {
+      Serial.printf("[PCM] malloc failed! Free heap: %d, Requested: %d\n", ESP.getFreeHeap(), length);
+      // データを読み捨てる（チャンク境界を考慮）
+      uint8_t dummy[512];
+      uint32_t remaining = length;
+      while (remaining > 0) {
+        uint32_t toRead = (remaining > 512) ? 512 : remaining;
+        size_t read = readBytesAcrossChunks(client, dummy, toRead);
+        if (read == 0) break;
+        remaining -= read;
+      }
+      return;
+    }
+    Serial.println("[PCM] Using regular RAM");
+  }
+
+  size_t bytesRead = readBytesAcrossChunks(client, pcmData, length);
+  if (bytesRead != length) {
+    Serial.printf("[PCM] Read mismatch: expected=%d, got=%d\n", length, bytesRead);
+    free(pcmData);
+    return;
+  }
+
+  size_t samples = bytesRead / 2;
+  size_t stereoBytes = samples * 4;
+
+  int16_t* stereo = (int16_t*)malloc(stereoBytes);
+  if (!stereo) {
+    Serial.println("[PCM] stereo malloc failed!");
+    free(pcmData);
+    return;
+  }
+
+  monoToStereo((int16_t*)pcmData, stereo, samples);
+  free(pcmData);
+
+  size_t written = 0;
+  i2s_write(I2S_NUM_1, (uint8_t*)stereo, stereoBytes, &written, portMAX_DELAY);
+
+  Serial.printf("[PCM] Played chunk: %d bytes (written=%d)\n", stereoBytes, written);
+
+  free(stereo);
+}
+
+// ==== Lambda に送信 & SSE 受信 ====
+void sendToLambdaAndPlay(const String& text) {
+  Serial.println("🚀 Sending to Lambda: " + text);
+  Serial.printf("💾 Free heap: %d bytes\n", ESP.getFreeHeap());
+  responseText = "";
+
+  // 処理中状態に設定
+  setLEDState(LED_PROCESSING);
+
+  if (isRecording) {
+    ws.disconnect();
+    isRecording = false;
+    Serial.println("🛑 Stopped recording for TTS");
+  }
+
+  i2s_driver_uninstall(I2S_NUM_0);
+  setupI2SPlay();
+
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  if (!client.connect(LAMBDA_HOST, 443)) {
+    Serial.println("❌ connect failed");
+    setLEDState(LED_ERROR);
+    delay(2000);
+    setLEDState(LED_STANDBY);
+    return;
+  }
+
+  String messagesJson = "[";
+  for (int i = 0; i < historyCount; i++) {
+    if (i > 0) messagesJson += ",";
+    messagesJson += "{\"role\":\"" + conversationHistory[i].role + "\",";
+    messagesJson += "\"content\":\"" + conversationHistory[i].content + "\"}";
+  }
+  if (historyCount > 0) messagesJson += ",";
+  messagesJson += "{\"role\":\"user\",\"content\":\"" + text + "\"}";
+  messagesJson += "]";
+
+  String payload =
+    "{\"model\":\"OpenAI\",\"voice\":\"nova\","
+    "\"messages\":" + messagesJson + "}";
+
+  Serial.printf("📝 History count: %d\n", historyCount);
+
+  String req =
+    String("POST ") + LAMBDA_PATH + " HTTP/1.1\r\n"
+    "Host: " + LAMBDA_HOST + "\r\n"
+    "Content-Type: application/json\r\n"
+    "Accept: text/event-stream\r\n"
+    "Connection: close\r\n"
+    "Content-Length: " + payload.length() + "\r\n\r\n"
+    + payload;
+
+  client.print(req);
+
+  while (true) {
+    String line = client.readStringUntil('\n');
+    if (line.length() == 0 || line == "\r") break;
+  }
+
+  Serial.println("📨 BINARY STREAM START (Chunked)");
+
+  g_currentChunkSize = -1;
+  g_bytesReadFromChunk = 0;
+
+  // TTS開始 = 再生状態に変更（ストリーム開始前に1回だけ）
+  setLEDState(LED_PLAYING);
+
+  while (client.connected() || client.available()) {
+    uint8_t header[5];
+    size_t read = readBytesAcrossChunks(client, header, 5);
+
+    if (read == 0) {
+      Serial.println("🏁 BINARY STREAM END");
+      break;
+    }
+
+    if (read != 5) {
+      Serial.printf("[BINARY] Header incomplete: %d/5 bytes\n", read);
+      break;
+    }
+
+    uint8_t type = header[0];
+    uint32_t length = (header[1]) | (header[2] << 8) | (header[3] << 16) | (header[4] << 24);
+
+    Serial.printf("[BINARY] type=0x%02X, length=%d\n", type, length);
+
+    if (type == 0x01) {
+      processMetadata(client, length);
+    } else if (type == 0x02) {
+      processPCM(client, length);
+    } else {
+      Serial.printf("[BINARY] Unknown type: 0x%02X, skip %d bytes\n", type, length);
+      uint8_t* dummy = (uint8_t*)malloc(length);
+      if (dummy) {
+        readBytesAcrossChunks(client, dummy, length);
+        free(dummy);
+      }
+    }
+  }
+
+  Serial.println("🔊 Playback complete");
+
+  delay(2000);
+  Serial.println("🔊 Buffer flushed");
+
+  addToHistory("user", text);
+  if (responseText.length() > 0) {
+    addToHistory("assistant", responseText);
+  }
+
+  i2s_stop(I2S_NUM_1);
+  i2s_driver_uninstall(I2S_NUM_1);
+
+  delay(150);
+  startSTTRecording();
+}
+
+// ==== Soniox WebSocketイベント ====
+void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
+  switch (type) {
+    case WStype_CONNECTED:
+      Serial.println("✅ Connected to Soniox!");
+      {
+        String startMsg =
+          "{\"api_key\":\"" + sonioxKey + "\","
+          "\"model\":\"stt-rt-preview\","
+          "\"audio_format\":\"pcm_s16le\","
+          "\"sample_rate\":16000,"
+          "\"num_channels\":1,"
+          "\"enable_partial_results\":true,"
+          "\"enable_endpoint_detection\":true,"
+          "\"language_hints\":[\"ja\",\"en\"]"
+          "}";
+        ws.sendTXT(startMsg);
+        Serial.println("📤 Sent start message to Soniox");
+        // 録音開始状態に設定
+        setLEDState(LED_RECORDING);
+      }
+      isRecording = true;
+      break;
+
+    case WStype_TEXT: {
+      String msg = (char*)payload;
+      if (msg.indexOf("\"tokens\"") >= 0) {
+        String newText = "";
+        int pos = 0;
+        while ((pos = msg.indexOf("\"text\":\"", pos)) >= 0) {
+          pos += 8;
+          int end = msg.indexOf("\"", pos);
+          if (end < 0) break;
+          String token = msg.substring(pos, end);
+          if (token != "\\u003cend\\u003e") newText += token;
+        }
+
+        if (newText.length() > 0) {
+          if (newText.startsWith(partialText)) {
+            partialText = newText;
+          } else {
+            partialText = newText;
+          }
+          lastPartialMs = millis();
+          armed = true;
+          Serial.println("📝 " + partialText);
+        }
+      }
+      break;
+    }
+
+    case WStype_DISCONNECTED:
+      Serial.println("✅ Soniox disconnected");
+      isRecording = false;
+      break;
+
+    case WStype_BIN:
+    case WStype_ERROR:
+    case WStype_FRAGMENT_TEXT_START:
+    case WStype_FRAGMENT_BIN_START:
+    case WStype_FRAGMENT:
+    case WStype_FRAGMENT_FIN:
+      break;
+  }
+}
+
+// ==== STT録音開始 ====
+void startSTTRecording() {
+  Serial.println("🎙️ Starting STT recording...");
+
+  // 待機状態に設定（録音が開始されるまで）
+  setLEDState(LED_STANDBY);
+
+  setupI2SRecord();
+
+  ws.beginSSL(SONIOX_WS_URL, SONIOX_WS_PORT, "/transcribe-websocket");
+  ws.onEvent(webSocketEvent);
+  ws.enableHeartbeat(15000, 3000, 2);
+
+  partialText = "";
+  lastFinalText = "";
+  armed = false;
+}
+
+// ==== SETUP ====
+void setup() {
+  Serial.begin(921600);
+  delay(500);
+  Serial.println("\n🚀 ToyTalk Conversation v1.2 (STT→LLM→TTS with LED & Button)");
+
+  // LED初期化（WiFi接続後に設定するため、ここでは初期化のみ）
+  strip.begin();
+  strip.setBrightness(3);  // 輝度を下げる
+  strip.show();
+
+  // ボタン初期化
+  pinMode(PIN_BUTTON, INPUT_PULLUP);
+
+  pinMode(PIN_AMP_SD, OUTPUT);
+  digitalWrite(PIN_AMP_SD, LOW);
+
+  // WiFi接続
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.printf("\n✅ WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
+
+  // WiFi接続完了後、LEDを待機状態に設定
+  setLEDState(LED_STANDBY);
+
+  // Soniox temp key取得
+  HTTPClient http;
+  http.begin(SONIOX_LAMBDA_URL);
+  int code = http.GET();
+  if (code != 200) {
+    Serial.printf("❌ HTTP fail %d\n", code);
+    setLEDState(LED_ERROR);
+    return;
+  }
+  String resp = http.getString();
+  http.end();
+
+  DynamicJsonDocument doc(512);
+  if (deserializeJson(doc, resp)) {
+    Serial.println("⚠️ JSON parse error");
+    setLEDState(LED_ERROR);
+    return;
+  }
+  sonioxKey = doc["api_key"].as<String>();
+  Serial.println("✅ Soniox temp key obtained");
+
+  Serial.printf("💾 Initial free heap: %d bytes\n", ESP.getFreeHeap());
+
+  // I2S再生設定
+  setupI2SPlay();
+
+  // STT録音開始
+  delay(1000);
+  startSTTRecording();
+}
+
+// ==== LOOP ====
+void loop() {
+  ws.loop();
+
+  // LED更新（エラー時の点滅処理）
+  if (currentLEDState == LED_ERROR) {
+    updateLED();
+  }
+
+  // ボタンチェック（デバウンス処理付き）
+  int reading = digitalRead(PIN_BUTTON);
+
+  // 読み取り値が変化したらデバウンスタイマーをリセット
+  if (reading != lastButtonReading) {
+    lastDebounceTime = millis();
+  }
+
+  // デバウンス時間経過後、安定した状態を確定
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    // 状態が変化した場合のみ処理
+    if (reading != buttonState) {
+      buttonState = reading;
+
+      // HIGHからLOWへの遷移（ボタン押下）のみ検知
+      if (buttonState == LOW) {
+        Serial.println("🔘 Button pressed");
+        // ここに将来の拡張処理を追加
+      }
+    }
+  }
+
+  lastButtonReading = reading;
+
+  // 録音データをWebSocketに送信
+  if (isRecording && WiFi.status() == WL_CONNECTED && ws.isConnected()) {
+    static uint32_t lastSend = 0;
+    if (millis() - lastSend > 5) {
+      int32_t raw[512];
+      int16_t pcm[512];
+      size_t n = 0;
+      i2s_read(I2S_NUM_0, (void*)raw, sizeof(raw), &n, portMAX_DELAY);
+      int samples = n / sizeof(int32_t);
+      for (int i = 0; i < samples; i++) {
+        pcm[i] = (int16_t)(raw[i] >> 14);
+      }
+      ws.sendBIN((uint8_t*)pcm, samples * sizeof(int16_t));
+      lastSend = millis();
+    }
+  }
+
+  // 無音検出 → 確定文出力
+  if (armed && partialText.length() > 0 && (millis() - lastPartialMs) >= END_SILENCE_MS) {
+    if (partialText != lastFinalText) {
+      Serial.println("\n✅ 確定文（無音検出）:");
+      Serial.println(partialText);
+      lastFinalText = partialText;
+      sendToLambdaAndPlay(partialText);
+    }
+    armed = false;
+    partialText = "";
+  }
+}
