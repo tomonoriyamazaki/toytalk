@@ -434,6 +434,9 @@ void processPCM(WiFiClientSecure& client, uint32_t length) {
   uint32_t totalPlayed = 0;
 
   while (remaining > 0) {
+    // LED演出更新（再生中の点滅）
+    updateLEDAnimation();
+
     // 今回読むサイズ
     uint32_t chunkSize = (remaining > STREAM_CHUNK_SIZE) ? STREAM_CHUNK_SIZE : remaining;
 
