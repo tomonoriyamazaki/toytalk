@@ -97,18 +97,18 @@ void setLEDMode(LEDMode mode) {
   // 即座に状態を反映
   switch (mode) {
     case LED_OFF:
-      ledcWrite(PIN_LED, 255);  // 極性逆: 255=OFF
+      ledcWrite(PIN_LED, 0);    // 0=OFF (GPIO LOW)
       break;
     case LED_ON:
-      ledcWrite(PIN_LED, 0);    // 極性逆: 0=ON
+      ledcWrite(PIN_LED, 255);  // 255=ON (GPIO HIGH)
       break;
     case LED_BREATHING:
-      breathingValue = 0;
-      ledcWrite(PIN_LED, 255 - breathingValue);
+      breathingValue = 50;
+      ledcWrite(PIN_LED, breathingValue);
       break;
     case LED_BLINKING:
       blinkState = true;
-      ledcWrite(PIN_LED, 0);    // 点灯から開始
+      ledcWrite(PIN_LED, 255);  // 点灯から開始
       break;
   }
 }
@@ -136,7 +136,7 @@ void updateLEDAnimation() {
         }
       }
 
-      ledcWrite(PIN_LED, 255 - breathingValue);  // 極性逆
+      ledcWrite(PIN_LED, breathingValue);  // PWM値そのまま
     }
   }
   else if (currentLEDMode == LED_BLINKING) {
@@ -144,7 +144,7 @@ void updateLEDAnimation() {
     if (now - lastLEDUpdate > 300) {
       lastLEDUpdate = now;
       blinkState = !blinkState;
-      ledcWrite(PIN_LED, blinkState ? 0 : 255);  // 極性逆
+      ledcWrite(PIN_LED, blinkState ? 255 : 0);  // 255=ON, 0=OFF
     }
   }
 }
