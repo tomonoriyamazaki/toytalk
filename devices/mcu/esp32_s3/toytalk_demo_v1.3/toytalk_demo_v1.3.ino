@@ -69,13 +69,13 @@ Message conversationHistory[MAX_HISTORY * 2];
 int historyCount = 0;
 
 // ==== 音量調整 ====
-const float VOLUME = 0.4;
+const float VOLUME = 1.5;
 
 // ==== LED制御関数（単色LED）====
 void setLED(bool on) {
   if (ledOn == on) return;  // 同じ状態ならスキップ
   ledOn = on;
-  digitalWrite(PIN_LED, on ? HIGH : LOW);
+  digitalWrite(PIN_LED, on ? LOW : HIGH);  // 極性逆: ONならLOW
 }
 
 // ==== 会話履歴に追加 ====
@@ -627,9 +627,9 @@ void setup() {
   delay(500);
   Serial.println("\n🚀 ToyTalk Conversation v1.3 (STT→LLM→TTS with Streaming Chunk Playback)");
 
-  // LED初期化（単色LED）
+  // LED初期化（単色LED - 極性逆: LOW=ON）
   pinMode(PIN_LED, OUTPUT);
-  digitalWrite(PIN_LED, LOW);  // 初期状態は消灯
+  digitalWrite(PIN_LED, HIGH);  // 初期状態は消灯（HIGHで消灯）
 
   // ボタン初期化
   pinMode(PIN_BUTTON, INPUT_PULLUP);
