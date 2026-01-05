@@ -4,7 +4,6 @@
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include <driver/i2s.h>
-#include <Adafruit_NeoPixel.h>
 
 // ==== WiFi ====
 const char* WIFI_SSID = "Buffalo-G-5830";
@@ -34,22 +33,9 @@ String sonioxKey;
 // ==== LED & Button ====
 #define PIN_LED    8
 #define PIN_BUTTON 7
-#define NUM_LEDS   1
 
-Adafruit_NeoPixel strip(NUM_LEDS, PIN_LED, NEO_GRB + NEO_KHZ800);
-
-// LED状態
-enum LEDState {
-  LED_STANDBY,      // 青：待機中
-  LED_RECORDING,    // 赤：録音中
-  LED_PROCESSING,   // 黄：処理中
-  LED_PLAYING,      // 緑：再生中
-  LED_ERROR         // 白点滅：エラー
-};
-
-LEDState currentLEDState = LED_STANDBY;
-unsigned long lastBlinkMs = 0;
-bool blinkOn = false;
+// 単色LED状態（赤LED）
+bool ledOn = false;
 
 // ボタン状態
 int lastButtonReading = HIGH;
@@ -85,62 +71,11 @@ int historyCount = 0;
 // ==== 音量調整 ====
 const float VOLUME = 0.4;
 
-// ==== LED制御関数 ====
-void setLEDState(LEDState state) {
-  // 同じ状態なら何もしない（strip.show()の呼び出しを最小化）
-  if (currentLEDState == state) return;
-
-  currentLEDState = state;
-  blinkOn = false;
-  lastBlinkMs = millis();
-  updateLEDImmediate();  // 状態遷移時は即座に更新
-}
-
-// 状態遷移時に即座にLED更新（strip.show()を1回だけ呼ぶ）
-void updateLEDImmediate() {
-  switch (currentLEDState) {
-    case LED_STANDBY:
-      strip.setPixelColor(0, strip.Color(0, 0, 255));  // 青
-      strip.show();
-      break;
-
-    case LED_RECORDING:
-      strip.setPixelColor(0, strip.Color(255, 0, 0));  // 赤
-      strip.show();
-      break;
-
-    case LED_PROCESSING:
-      strip.setPixelColor(0, strip.Color(255, 255, 0));  // 黄
-      strip.show();
-      break;
-
-    case LED_PLAYING:
-      strip.setPixelColor(0, strip.Color(0, 255, 0));  // 緑
-      strip.show();
-      break;
-
-    case LED_ERROR:
-      strip.setPixelColor(0, strip.Color(255, 255, 255));  // 白
-      strip.show();
-      break;
-  }
-}
-
-// loop()から呼ばれる更新（エラー時の点滅のみ）
-void updateLED() {
-  // エラー状態の点滅処理のみloop()で実行
-  if (currentLEDState == LED_ERROR) {
-    if (millis() - lastBlinkMs > 250) {
-      blinkOn = !blinkOn;
-      lastBlinkMs = millis();
-      if (blinkOn) {
-        strip.setPixelColor(0, strip.Color(255, 255, 255));  // 白
-      } else {
-        strip.setPixelColor(0, strip.Color(0, 0, 0));  // 消灯
-      }
-      strip.show();
-    }
-  }
+// ==== LED制御関数（単色LED）====
+void setLED(bool on) {
+  if (ledOn == on) return;  // 同じ状態ならスキップ
+  ledOn = on;
+  digitalWrite(PIN_LED, on ? HIGH : LOW);
 }
 
 // ==== 会話履歴に追加 ====
@@ -194,12 +129,12 @@ void setupI2SRecord() {
   esp_err_t err = i2s_driver_install(I2S_NUM_0, &cfg, 0, NULL);
   if (err != ESP_OK) {
     Serial.printf("❌ i2s_driver_install failed: %d\n", err);
-    setLEDState(LED_ERROR);
+    // エラー時はLED点灯
   }
   err = i2s_set_pin(I2S_NUM_0, &pins);
   if (err != ESP_OK) {
     Serial.printf("❌ i2s_set_pin failed: %d\n", err);
-    setLEDState(LED_ERROR);
+    // エラー時はLED点灯
   }
   i2s_start(I2S_NUM_0);
 }
@@ -508,9 +443,7 @@ void sendToLambdaAndPlay(const String& text) {
 
   if (!client.connect(LAMBDA_HOST, 443)) {
     Serial.println("❌ connect failed");
-    setLEDState(LED_ERROR);
-    delay(2000);
-    setLEDState(LED_STANDBY);
+    setLED(false);  // エラー時は消灯して録音に戻る
     return;
   }
 
@@ -551,8 +484,8 @@ void sendToLambdaAndPlay(const String& text) {
   g_currentChunkSize = -1;
   g_bytesReadFromChunk = 0;
 
-  // TTS開始 = 再生状態に変更（ストリーム開始前に1回だけ）
-  setLEDState(LED_PLAYING);
+  // TTS開始 = 再生中はLED消灯（録音中のみ点灯）
+  setLED(false);
 
   while (client.connected() || client.available()) {
     uint8_t header[5];
@@ -622,8 +555,8 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
           "}";
         ws.sendTXT(startMsg);
         Serial.println("📤 Sent start message to Soniox");
-        // 録音開始状態に設定
-        setLEDState(LED_RECORDING);
+        // 録音開始 = LED点灯
+        setLED(true);
       }
       isRecording = true;
       break;
@@ -674,8 +607,8 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
 void startSTTRecording() {
   Serial.println("🎙️ Starting STT recording...");
 
-  // 即座に録音状態に設定（待機状態をスキップ）
-  setLEDState(LED_RECORDING);
+  // 録音準備中はLED点灯
+  setLED(true);
 
   setupI2SRecord();
 
@@ -694,10 +627,9 @@ void setup() {
   delay(500);
   Serial.println("\n🚀 ToyTalk Conversation v1.3 (STT→LLM→TTS with Streaming Chunk Playback)");
 
-  // LED初期化（WiFi接続後に設定するため、ここでは初期化のみ）
-  strip.begin();
-  strip.setBrightness(1);  // 輝度を最小に（CPU負荷軽減）
-  strip.show();
+  // LED初期化（単色LED）
+  pinMode(PIN_LED, OUTPUT);
+  digitalWrite(PIN_LED, LOW);  // 初期状態は消灯
 
   // ボタン初期化
   pinMode(PIN_BUTTON, INPUT_PULLUP);
@@ -714,8 +646,8 @@ void setup() {
   }
   Serial.printf("\n✅ WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
 
-  // WiFi接続完了後、LEDを待機状態に設定
-  setLEDState(LED_STANDBY);
+  // WiFi接続完了後、LEDは消灯（録音開始まで待機）
+  setLED(false);
 
   // Soniox temp key取得
   HTTPClient http;
@@ -723,7 +655,6 @@ void setup() {
   int code = http.GET();
   if (code != 200) {
     Serial.printf("❌ HTTP fail %d\n", code);
-    setLEDState(LED_ERROR);
     return;
   }
   String resp = http.getString();
@@ -732,7 +663,6 @@ void setup() {
   DynamicJsonDocument doc(512);
   if (deserializeJson(doc, resp)) {
     Serial.println("⚠️ JSON parse error");
-    setLEDState(LED_ERROR);
     return;
   }
   sonioxKey = doc["api_key"].as<String>();
@@ -751,12 +681,6 @@ void setup() {
 // ==== LOOP ====
 void loop() {
   ws.loop();
-
-  // LED更新（エラー時の点滅処理）
-  // ※ CPU負荷軽減のため無効化（strip.show()がパフォーマンスに影響）
-  // if (currentLEDState == LED_ERROR) {
-  //   updateLED();
-  // }
 
   // ボタンチェック（デバウンス処理付き）
   int reading = digitalRead(PIN_BUTTON);
