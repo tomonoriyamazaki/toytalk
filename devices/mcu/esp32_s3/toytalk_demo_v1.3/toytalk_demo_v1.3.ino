@@ -474,8 +474,11 @@ void processPCM(WiFiClientSecure& client, uint32_t length) {
     // 今回読むサイズ
     uint32_t chunkSize = (remaining > STREAM_CHUNK_SIZE) ? STREAM_CHUNK_SIZE : remaining;
 
-    // モノラルPCMバッファ確保
-    uint8_t* pcmData = (uint8_t*)malloc(chunkSize);
+    // モノラルPCMバッファ確保（PSRAM優先、v1.1パターン）
+    uint8_t* pcmData = (uint8_t*)ps_malloc(chunkSize);  // PSRAM明示
+    if (!pcmData) {
+      pcmData = (uint8_t*)malloc(chunkSize);  // フォールバック
+    }
     Serial.printf("[ALLOC] pcmData: %d bytes at %p\n", chunkSize, pcmData);
     if (!pcmData) {
       Serial.printf("[PCM] malloc failed for chunk! Skipping remaining %d bytes\n", remaining);
