@@ -97,18 +97,18 @@ void setLEDMode(LEDMode mode) {
   // 即座に状態を反映
   switch (mode) {
     case LED_OFF:
-      ledcWrite(LED_CHANNEL, 255);  // 極性逆: 255=OFF
+      ledcWrite(PIN_LED, 255);  // 極性逆: 255=OFF
       break;
     case LED_ON:
-      ledcWrite(LED_CHANNEL, 0);    // 極性逆: 0=ON
+      ledcWrite(PIN_LED, 0);    // 極性逆: 0=ON
       break;
     case LED_BREATHING:
       breathingValue = 0;
-      ledcWrite(LED_CHANNEL, 255 - breathingValue);
+      ledcWrite(PIN_LED, 255 - breathingValue);
       break;
     case LED_BLINKING:
       blinkState = true;
-      ledcWrite(LED_CHANNEL, 0);    // 点灯から開始
+      ledcWrite(PIN_LED, 0);    // 点灯から開始
       break;
   }
 }
@@ -136,7 +136,7 @@ void updateLEDAnimation() {
         }
       }
 
-      ledcWrite(LED_CHANNEL, 255 - breathingValue);  // 極性逆
+      ledcWrite(PIN_LED, 255 - breathingValue);  // 極性逆
     }
   }
   else if (currentLEDMode == LED_BLINKING) {
@@ -144,7 +144,7 @@ void updateLEDAnimation() {
     if (now - lastLEDUpdate > 300) {
       lastLEDUpdate = now;
       blinkState = !blinkState;
-      ledcWrite(LED_CHANNEL, blinkState ? 0 : 255);  // 極性逆
+      ledcWrite(PIN_LED, blinkState ? 0 : 255);  // 極性逆
     }
   }
 }
@@ -698,9 +698,8 @@ void setup() {
   delay(500);
   Serial.println("\n🚀 ToyTalk Conversation v1.3 (STT→LLM→TTS with Streaming Chunk Playback)");
 
-  // LED初期化（PWM使用）
-  ledcSetup(LED_CHANNEL, LED_FREQ, LED_RESOLUTION);
-  ledcAttachPin(PIN_LED, LED_CHANNEL);
+  // LED初期化（PWM使用 - 新API）
+  ledcAttach(PIN_LED, LED_FREQ, LED_RESOLUTION);
   setLEDMode(LED_ON);  // 起動中は点灯
 
   // ボタン初期化
