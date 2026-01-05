@@ -85,6 +85,39 @@ int historyCount = 0;
 // ==== 音量調整 ====
 const float VOLUME = 1.5;
 
+// ==== メモリ診断関数 ====
+void printMemoryStatus(const char* label) {
+  Serial.println("========================================");
+  Serial.printf("[MEMORY] %s\n", label);
+  Serial.println("========================================");
+
+  // 総合メモリ情報
+  Serial.printf("Total Heap:      %7d bytes\n", ESP.getHeapSize());
+  Serial.printf("Free Heap:       %7d bytes\n", ESP.getFreeHeap());
+  Serial.printf("Used Heap:       %7d bytes\n", ESP.getHeapSize() - ESP.getFreeHeap());
+  Serial.println("----------------------------------------");
+
+  // 内部RAM詳細
+  uint32_t internalTotal = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+  uint32_t internalFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  uint32_t internalUsed = internalTotal - internalFree;
+  Serial.printf("Internal RAM Total: %7d bytes\n", internalTotal);
+  Serial.printf("Internal RAM Free:  %7d bytes\n", internalFree);
+  Serial.printf("Internal RAM Used:  %7d bytes (%.1f%%)\n",
+                internalUsed, (float)internalUsed / internalTotal * 100);
+  Serial.println("----------------------------------------");
+
+  // PSRAM詳細
+  uint32_t psramTotal = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+  uint32_t psramFree = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  uint32_t psramUsed = psramTotal - psramFree;
+  Serial.printf("PSRAM Total:        %7d bytes\n", psramTotal);
+  Serial.printf("PSRAM Free:         %7d bytes\n", psramFree);
+  Serial.printf("PSRAM Used:         %7d bytes (%.1f%%)\n",
+                psramUsed, (float)psramUsed / psramTotal * 100);
+  Serial.println("========================================\n");
+}
+
 // ==== LED制御関数（単色LED）====
 void setLEDMode(LEDMode mode) {
   if (currentLEDMode == mode) return;
@@ -426,7 +459,8 @@ void processMetadata(WiFiClientSecure& client, uint32_t length) {
 
 // ==== バイナリプロトコル: PCMデータ処理 (type=0x02) - ストリーミング版 ====
 void processPCM(WiFiClientSecure& client, uint32_t length) {
-  Serial.printf("[PCM] Streaming %d bytes, Free heap: %d\n", length, ESP.getFreeHeap());
+  Serial.printf("[PCM] Streaming %d bytes\n", length);
+  printMemoryStatus("Before PCM Processing");
 
   // ストリーミング再生用のバッファ（64KB）
   const size_t STREAM_CHUNK_SIZE = 65536;  // 64KB = 約0.68秒分の音声
@@ -442,6 +476,7 @@ void processPCM(WiFiClientSecure& client, uint32_t length) {
 
     // モノラルPCMバッファ確保
     uint8_t* pcmData = (uint8_t*)malloc(chunkSize);
+    Serial.printf("[ALLOC] pcmData: %d bytes at %p\n", chunkSize, pcmData);
     if (!pcmData) {
       Serial.printf("[PCM] malloc failed for chunk! Skipping remaining %d bytes\n", remaining);
       // 残りを読み捨て
@@ -467,6 +502,7 @@ void processPCM(WiFiClientSecure& client, uint32_t length) {
     size_t samples = bytesRead / 2;
     size_t stereoBytes = samples * 4;
     int16_t* stereo = (int16_t*)malloc(stereoBytes);
+    Serial.printf("[ALLOC] stereo: %d bytes at %p\n", stereoBytes, stereo);
     if (!stereo) {
       Serial.println("[PCM] stereo malloc failed for chunk!");
       free(pcmData);
@@ -756,7 +792,8 @@ void setup() {
   sonioxKey = doc["api_key"].as<String>();
   Serial.println("✅ Soniox temp key obtained");
 
-  Serial.printf("💾 Initial free heap: %d bytes\n", ESP.getFreeHeap());
+  // メモリ状態確認（初期状態）
+  printMemoryStatus("After WiFi & Soniox Init");
 
   // I2S再生設定
   setupI2SPlay();
