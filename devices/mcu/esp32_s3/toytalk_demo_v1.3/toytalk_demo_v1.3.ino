@@ -33,9 +33,23 @@ String sonioxKey;
 // ==== LED & Button ====
 #define PIN_LED    8
 #define PIN_BUTTON 7
+#define LED_CHANNEL 0
+#define LED_FREQ 5000
+#define LED_RESOLUTION 8
 
-// 単色LED状態（赤LED）
-bool ledOn = false;
+// LED状態
+enum LEDMode {
+  LED_OFF,
+  LED_ON,
+  LED_BREATHING,  // ふわふわ（録音中）
+  LED_BLINKING    // 点滅（再生中）
+};
+
+LEDMode currentLEDMode = LED_OFF;
+unsigned long lastLEDUpdate = 0;
+int breathingValue = 0;
+bool breathingUp = true;
+bool blinkState = false;
 
 // ボタン状態
 int lastButtonReading = HIGH;
@@ -72,10 +86,67 @@ int historyCount = 0;
 const float VOLUME = 1.5;
 
 // ==== LED制御関数（単色LED）====
-void setLED(bool on) {
-  if (ledOn == on) return;  // 同じ状態ならスキップ
-  ledOn = on;
-  digitalWrite(PIN_LED, on ? LOW : HIGH);  // 極性逆: ONならLOW
+void setLEDMode(LEDMode mode) {
+  if (currentLEDMode == mode) return;
+  currentLEDMode = mode;
+  lastLEDUpdate = millis();
+  breathingValue = 0;
+  breathingUp = true;
+  blinkState = false;
+
+  // 即座に状態を反映
+  switch (mode) {
+    case LED_OFF:
+      ledcWrite(LED_CHANNEL, 255);  // 極性逆: 255=OFF
+      break;
+    case LED_ON:
+      ledcWrite(LED_CHANNEL, 0);    // 極性逆: 0=ON
+      break;
+    case LED_BREATHING:
+      breathingValue = 0;
+      ledcWrite(LED_CHANNEL, 255 - breathingValue);
+      break;
+    case LED_BLINKING:
+      blinkState = true;
+      ledcWrite(LED_CHANNEL, 0);    // 点灯から開始
+      break;
+  }
+}
+
+// loop()から呼ぶLED更新
+void updateLEDAnimation() {
+  unsigned long now = millis();
+
+  if (currentLEDMode == LED_BREATHING) {
+    // ふわふわ: 30ms毎に明るさ変更
+    if (now - lastLEDUpdate > 30) {
+      lastLEDUpdate = now;
+
+      if (breathingUp) {
+        breathingValue += 5;
+        if (breathingValue >= 255) {
+          breathingValue = 255;
+          breathingUp = false;
+        }
+      } else {
+        breathingValue -= 5;
+        if (breathingValue <= 50) {  // 完全に消さず、50で折り返し
+          breathingValue = 50;
+          breathingUp = true;
+        }
+      }
+
+      ledcWrite(LED_CHANNEL, 255 - breathingValue);  // 極性逆
+    }
+  }
+  else if (currentLEDMode == LED_BLINKING) {
+    // 点滅: 300ms毎にON/OFF
+    if (now - lastLEDUpdate > 300) {
+      lastLEDUpdate = now;
+      blinkState = !blinkState;
+      ledcWrite(LED_CHANNEL, blinkState ? 0 : 255);  // 極性逆
+    }
+  }
 }
 
 // ==== 会話履歴に追加 ====
@@ -443,7 +514,7 @@ void sendToLambdaAndPlay(const String& text) {
 
   if (!client.connect(LAMBDA_HOST, 443)) {
     Serial.println("❌ connect failed");
-    setLED(false);  // エラー時は消灯して録音に戻る
+    setLEDMode(LED_OFF);  // エラー時は消灯
     return;
   }
 
@@ -484,8 +555,8 @@ void sendToLambdaAndPlay(const String& text) {
   g_currentChunkSize = -1;
   g_bytesReadFromChunk = 0;
 
-  // TTS開始 = 再生中はLED消灯（録音中のみ点灯）
-  setLED(false);
+  // TTS開始 = 再生中はLED点滅
+  setLEDMode(LED_BLINKING);
 
   while (client.connected() || client.available()) {
     uint8_t header[5];
@@ -555,8 +626,8 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
           "}";
         ws.sendTXT(startMsg);
         Serial.println("📤 Sent start message to Soniox");
-        // 録音開始 = LED点灯
-        setLED(true);
+        // 録音開始 = LEDふわふわ
+        setLEDMode(LED_BREATHING);
       }
       isRecording = true;
       break;
@@ -607,8 +678,8 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
 void startSTTRecording() {
   Serial.println("🎙️ Starting STT recording...");
 
-  // 録音準備中はLED点灯
-  setLED(true);
+  // 録音準備中はLED点灯（WebSocket接続後にふわふわに変わる）
+  setLEDMode(LED_ON);
 
   setupI2SRecord();
 
@@ -627,9 +698,10 @@ void setup() {
   delay(500);
   Serial.println("\n🚀 ToyTalk Conversation v1.3 (STT→LLM→TTS with Streaming Chunk Playback)");
 
-  // LED初期化（単色LED - 極性逆: LOW=ON）
-  pinMode(PIN_LED, OUTPUT);
-  digitalWrite(PIN_LED, HIGH);  // 初期状態は消灯（HIGHで消灯）
+  // LED初期化（PWM使用）
+  ledcSetup(LED_CHANNEL, LED_FREQ, LED_RESOLUTION);
+  ledcAttachPin(PIN_LED, LED_CHANNEL);
+  setLEDMode(LED_ON);  // 起動中は点灯
 
   // ボタン初期化
   pinMode(PIN_BUTTON, INPUT_PULLUP);
@@ -637,17 +709,31 @@ void setup() {
   pinMode(PIN_AMP_SD, OUTPUT);
   digitalWrite(PIN_AMP_SD, LOW);
 
-  // WiFi接続
+  // WiFi接続（完全リセットしてから接続）
+  Serial.printf("Connecting to WiFi: %s\n", WIFI_SSID);
+  WiFi.disconnect(true);  // 前の接続情報をクリア
+  delay(1000);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  while (WiFi.status() != WL_CONNECTED) {
+  Serial.println("WiFi.begin() called");
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 40) {
     delay(500);
     Serial.print(".");
+    attempts++;
   }
-  Serial.printf("\n✅ WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
 
-  // WiFi接続完了後、LEDは消灯（録音開始まで待機）
-  setLED(false);
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("\n✅ WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
+  } else {
+    Serial.println("\n❌ WiFi connection failed!");
+    Serial.printf("WiFi status: %d\n", WiFi.status());
+    return;
+  }
+
+  // WiFi接続完了後、LEDは点灯状態維持（次のSTT開始まで）
+  // setLEDMode(LED_ON); は startSTTRecording() で設定される
 
   // Soniox temp key取得
   HTTPClient http;
@@ -681,6 +767,9 @@ void setup() {
 // ==== LOOP ====
 void loop() {
   ws.loop();
+
+  // LED演出更新
+  updateLEDAnimation();
 
   // ボタンチェック（デバウンス処理付き）
   int reading = digitalRead(PIN_BUTTON);
