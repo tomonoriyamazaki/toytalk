@@ -8,7 +8,7 @@
 
   // ---- チューニング定数 ----
   const HEAD_MIN_CHARS = 24;      // 今回は使わない（ヘッドTTS無効）
-  const SEG_MAX_CHARS  = 48;
+  const SEG_MAX_CHARS  = 100;     // 文末で自然に区切るため増加（安全網として残す）
   const TTS_FORMAT     = "pcm";
   const VOICE_DEFAULT  = "alloy";
   const DEBUG          = false;

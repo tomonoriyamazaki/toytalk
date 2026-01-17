@@ -69,6 +69,7 @@ unsigned long lastPartialMs = 0;
 const unsigned long END_SILENCE_MS = 800;
 bool armed = false;
 bool isRecording = false;
+bool endpointDetected = false;  // Sonioxの<end>トークン検出フラグ
 
 // ==== TTS 受信状態 ====
 int curSegmentId = -1;
@@ -653,7 +654,7 @@ void sendToLambdaAndPlay(const String& text) {
 
   Serial.println("🔊 Playback complete");
 
-  delay(2000);
+  delay(1000);
   Serial.println("🔊 Buffer flushed");
 
   addToHistory("user", text);
@@ -664,7 +665,6 @@ void sendToLambdaAndPlay(const String& text) {
   i2s_stop(I2S_NUM_1);
   i2s_driver_uninstall(I2S_NUM_1);
 
-  delay(150);
   startSTTRecording();
 }
 
@@ -676,7 +676,7 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
       {
         String startMsg =
           "{\"api_key\":\"" + sonioxKey + "\","
-          "\"model\":\"stt-rt-preview\","
+          "\"model\":\"stt-rt-v3\","
           "\"audio_format\":\"pcm_s16le\","
           "\"sample_rate\":16000,"
           "\"num_channels\":1,"
@@ -696,13 +696,18 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
       String msg = (char*)payload;
       if (msg.indexOf("\"tokens\"") >= 0) {
         String newText = "";
+        bool foundEndToken = false;
         int pos = 0;
         while ((pos = msg.indexOf("\"text\":\"", pos)) >= 0) {
           pos += 8;
           int end = msg.indexOf("\"", pos);
           if (end < 0) break;
           String token = msg.substring(pos, end);
-          if (token != "\\u003cend\\u003e") newText += token;
+          if (token == "\\u003cend\\u003e") {
+            foundEndToken = true;  // <end>トークン検出
+          } else {
+            newText += token;
+          }
         }
 
         if (newText.length() > 0) {
@@ -714,6 +719,12 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
           lastPartialMs = millis();
           armed = true;
           Serial.println("📝 " + partialText);
+        }
+
+        // <end>トークン検出時、即座に確定
+        if (foundEndToken && partialText.length() > 0) {
+          Serial.println("🎯 Endpoint detected by Soniox!");
+          endpointDetected = true;
         }
       }
       break;
@@ -750,12 +761,13 @@ void startSTTRecording() {
   partialText = "";
   lastFinalText = "";
   armed = false;
+  endpointDetected = false;
 }
 
 // ==== SETUP ====
 void setup() {
   Serial.begin(921600);
-  delay(500);
+  delay(100);
   Serial.println("\n🚀 ToyTalk Conversation v1.3 (STT→LLM→TTS with Streaming Chunk Playback)");
 
   // LED初期化（PWM使用 - 新API）
@@ -771,14 +783,14 @@ void setup() {
   // WiFi接続（完全リセットしてから接続）
   Serial.printf("Connecting to WiFi: %s\n", WIFI_SSID);
   WiFi.disconnect(true);  // 前の接続情報をクリア
-  delay(1000);
+  delay(200);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.println("WiFi.begin() called");
 
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 40) {
-    delay(500);
+    delay(200);
     Serial.print(".");
     attempts++;
   }
@@ -822,7 +834,6 @@ void setup() {
   setupI2SPlay();
 
   // STT録音開始
-  delay(1000);
   startSTTRecording();
 }
 
@@ -874,8 +885,20 @@ void loop() {
     }
   }
 
-  // 無音検出 → 確定文出力
-  if (armed && partialText.length() > 0 && (millis() - lastPartialMs) >= END_SILENCE_MS) {
+  // Sonioxエンドポイント検出 → 即座に確定（優先）
+  if (endpointDetected && partialText.length() > 0) {
+    if (partialText != lastFinalText) {
+      Serial.println("\n✅ 確定文（エンドポイント検出）:");
+      Serial.println(partialText);
+      lastFinalText = partialText;
+      sendToLambdaAndPlay(partialText);
+    }
+    endpointDetected = false;
+    armed = false;
+    partialText = "";
+  }
+  // 無音検出 → 確定文出力（フォールバック）
+  else if (armed && partialText.length() > 0 && (millis() - lastPartialMs) >= END_SILENCE_MS) {
     if (partialText != lastFinalText) {
       Serial.println("\n✅ 確定文（無音検出）:");
       Serial.println(partialText);
