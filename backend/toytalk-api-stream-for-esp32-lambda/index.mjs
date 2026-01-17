@@ -178,18 +178,6 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
   }
 
 
-  // Gemini 用の voice 解決（アプリから "Lede"/"Puck" などが来る想定）
-  function resolveGeminiTtsFromBody(body, cfg) {
-    const t = body?.tts || {};
-    const cand = t.voice || body?.voice;
-    const looksGoogle = typeof cand === "string" && /^[a-z]{2}-[A-Z]{2}-/.test(cand);
-    const looksGemini = typeof cand === "string"
-      && /^[A-Za-z][A-Za-z0-9_-]{1,40}$/.test(cand)   // 英数/アンダースコア/ハイフン可
-      && !looksGoogle;                                 // Google 形式は除外
-    const voiceName = looksGemini ? cand : "leda";     // 既定は Kore（Lede/Puck 等でもOK）
-    return { model: cfg.ttsModel, voiceName };
-  }
-
   // Gemini Speech Generation → Buffer (raw PCM)（APIキーは GOOGLE_API_KEY を共用）
   async function ttsBufferGemini(text, { model = "gemini-2.5-flash-preview-tts", voiceName = "Kore" } = {}) {
     const key = process.env.GOOGLE_API_KEY;
@@ -213,8 +201,17 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     if (!resp.ok) throw new Error(json?.error?.message || "Gemini TTS failed");
     const b64Pcm = json?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || "";
     if (!b64Pcm) throw new Error("Gemini TTS: empty audio");
-    // 24kHz/mono PCM16 base64 → 生のBufferに変換して返す
-    return Buffer.from(b64Pcm, "base64");
+
+    // 24kHz/mono PCM16 base64 → 生のBufferに変換
+    const pcmBuffer = Buffer.from(b64Pcm, "base64");
+    console.log(`[TTS Gemini] PCM size: ${pcmBuffer.length} bytes`);
+
+    // デバッグ: 最初の16バイトを確認
+    const head = pcmBuffer.slice(0, 16);
+    console.log(`[TTS Gemini] First 16 bytes (hex): ${head.toString('hex')}`);
+    console.log(`[TTS Gemini] First 8 samples (int16LE): ${Array.from({length: 8}, (_, i) => head.readInt16LE(i*2)).join(', ')}`);
+
+    return pcmBuffer;
   }
 
   // ElevenLabs TTS → Buffer (raw PCM)
@@ -361,8 +358,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         } else if (cfg.ttsVendor === "google") {
           pcmBuffer = await ttsBufferGoogle(t, { voiceName: "ja-JP-Neural2-C" });
         } else if (cfg.ttsVendor === "gemini") {
-          const g = resolveGeminiTtsFromBody(body, cfg);
-          pcmBuffer = await ttsBufferGemini(t, g);
+          pcmBuffer = await ttsBufferGemini(t, { model: cfg.ttsModel, voiceName: "Kore" });
         } else if (cfg.ttsVendor === "elevenlabs") {
           pcmBuffer = await ttsBufferElevenLabs(t, { model: cfg.ttsModel });
         } else {
