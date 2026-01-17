@@ -665,7 +665,6 @@ void sendToLambdaAndPlay(const String& text) {
   i2s_stop(I2S_NUM_1);
   i2s_driver_uninstall(I2S_NUM_1);
 
-  delay(50);
   startSTTRecording();
 }
 
@@ -835,7 +834,6 @@ void setup() {
   setupI2SPlay();
 
   // STT録音開始
-  delay(300);
   startSTTRecording();
 }
 
