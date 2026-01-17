@@ -62,12 +62,12 @@
       ttsVendor: "gemini",
       ttsModel:  "gemini-2.5-flash-preview-tts",   // 名称は任意（識別用）
     },
-    // 置き石
-    NijiVoice: {
+    // LLM: OpenAI / TTS: ElevenLabs
+    ElevenLabs: {
       llmVendor: "openai",
       llmModel:  "gpt-4.1-mini",
-      ttsVendor: "",       // 後で変更
-      ttsModel:  "",
+      ttsVendor: "elevenlabs",
+      ttsModel:  "eleven_turbo_v2_5",
     },
   };
 
@@ -104,6 +104,11 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     }
 
     // 本物のPCM Bufferを返す
+    // デバッグ: 最初の16バイトを確認
+    const head = buf.slice(0, 16);
+    console.log(`[TTS OpenAI] First 16 bytes (hex): ${head.toString('hex')}`);
+    console.log(`[TTS OpenAI] First 8 samples (int16LE): ${Array.from({length: 8}, (_, i) => head.readInt16LE(i*2)).join(', ')}`);
+
     return buf;
 
   } catch (err) {
@@ -112,95 +117,12 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
   }
 }
 
-
-
-  // PCM16 (LINEAR16) を WAV へラップして base64 を返す
-  function pcm16ToWavBase64(pcmB64, sampleRate = 24000, channels = 1) {
-    // 入力: Google TTS の LINEAR16 base64（LE, signed）
-    let pcm = Buffer.from(pcmB64, "base64");
-
-    const bytesPerSample = 2;
-    const totalSamples = pcm.length / bytesPerSample;
-
-    // --- DCオフセット除去（平均値を0に寄せる） ---
-    let sum = 0;
-    for (let i = 0; i < totalSamples; i++) sum += pcm.readInt16LE(i * 2);
-    const mean = sum / totalSamples;
-    for (let i = 0; i < totalSamples; i++) {
-      const v = pcm.readInt16LE(i * 2) - mean;
-      pcm.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(v))), i * 2);
-    }
-
-    // --- 先頭/末尾 をハニング窓でフェード（Google TTSの冒頭クリック音潰し） ---
-    const fadeMs = 12;
-    const fadeSamples = Math.min(
-      Math.floor(sampleRate * fadeMs / 1000),
-      Math.floor(totalSamples / 4)
-    );
-    for (let i = 0; i < fadeSamples; i++) {
-      const wIn  = 0.5 * (1 - Math.cos(Math.PI * i / fadeSamples));                 // 0→1
-      const wOut = 0.5 * (1 - Math.cos(Math.PI * (fadeSamples - i) / fadeSamples)); // 1→0
-      // in
-      const vi = pcm.readInt16LE(i * 2);
-      pcm.writeInt16LE(Math.round(vi * wIn), i * 2);
-      // out
-      const idx = (totalSamples - 1 - i) * 2;
-      const vo = pcm.readInt16LE(idx);
-      pcm.writeInt16LE(Math.round(vo * wOut), idx);
-    }
-
-    // --- 先頭の無音パッド（Google TTSの冒頭クリック音吸収）---
-    const padHeadMs = 40;
-    const padSamples = Math.max(1, Math.floor(sampleRate * padHeadMs / 1000));
-    const pad = Buffer.alloc(padSamples * bytesPerSample, 0);
-    pcm = Buffer.concat([pad, pcm]);
-
-    // --- WAV ラップ ---
-    const byteRate   = sampleRate * channels * 2;
-    const blockAlign = channels * 2;
-    const dataSize   = pcm.length;
-    const headerSize = 44;
-    const buf = Buffer.alloc(headerSize + dataSize);
-    buf.write("RIFF", 0);
-    buf.writeUInt32LE(36 + dataSize, 4);
-    buf.write("WAVE", 8);
-    buf.write("fmt ", 12);
-    buf.writeUInt32LE(16, 16);
-    buf.writeUInt16LE(1, 20);
-    buf.writeUInt16LE(channels, 22);
-    buf.writeUInt32LE(sampleRate, 24);
-    buf.writeUInt32LE(byteRate, 28);
-    buf.writeUInt16LE(blockAlign, 32);
-    buf.writeUInt16LE(16, 34);
-    buf.write("data", 36);
-    buf.writeUInt32LE(dataSize, 40);
-    pcm.copy(buf, 44);
-    return buf.toString("base64");
-  }
-
-  function resolveGoogleTtsFromBody(body) {
-    const t = body?.tts || {};
-    // Googleのvoice形式だけ通す（alloy等が入っても安全に既定へ）
-    const cand = t.voice || body?.voice;
-    const isGoogleVoice = typeof cand === "string" && /^[a-z]{2}-[A-Z]{2}-/.test(cand);
-    const voiceName = isGoogleVoice ? cand : "ja-JP-Neural2-B";
-
-    return {
-     voiceName,
-     // ← 未指定は "入れない"（= undefined を返す）
-     speakingRate: (typeof t.speakingRate === "number") ? t.speakingRate : undefined,
-     pitch:        (typeof t.pitch        === "number") ? t.pitch        : undefined,
-     sampleRateHertz: (typeof t.sampleRateHertz === "number") ? t.sampleRateHertz : undefined,
-      audioEncoding: "LINEAR16", // ★ WAV固定（LINEAR16→WAVラップ）
-    };
-  }
-
   // Google Cloud Text-to-Speech (API Key) → Buffer (raw PCM)
   async function ttsBufferGoogle(
     text,
     {
       voiceName,
-      speakingRate = 1.3,
+      speakingRate = 1.2,
       pitch = 3.0,
       sampleRateHertz = 24000,
       audioEncoding = "LINEAR16",
@@ -234,22 +156,27 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       const msg = json?.error?.message || "Google TTS failed";
       throw new Error(msg);
     }
-    // json.audioContent は LINEAR16 (base64) → 生のBufferに変換して返す
-    return Buffer.from(json.audioContent, "base64");
+    // json.audioContent は LINEAR16 (base64) → 生のBufferに変換
+    const pcmBuffer = Buffer.from(json.audioContent, "base64");
+    console.log(`[TTS Google] PCM size: ${pcmBuffer.length} bytes`);
+
+    // Google TTS特有の冒頭クリック音対策: フェードイン処理
+    const fadeMs = 20;  // 20ミリ秒
+    const fadeSamples = Math.floor(sampleRateHertz * fadeMs / 1000);
+    for (let i = 0; i < fadeSamples && i * 2 < pcmBuffer.length; i++) {
+      const fade = i / fadeSamples;  // 0→1
+      const sample = pcmBuffer.readInt16LE(i * 2);
+      pcmBuffer.writeInt16LE(Math.round(sample * fade), i * 2);
+    }
+
+    // デバッグ: 最初の16バイトを確認
+    const head = pcmBuffer.slice(0, 16);
+    console.log(`[TTS Google] First 16 bytes (hex): ${head.toString('hex')}`);
+    console.log(`[TTS Google] First 8 samples (int16LE): ${Array.from({length: 8}, (_, i) => head.readInt16LE(i*2)).join(', ')}`);
+
+    return pcmBuffer;
   }
 
-
-  // Gemini 用の voice 解決（アプリから "Lede"/"Puck" などが来る想定）
-  function resolveGeminiTtsFromBody(body, cfg) {
-    const t = body?.tts || {};
-    const cand = t.voice || body?.voice;
-    const looksGoogle = typeof cand === "string" && /^[a-z]{2}-[A-Z]{2}-/.test(cand);
-    const looksGemini = typeof cand === "string"
-      && /^[A-Za-z][A-Za-z0-9_-]{1,40}$/.test(cand)   // 英数/アンダースコア/ハイフン可
-      && !looksGoogle;                                 // Google 形式は除外
-    const voiceName = looksGemini ? cand : "leda";     // 既定は Kore（Lede/Puck 等でもOK）
-    return { model: cfg.ttsModel, voiceName };
-  }
 
   // Gemini Speech Generation → Buffer (raw PCM)（APIキーは GOOGLE_API_KEY を共用）
   async function ttsBufferGemini(text, { model = "gemini-2.5-flash-preview-tts", voiceName = "Kore" } = {}) {
@@ -274,12 +201,65 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     if (!resp.ok) throw new Error(json?.error?.message || "Gemini TTS failed");
     const b64Pcm = json?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || "";
     if (!b64Pcm) throw new Error("Gemini TTS: empty audio");
-    // 24kHz/mono PCM16 base64 → 生のBufferに変換して返す
-    return Buffer.from(b64Pcm, "base64");
+
+    // 24kHz/mono PCM16 base64 → 生のBufferに変換
+    const pcmBuffer = Buffer.from(b64Pcm, "base64");
+    console.log(`[TTS Gemini] PCM size: ${pcmBuffer.length} bytes`);
+
+    // デバッグ: 最初の16バイトを確認
+    const head = pcmBuffer.slice(0, 16);
+    console.log(`[TTS Gemini] First 16 bytes (hex): ${head.toString('hex')}`);
+    console.log(`[TTS Gemini] First 8 samples (int16LE): ${Array.from({length: 8}, (_, i) => head.readInt16LE(i*2)).join(', ')}`);
+
+    return pcmBuffer;
+  }
+
+  // ElevenLabs TTS → Buffer (raw PCM)
+  async function ttsBufferElevenLabs(text, { model = "eleven_turbo_v2_5", voiceId = "hMK7c1GPJmptCzI4bQIu" } = {}) {
+    const key = process.env.ELEVENLABS_API_KEY;
+    if (!key) throw new Error("ELEVENLABS_API_KEY is not set");
+
+    const resp = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=pcm_24000&optimize_streaming_latency=0`,
+      {
+        method: "POST",
+        headers: {
+          "xi-api-key": key,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          text,
+          model_id: model,
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.75
+          }
+        })
+      }
+    );
+
+    if (!resp.ok) {
+      const errorText = await resp.text();
+      throw new Error(`ElevenLabs TTS failed: ${resp.status} ${errorText}`);
+    }
+
+    // レスポンスヘッダーを確認
+    const contentType = resp.headers.get('content-type');
+    console.log(`[TTS ElevenLabs] Content-Type: ${contentType}`);
+
+    // PCMバイナリデータを直接返す
+    const pcmBuffer = Buffer.from(await resp.arrayBuffer());
+    console.log(`[TTS ElevenLabs] PCM size: ${pcmBuffer.length} bytes`);
+
+    // デバッグ: 最初の16バイトを確認
+    const head = pcmBuffer.slice(0, 16);
+    console.log(`[TTS ElevenLabs] First 16 bytes (hex): ${head.toString('hex')}`);
+    console.log(`[TTS ElevenLabs] First 8 samples (int16LE): ${Array.from({length: 8}, (_, i) => head.readInt16LE(i*2)).join(', ')}`);
+
+    return pcmBuffer;
   }
 
 
-  
   export const handler = awslambda.streamifyResponse(async (event, res) => {
     res.setContentType("application/octet-stream");
 
@@ -293,10 +273,10 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     function normalizeModelKey(k) {
       if (!k) return undefined;
       const s = String(k).toLowerCase();
-      if (s.includes("openai"))  return "OpenAI";
-      if (s.includes("google"))  return "Google";
-      if (s.includes("gemini"))  return "Gemini";
-      if (s.includes("niji"))    return "NijiVoice";
+      if (s.includes("openai"))      return "OpenAI";
+      if (s.includes("google"))      return "Google";
+      if (s.includes("gemini"))      return "Gemini";
+      if (s.includes("elevenlabs"))  return "ElevenLabs";
       return undefined; // 不明ならデフォルトにフォールバック
     }
 
@@ -374,13 +354,17 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       try {
         let pcmBuffer;
         if (cfg.ttsVendor === "openai") {
-          pcmBuffer = await ttsBufferOpenAI(t, voice, cfg.ttsModel);
+          const voiceName = voice === "default" ? "nova" : voice;
+          pcmBuffer = await ttsBufferOpenAI(t, voiceName, cfg.ttsModel);
         } else if (cfg.ttsVendor === "google") {
-          const g = resolveGoogleTtsFromBody(body);
-          pcmBuffer = await ttsBufferGoogle(t, g);
+          const voiceName = voice === "default" ? "ja-JP-Neural2-C" : voice;  // 男性
+          pcmBuffer = await ttsBufferGoogle(t, { voiceName });
         } else if (cfg.ttsVendor === "gemini") {
-          const g = resolveGeminiTtsFromBody(body, cfg);
-          pcmBuffer = await ttsBufferGemini(t, g);
+          const voiceName = voice === "default" ? "Kore" : voice;
+          pcmBuffer = await ttsBufferGemini(t, { model: cfg.ttsModel, voiceName });
+        } else if (cfg.ttsVendor === "elevenlabs") {
+          const voiceId = voice === "default" ? "hMK7c1GPJmptCzI4bQIu" : voice;  // Sameno（子供向け）
+          pcmBuffer = await ttsBufferElevenLabs(t, { model: cfg.ttsModel, voiceId });
         } else {
           throw new Error("Unknown ttsVendor");
         }
