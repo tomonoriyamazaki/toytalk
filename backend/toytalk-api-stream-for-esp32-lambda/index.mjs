@@ -46,7 +46,7 @@
       llmVendor: "openai",
       llmModel:  "gpt-4.1-mini",
       ttsVendor: "openai",
-      ttsModel:  "gpt-4o-mini-tts",
+      ttsModel:  "gpt-4o-mini-tts-2025-03-20",
     },
     // LLM: OpenAI / TTS: Google Cloud Text-to-Speech
     Google: {
