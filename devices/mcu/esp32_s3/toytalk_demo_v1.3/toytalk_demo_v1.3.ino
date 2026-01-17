@@ -86,7 +86,7 @@ Message conversationHistory[MAX_HISTORY * 2];
 int historyCount = 0;
 
 // ==== 音量調整 ====
-const float VOLUME = 1.5;
+const float VOLUME = 1.0;
 
 // ==== メモリ診断関数 ====
 #if DEBUG_MEMORY
@@ -582,7 +582,7 @@ void sendToLambdaAndPlay(const String& text) {
   messagesJson += "]";
 
   String payload =
-    "{\"model\":\"OpenAI\",\"voice\":\"nova\","
+    "{\"model\":\"ElevenLabs\",\"voice\":\"nova\","
     "\"messages\":" + messagesJson + "}";
 
   Serial.printf("📝 History count: %d\n", historyCount);

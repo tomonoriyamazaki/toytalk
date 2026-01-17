@@ -62,12 +62,12 @@
       ttsVendor: "gemini",
       ttsModel:  "gemini-2.5-flash-preview-tts",   // 名称は任意（識別用）
     },
-    // 置き石
-    NijiVoice: {
+    // LLM: OpenAI / TTS: ElevenLabs
+    ElevenLabs: {
       llmVendor: "openai",
       llmModel:  "gpt-4.1-mini",
-      ttsVendor: "",       // 後で変更
-      ttsModel:  "",
+      ttsVendor: "elevenlabs",
+      ttsModel:  "eleven_turbo_v2_5",
     },
   };
 
@@ -104,6 +104,11 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     }
 
     // 本物のPCM Bufferを返す
+    // デバッグ: 最初の16バイトを確認
+    const head = buf.slice(0, 16);
+    console.log(`[TTS OpenAI] First 16 bytes (hex): ${head.toString('hex')}`);
+    console.log(`[TTS OpenAI] First 8 samples (int16LE): ${Array.from({length: 8}, (_, i) => head.readInt16LE(i*2)).join(', ')}`);
+
     return buf;
 
   } catch (err) {
@@ -278,8 +283,52 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     return Buffer.from(b64Pcm, "base64");
   }
 
+  // ElevenLabs TTS → Buffer (raw PCM)
+  async function ttsBufferElevenLabs(text, { model = "eleven_turbo_v2_5", voiceId = "hMK7c1GPJmptCzI4bQIu" } = {}) {
+    const key = process.env.ELEVENLABS_API_KEY;
+    if (!key) throw new Error("ELEVENLABS_API_KEY is not set");
 
-  
+    const resp = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=pcm_24000&optimize_streaming_latency=0`,
+      {
+        method: "POST",
+        headers: {
+          "xi-api-key": key,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          text,
+          model_id: model,
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.75
+          }
+        })
+      }
+    );
+
+    if (!resp.ok) {
+      const errorText = await resp.text();
+      throw new Error(`ElevenLabs TTS failed: ${resp.status} ${errorText}`);
+    }
+
+    // レスポンスヘッダーを確認
+    const contentType = resp.headers.get('content-type');
+    console.log(`[TTS ElevenLabs] Content-Type: ${contentType}`);
+
+    // PCMバイナリデータを直接返す
+    const pcmBuffer = Buffer.from(await resp.arrayBuffer());
+    console.log(`[TTS ElevenLabs] PCM size: ${pcmBuffer.length} bytes`);
+
+    // デバッグ: 最初の16バイトを確認
+    const head = pcmBuffer.slice(0, 16);
+    console.log(`[TTS ElevenLabs] First 16 bytes (hex): ${head.toString('hex')}`);
+    console.log(`[TTS ElevenLabs] First 8 samples (int16LE): ${Array.from({length: 8}, (_, i) => head.readInt16LE(i*2)).join(', ')}`);
+
+    return pcmBuffer;
+  }
+
+
   export const handler = awslambda.streamifyResponse(async (event, res) => {
     res.setContentType("application/octet-stream");
 
@@ -293,10 +342,10 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     function normalizeModelKey(k) {
       if (!k) return undefined;
       const s = String(k).toLowerCase();
-      if (s.includes("openai"))  return "OpenAI";
-      if (s.includes("google"))  return "Google";
-      if (s.includes("gemini"))  return "Gemini";
-      if (s.includes("niji"))    return "NijiVoice";
+      if (s.includes("openai"))      return "OpenAI";
+      if (s.includes("google"))      return "Google";
+      if (s.includes("gemini"))      return "Gemini";
+      if (s.includes("elevenlabs"))  return "ElevenLabs";
       return undefined; // 不明ならデフォルトにフォールバック
     }
 
@@ -381,6 +430,8 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         } else if (cfg.ttsVendor === "gemini") {
           const g = resolveGeminiTtsFromBody(body, cfg);
           pcmBuffer = await ttsBufferGemini(t, g);
+        } else if (cfg.ttsVendor === "elevenlabs") {
+          pcmBuffer = await ttsBufferElevenLabs(t, { model: cfg.ttsModel });
         } else {
           throw new Error("Unknown ttsVendor");
         }
