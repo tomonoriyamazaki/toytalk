@@ -13,7 +13,13 @@ dist/
 # key
 *.env
 
+# macOS
+.DS_Store
+
 # KiCad temporary files
 *_autosave-*
 ~*.kicad_*.lck
 #auto_saved_files#
+*.kicad_prl
+fp-info-cache
+*-backups/
