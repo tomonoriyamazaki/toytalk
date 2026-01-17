@@ -69,6 +69,7 @@ unsigned long lastPartialMs = 0;
 const unsigned long END_SILENCE_MS = 800;
 bool armed = false;
 bool isRecording = false;
+bool endpointDetected = false;  // Sonioxの<end>トークン検出フラグ
 
 // ==== TTS 受信状態 ====
 int curSegmentId = -1;
@@ -696,13 +697,18 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
       String msg = (char*)payload;
       if (msg.indexOf("\"tokens\"") >= 0) {
         String newText = "";
+        bool foundEndToken = false;
         int pos = 0;
         while ((pos = msg.indexOf("\"text\":\"", pos)) >= 0) {
           pos += 8;
           int end = msg.indexOf("\"", pos);
           if (end < 0) break;
           String token = msg.substring(pos, end);
-          if (token != "\\u003cend\\u003e") newText += token;
+          if (token == "\\u003cend\\u003e") {
+            foundEndToken = true;  // <end>トークン検出
+          } else {
+            newText += token;
+          }
         }
 
         if (newText.length() > 0) {
@@ -714,6 +720,12 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
           lastPartialMs = millis();
           armed = true;
           Serial.println("📝 " + partialText);
+        }
+
+        // <end>トークン検出時、即座に確定
+        if (foundEndToken && partialText.length() > 0) {
+          Serial.println("🎯 Endpoint detected by Soniox!");
+          endpointDetected = true;
         }
       }
       break;
@@ -750,6 +762,7 @@ void startSTTRecording() {
   partialText = "";
   lastFinalText = "";
   armed = false;
+  endpointDetected = false;
 }
 
 // ==== SETUP ====
@@ -874,8 +887,20 @@ void loop() {
     }
   }
 
-  // 無音検出 → 確定文出力
-  if (armed && partialText.length() > 0 && (millis() - lastPartialMs) >= END_SILENCE_MS) {
+  // Sonioxエンドポイント検出 → 即座に確定（優先）
+  if (endpointDetected && partialText.length() > 0) {
+    if (partialText != lastFinalText) {
+      Serial.println("\n✅ 確定文（エンドポイント検出）:");
+      Serial.println(partialText);
+      lastFinalText = partialText;
+      sendToLambdaAndPlay(partialText);
+    }
+    endpointDetected = false;
+    armed = false;
+    partialText = "";
+  }
+  // 無音検出 → 確定文出力（フォールバック）
+  else if (armed && partialText.length() > 0 && (millis() - lastPartialMs) >= END_SILENCE_MS) {
     if (partialText != lastFinalText) {
       Serial.println("\n✅ 確定文（無音検出）:");
       Serial.println(partialText);
