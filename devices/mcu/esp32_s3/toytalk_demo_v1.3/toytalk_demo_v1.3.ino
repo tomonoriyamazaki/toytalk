@@ -5,6 +5,9 @@
 #include <ArduinoJson.h>
 #include <driver/i2s.h>
 
+// ==== デバッグ設定 ====
+#define DEBUG_MEMORY 0  // メモリ診断を有効化する場合は1に設定
+
 // ==== WiFi ====
 const char* WIFI_SSID = "Buffalo-G-5830";
 const char* WIFI_PASS = "sh6s3kagpp48s";
@@ -86,6 +89,7 @@ int historyCount = 0;
 const float VOLUME = 1.5;
 
 // ==== メモリ診断関数 ====
+#if DEBUG_MEMORY
 void printMemoryStatus(const char* label) {
   Serial.println("========================================");
   Serial.printf("[MEMORY] %s\n", label);
@@ -117,6 +121,7 @@ void printMemoryStatus(const char* label) {
                 psramUsed, (float)psramUsed / psramTotal * 100);
   Serial.println("========================================\n");
 }
+#endif
 
 // ==== LED制御関数（単色LED）====
 void setLEDMode(LEDMode mode) {
@@ -460,7 +465,9 @@ void processMetadata(WiFiClientSecure& client, uint32_t length) {
 // ==== バイナリプロトコル: PCMデータ処理 (type=0x02) - ストリーミング版 ====
 void processPCM(WiFiClientSecure& client, uint32_t length) {
   Serial.printf("[PCM] Streaming %d bytes\n", length);
+#if DEBUG_MEMORY
   printMemoryStatus("Before PCM Processing");
+#endif
 
   // ストリーミング再生用のバッファ（64KB）
   const size_t STREAM_CHUNK_SIZE = 65536;  // 64KB = 約0.68秒分の音声
@@ -479,7 +486,9 @@ void processPCM(WiFiClientSecure& client, uint32_t length) {
     if (!pcmData) {
       pcmData = (uint8_t*)malloc(chunkSize);  // フォールバック
     }
+#if DEBUG_MEMORY
     Serial.printf("[ALLOC] pcmData: %d bytes at %p\n", chunkSize, pcmData);
+#endif
     if (!pcmData) {
       Serial.printf("[PCM] malloc failed for chunk! Skipping remaining %d bytes\n", remaining);
       // 残りを読み捨て
@@ -505,7 +514,9 @@ void processPCM(WiFiClientSecure& client, uint32_t length) {
     size_t samples = bytesRead / 2;
     size_t stereoBytes = samples * 4;
     int16_t* stereo = (int16_t*)malloc(stereoBytes);
+#if DEBUG_MEMORY
     Serial.printf("[ALLOC] stereo: %d bytes at %p\n", stereoBytes, stereo);
+#endif
     if (!stereo) {
       Serial.println("[PCM] stereo malloc failed for chunk!");
       free(pcmData);
@@ -796,7 +807,9 @@ void setup() {
   Serial.println("✅ Soniox temp key obtained");
 
   // メモリ状態確認（初期状態）
+#if DEBUG_MEMORY
   printMemoryStatus("After WiFi & Soniox Init");
+#endif
 
   // I2S再生設定
   setupI2SPlay();
