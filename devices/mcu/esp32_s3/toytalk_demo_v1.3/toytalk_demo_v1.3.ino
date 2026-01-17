@@ -767,7 +767,7 @@ void startSTTRecording() {
 // ==== SETUP ====
 void setup() {
   Serial.begin(921600);
-  delay(500);
+  delay(100);
   Serial.println("\n🚀 ToyTalk Conversation v1.3 (STT→LLM→TTS with Streaming Chunk Playback)");
 
   // LED初期化（PWM使用 - 新API）
@@ -783,14 +783,14 @@ void setup() {
   // WiFi接続（完全リセットしてから接続）
   Serial.printf("Connecting to WiFi: %s\n", WIFI_SSID);
   WiFi.disconnect(true);  // 前の接続情報をクリア
-  delay(1000);
+  delay(200);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.println("WiFi.begin() called");
 
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 40) {
-    delay(500);
+    delay(200);
     Serial.print(".");
     attempts++;
   }
