@@ -88,6 +88,13 @@ int historyCount = 0;
 // ==== 音量調整 ====
 const float VOLUME = 1.0;
 
+// ==== TTS設定（DynamoDB連携予定）====
+// TTS_PROVIDER候補: "OpenAI" / "Google" / "Gemini" / "ElevenLabs"
+const char* TTS_PROVIDER = "ElevenLabs";
+// TTS_CHARACTER: "default"の場合、各TTSのデフォルトキャラクターを使用
+// ElevenLabs: Sameno（子供向け）, OpenAI: nova, Google: ja-JP-Neural2-C, Gemini: Kore
+const char* TTS_CHARACTER = "default";
+
 // ==== メモリ診断関数 ====
 #if DEBUG_MEMORY
 void printMemoryStatus(const char* label) {
@@ -582,7 +589,7 @@ void sendToLambdaAndPlay(const String& text) {
   messagesJson += "]";
 
   String payload =
-    "{\"model\":\"Gemini\",\"voice\":\"nova\","
+    "{\"model\":\"" + String(TTS_PROVIDER) + "\",\"voice\":\"" + String(TTS_CHARACTER) + "\","
     "\"messages\":" + messagesJson + "}";
 
   Serial.printf("📝 History count: %d\n", historyCount);

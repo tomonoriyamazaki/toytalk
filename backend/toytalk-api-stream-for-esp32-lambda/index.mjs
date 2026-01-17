@@ -354,13 +354,17 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       try {
         let pcmBuffer;
         if (cfg.ttsVendor === "openai") {
-          pcmBuffer = await ttsBufferOpenAI(t, voice, cfg.ttsModel);
+          const voiceName = voice === "default" ? "nova" : voice;
+          pcmBuffer = await ttsBufferOpenAI(t, voiceName, cfg.ttsModel);
         } else if (cfg.ttsVendor === "google") {
-          pcmBuffer = await ttsBufferGoogle(t, { voiceName: "ja-JP-Neural2-C" });
+          const voiceName = voice === "default" ? "ja-JP-Neural2-C" : voice;  // 男性
+          pcmBuffer = await ttsBufferGoogle(t, { voiceName });
         } else if (cfg.ttsVendor === "gemini") {
-          pcmBuffer = await ttsBufferGemini(t, { model: cfg.ttsModel, voiceName: "Kore" });
+          const voiceName = voice === "default" ? "Kore" : voice;
+          pcmBuffer = await ttsBufferGemini(t, { model: cfg.ttsModel, voiceName });
         } else if (cfg.ttsVendor === "elevenlabs") {
-          pcmBuffer = await ttsBufferElevenLabs(t, { model: cfg.ttsModel });
+          const voiceId = voice === "default" ? "hMK7c1GPJmptCzI4bQIu" : voice;  // Sameno（子供向け）
+          pcmBuffer = await ttsBufferElevenLabs(t, { model: cfg.ttsModel, voiceId });
         } else {
           throw new Error("Unknown ttsVendor");
         }
