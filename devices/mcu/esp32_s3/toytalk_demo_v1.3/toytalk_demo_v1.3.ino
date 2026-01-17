@@ -654,7 +654,7 @@ void sendToLambdaAndPlay(const String& text) {
 
   Serial.println("🔊 Playback complete");
 
-  delay(2000);
+  delay(1500);
   Serial.println("🔊 Buffer flushed");
 
   addToHistory("user", text);
@@ -677,7 +677,7 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
       {
         String startMsg =
           "{\"api_key\":\"" + sonioxKey + "\","
-          "\"model\":\"stt-rt-preview\","
+          "\"model\":\"stt-rt-v3\","
           "\"audio_format\":\"pcm_s16le\","
           "\"sample_rate\":16000,"
           "\"num_channels\":1,"
