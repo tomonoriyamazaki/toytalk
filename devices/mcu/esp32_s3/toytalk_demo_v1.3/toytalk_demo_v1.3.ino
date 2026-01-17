@@ -582,7 +582,7 @@ void sendToLambdaAndPlay(const String& text) {
   messagesJson += "]";
 
   String payload =
-    "{\"model\":\"ElevenLabs\",\"voice\":\"nova\","
+    "{\"model\":\"Google\",\"voice\":\"nova\","
     "\"messages\":" + messagesJson + "}";
 
   Serial.printf("📝 History count: %d\n", historyCount);

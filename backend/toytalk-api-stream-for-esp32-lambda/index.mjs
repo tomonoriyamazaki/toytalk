@@ -117,95 +117,12 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
   }
 }
 
-
-
-  // PCM16 (LINEAR16) を WAV へラップして base64 を返す
-  function pcm16ToWavBase64(pcmB64, sampleRate = 24000, channels = 1) {
-    // 入力: Google TTS の LINEAR16 base64（LE, signed）
-    let pcm = Buffer.from(pcmB64, "base64");
-
-    const bytesPerSample = 2;
-    const totalSamples = pcm.length / bytesPerSample;
-
-    // --- DCオフセット除去（平均値を0に寄せる） ---
-    let sum = 0;
-    for (let i = 0; i < totalSamples; i++) sum += pcm.readInt16LE(i * 2);
-    const mean = sum / totalSamples;
-    for (let i = 0; i < totalSamples; i++) {
-      const v = pcm.readInt16LE(i * 2) - mean;
-      pcm.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(v))), i * 2);
-    }
-
-    // --- 先頭/末尾 をハニング窓でフェード（Google TTSの冒頭クリック音潰し） ---
-    const fadeMs = 12;
-    const fadeSamples = Math.min(
-      Math.floor(sampleRate * fadeMs / 1000),
-      Math.floor(totalSamples / 4)
-    );
-    for (let i = 0; i < fadeSamples; i++) {
-      const wIn  = 0.5 * (1 - Math.cos(Math.PI * i / fadeSamples));                 // 0→1
-      const wOut = 0.5 * (1 - Math.cos(Math.PI * (fadeSamples - i) / fadeSamples)); // 1→0
-      // in
-      const vi = pcm.readInt16LE(i * 2);
-      pcm.writeInt16LE(Math.round(vi * wIn), i * 2);
-      // out
-      const idx = (totalSamples - 1 - i) * 2;
-      const vo = pcm.readInt16LE(idx);
-      pcm.writeInt16LE(Math.round(vo * wOut), idx);
-    }
-
-    // --- 先頭の無音パッド（Google TTSの冒頭クリック音吸収）---
-    const padHeadMs = 40;
-    const padSamples = Math.max(1, Math.floor(sampleRate * padHeadMs / 1000));
-    const pad = Buffer.alloc(padSamples * bytesPerSample, 0);
-    pcm = Buffer.concat([pad, pcm]);
-
-    // --- WAV ラップ ---
-    const byteRate   = sampleRate * channels * 2;
-    const blockAlign = channels * 2;
-    const dataSize   = pcm.length;
-    const headerSize = 44;
-    const buf = Buffer.alloc(headerSize + dataSize);
-    buf.write("RIFF", 0);
-    buf.writeUInt32LE(36 + dataSize, 4);
-    buf.write("WAVE", 8);
-    buf.write("fmt ", 12);
-    buf.writeUInt32LE(16, 16);
-    buf.writeUInt16LE(1, 20);
-    buf.writeUInt16LE(channels, 22);
-    buf.writeUInt32LE(sampleRate, 24);
-    buf.writeUInt32LE(byteRate, 28);
-    buf.writeUInt16LE(blockAlign, 32);
-    buf.writeUInt16LE(16, 34);
-    buf.write("data", 36);
-    buf.writeUInt32LE(dataSize, 40);
-    pcm.copy(buf, 44);
-    return buf.toString("base64");
-  }
-
-  function resolveGoogleTtsFromBody(body) {
-    const t = body?.tts || {};
-    // Googleのvoice形式だけ通す（alloy等が入っても安全に既定へ）
-    const cand = t.voice || body?.voice;
-    const isGoogleVoice = typeof cand === "string" && /^[a-z]{2}-[A-Z]{2}-/.test(cand);
-    const voiceName = isGoogleVoice ? cand : "ja-JP-Neural2-B";
-
-    return {
-     voiceName,
-     // ← 未指定は "入れない"（= undefined を返す）
-     speakingRate: (typeof t.speakingRate === "number") ? t.speakingRate : undefined,
-     pitch:        (typeof t.pitch        === "number") ? t.pitch        : undefined,
-     sampleRateHertz: (typeof t.sampleRateHertz === "number") ? t.sampleRateHertz : undefined,
-      audioEncoding: "LINEAR16", // ★ WAV固定（LINEAR16→WAVラップ）
-    };
-  }
-
   // Google Cloud Text-to-Speech (API Key) → Buffer (raw PCM)
   async function ttsBufferGoogle(
     text,
     {
       voiceName,
-      speakingRate = 1.3,
+      speakingRate = 1.2,
       pitch = 3.0,
       sampleRateHertz = 24000,
       audioEncoding = "LINEAR16",
@@ -239,8 +156,25 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       const msg = json?.error?.message || "Google TTS failed";
       throw new Error(msg);
     }
-    // json.audioContent は LINEAR16 (base64) → 生のBufferに変換して返す
-    return Buffer.from(json.audioContent, "base64");
+    // json.audioContent は LINEAR16 (base64) → 生のBufferに変換
+    const pcmBuffer = Buffer.from(json.audioContent, "base64");
+    console.log(`[TTS Google] PCM size: ${pcmBuffer.length} bytes`);
+
+    // Google TTS特有の冒頭クリック音対策: フェードイン処理
+    const fadeMs = 20;  // 20ミリ秒
+    const fadeSamples = Math.floor(sampleRateHertz * fadeMs / 1000);
+    for (let i = 0; i < fadeSamples && i * 2 < pcmBuffer.length; i++) {
+      const fade = i / fadeSamples;  // 0→1
+      const sample = pcmBuffer.readInt16LE(i * 2);
+      pcmBuffer.writeInt16LE(Math.round(sample * fade), i * 2);
+    }
+
+    // デバッグ: 最初の16バイトを確認
+    const head = pcmBuffer.slice(0, 16);
+    console.log(`[TTS Google] First 16 bytes (hex): ${head.toString('hex')}`);
+    console.log(`[TTS Google] First 8 samples (int16LE): ${Array.from({length: 8}, (_, i) => head.readInt16LE(i*2)).join(', ')}`);
+
+    return pcmBuffer;
   }
 
 
@@ -425,8 +359,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         if (cfg.ttsVendor === "openai") {
           pcmBuffer = await ttsBufferOpenAI(t, voice, cfg.ttsModel);
         } else if (cfg.ttsVendor === "google") {
-          const g = resolveGoogleTtsFromBody(body);
-          pcmBuffer = await ttsBufferGoogle(t, g);
+          pcmBuffer = await ttsBufferGoogle(t, { voiceName: "ja-JP-Neural2-C" });
         } else if (cfg.ttsVendor === "gemini") {
           const g = resolveGeminiTtsFromBody(body, cfg);
           pcmBuffer = await ttsBufferGemini(t, g);
