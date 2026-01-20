@@ -10,14 +10,16 @@
     "newArchEnabled": true,
     "ios": {
       "bundleIdentifier": "com.zakicorp.toytalk",
-      "buildNumber": "13",
+      "buildNumber": "14",
       "supportsTablet": false,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSMicrophoneUsageDescription": "音声認識のためにマイクを使用します。",
         "NSSpeechRecognitionUsageDescription": "音声を文字に変換するために音声認識を使用します。",
         "NSPhotoLibraryUsageDescription": "このアプリはユーザーの体験向上のために写真ライブラリへアクセスする可能性があります。",
-        "NSPhotoLibraryAddUsageDescription": "このアプリは生成した画像やコンテンツを保存するために写真ライブラリを使用する可能性があります。"
+        "NSPhotoLibraryAddUsageDescription": "このアプリは生成した画像やコンテンツを保存するために写真ライブラリを使用する可能性があります。",
+        "NSBluetoothAlwaysUsageDescription": "おもちゃとの接続にBluetoothを使用します。",
+        "NSBluetoothPeripheralUsageDescription": "おもちゃとの接続にBluetoothを使用します。"
       }
     },
     "android": {
@@ -26,7 +28,14 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.zakicorp.toytalk"
+      "package": "com.zakicorp.toytalk",
+      "permissions": [
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
     },
     "web": {
       "bundler": "metro",

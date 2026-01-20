@@ -299,7 +299,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     // システムプロンプトを追加（会話履歴がある場合は挨拶を省略）
     const systemPrompt = {
       role: "system",
-      content: "あなたは子供向けの友好的な音声アシスタントです。簡潔に答えて、自然に会話を続けてください。"
+      content: "あなたは子供向けの友好的な音声アシスタントです。簡潔に答えて、自然に会話を続けてください。漢字は最小限にして、ひらがな多めで答えてください。"
     };
     const messagesWithSystem = [systemPrompt, ...messages];
 
