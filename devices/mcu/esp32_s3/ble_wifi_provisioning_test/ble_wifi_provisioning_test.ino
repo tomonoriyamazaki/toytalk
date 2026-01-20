@@ -24,7 +24,7 @@
 #define PIN_BUTTON 7
 
 // ==== テスト用ハードコード（iPhoneホットスポットテスト） ====
-#define TEST_IPHONE_HOTSPOT  true  // trueにするとBLEをスキップしてiPhoneに直接接続
+#define TEST_IPHONE_HOTSPOT  false  // falseでBLEプロビジョニングモード有効
 #define TEST_SSID "iPhonezaki"
 #define TEST_PASS "00000000"
 #define USE_DETAILED_DEBUG true  // 詳細デバッグモード
