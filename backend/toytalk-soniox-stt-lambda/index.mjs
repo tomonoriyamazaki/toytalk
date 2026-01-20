@@ -11,10 +11,10 @@ export const handler = async (event) => {
     // Soniox temporary key API
     const url = "https://api.soniox.com/v1/auth/temporary-api-key";
 
-    // 10分有効 (600秒)
+    // 1時間有効 (3600秒)
     const body = {
       usage_type: "transcribe_websocket",
-      expires_in_seconds: 600,
+      expires_in_seconds: 3600,
       client_reference_id: "toytalk-lambda", // 任意
     };
 
