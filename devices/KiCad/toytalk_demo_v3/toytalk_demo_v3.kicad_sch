@@ -5066,6 +5066,138 @@
 		(color 0 0 0 0)
 		(uuid "86a114bc-7dbc-4293-a40a-898221eae9bd")
 	)
+	(no_connect
+		(at 189.23 113.03)
+		(uuid "1683e14e-37ef-4f13-8a12-7355b815b133")
+	)
+	(no_connect
+		(at 123.19 144.78)
+		(uuid "1893f03b-1de6-4e70-b853-4eb1d3b1061c")
+	)
+	(no_connect
+		(at 153.67 134.62)
+		(uuid "1a305367-34a3-4c35-88c0-d962537c0099")
+	)
+	(no_connect
+		(at 153.67 147.32)
+		(uuid "2c200f7c-6575-4033-a33f-22e83602921e")
+	)
+	(no_connect
+		(at 123.19 132.08)
+		(uuid "2dde460f-b662-49ea-bb9c-3d1721950b44")
+	)
+	(no_connect
+		(at 123.19 142.24)
+		(uuid "3108d2e9-60f3-4f96-bc7f-9ba8e150f8b3")
+	)
+	(no_connect
+		(at 153.67 142.24)
+		(uuid "34b0fd11-14b7-47bf-acff-eadbd4fa5b72")
+	)
+	(no_connect
+		(at 153.67 127)
+		(uuid "34e5197c-6a60-4359-ab8d-d50756692fbf")
+	)
+	(no_connect
+		(at 123.19 134.62)
+		(uuid "3c235f8c-393c-413a-adea-0d6fe93114bf")
+	)
+	(no_connect
+		(at 172.72 13.97)
+		(uuid "403da0c2-02fd-41ee-9849-0e907c7d1087")
+	)
+	(no_connect
+		(at 153.67 124.46)
+		(uuid "49c8c506-6153-4d44-b944-250d08ab82c3")
+	)
+	(no_connect
+		(at 153.67 119.38)
+		(uuid "66bfaac4-8353-40d3-a406-7cef9f4ccd42")
+	)
+	(no_connect
+		(at 156.21 45.72)
+		(uuid "69201b58-1869-451c-b8ca-6980f50e8447")
+	)
+	(no_connect
+		(at 153.67 121.92)
+		(uuid "8dde33eb-e55f-4fde-a569-7258eac5de79")
+	)
+	(no_connect
+		(at 123.19 101.6)
+		(uuid "8e847bcc-e66d-420b-9cf0-b2e53577abef")
+	)
+	(no_connect
+		(at 156.21 25.4)
+		(uuid "8ebc94e7-4719-4800-9ce9-2cdb7c7f9513")
+	)
+	(no_connect
+		(at 95.25 29.21)
+		(uuid "8ee39382-d9fd-4ded-bdfc-e607a24481f2")
+	)
+	(no_connect
+		(at 153.67 129.54)
+		(uuid "8fa73c78-d65f-4ef1-86dc-234afc1ea274")
+	)
+	(no_connect
+		(at 59.69 36.83)
+		(uuid "90730da6-c970-41d3-9eef-48c0459ee630")
+	)
+	(no_connect
+		(at 123.19 147.32)
+		(uuid "95781ec3-a72e-42f8-ac39-2a85bc00e31d")
+	)
+	(no_connect
+		(at 153.67 137.16)
+		(uuid "995bae36-76b5-4d1e-9174-c194e68db03f")
+	)
+	(no_connect
+		(at 153.67 139.7)
+		(uuid "a4500b01-9481-401d-b168-624150cc992f")
+	)
+	(no_connect
+		(at 153.67 144.78)
+		(uuid "a77b9251-4565-45f4-b060-c3280c636030")
+	)
+	(no_connect
+		(at 123.19 99.06)
+		(uuid "ab4fe6d5-4654-4128-a76d-d540672ef063")
+	)
+	(no_connect
+		(at 123.19 111.76)
+		(uuid "acb8789d-3384-418a-8ea8-71209bf7c081")
+	)
+	(no_connect
+		(at 123.19 109.22)
+		(uuid "b1271c97-4324-4f67-a70e-e2d82189f012")
+	)
+	(no_connect
+		(at 153.67 132.08)
+		(uuid "c28fb963-f7a4-4476-9364-d985603ebf11")
+	)
+	(no_connect
+		(at 153.67 116.84)
+		(uuid "cadb62c6-b4a5-4807-902e-d59acb7bfcbe")
+	)
+	(no_connect
+		(at 156.21 22.86)
+		(uuid "cd393591-bd43-4a22-b380-b08f4e311856")
+	)
+	(no_connect
+		(at 153.67 109.22)
+		(uuid "d3e8a6e2-5ffd-4d38-8005-b7bff3f0c7c4")
+	)
+	(no_connect
+		(at 153.67 106.68)
+		(uuid "e631c448-6841-4df4-9811-112d26188fd0")
+	)
+	(no_connect
+		(at 123.19 139.7)
+		(uuid "f33fdac7-d587-43e7-849f-0d690aa332a6")
+	)
+	(no_connect
+		(at 123.19 137.16)
+		(uuid "fb0cb2d2-c4e0-449e-be5a-c80abf0cf12f")
+	)
 	(wire
 		(pts
 			(xy 115.57 87.63) (xy 123.19 87.63)
@@ -5125,6 +5257,26 @@
 			(type default)
 		)
 		(uuid "492db869-2938-4865-a5c0-df9a17a81add")
+	)
+	(wire
+		(pts
+			(xy 100.33 63.5) (xy 100.33 64.77)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "4fbb51c5-9614-405b-a001-f9359192705c")
+	)
+	(wire
+		(pts
+			(xy 219.71 20.32) (xy 219.71 22.86)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "59749d9a-5905-452e-9cb3-6fc9b5748dfe")
 	)
 	(wire
 		(pts
@@ -5366,16 +5518,6 @@
 		)
 		(uuid "05364020-1aea-417b-984d-59ab671fa212")
 	)
-	(label "GPIO19"
-		(at 123.19 134.62 180)
-		(effects
-			(font
-				(size 1.016 1.016)
-			)
-			(justify right)
-		)
-		(uuid "07070c3f-16dd-4a35-88be-60c359c04d4c")
-	)
 	(label "FB"
 		(at 189.23 59.69 180)
 		(effects
@@ -5405,6 +5547,16 @@
 			(justify right)
 		)
 		(uuid "1094c846-580a-4a7a-81ec-633fab0330ef")
+	)
+	(label "GPIO19"
+		(at 153.67 111.76 0)
+		(effects
+			(font
+				(size 1.016 1.016)
+			)
+			(justify left)
+		)
+		(uuid "150d29b8-3f4d-4860-a9b7-477060a86a2f")
 	)
 	(label "V_SYS_SW"
 		(at 172.72 19.05 180)
@@ -5457,7 +5609,7 @@
 		(uuid "2541da36-5aec-4354-820c-34bf52bb472a")
 	)
 	(label "+5V"
-		(at 227.33 59.69 180)
+		(at 229.87 64.77 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5507,16 +5659,6 @@
 		(uuid "343409ca-6f7c-45a9-92bc-25d77b4302ca")
 	)
 	(label "GPIO20"
-		(at 123.19 137.16 180)
-		(effects
-			(font
-				(size 1.016 1.016)
-			)
-			(justify right)
-		)
-		(uuid "4040195f-31b0-4254-b558-a2e2f3bc303d")
-	)
-	(label "GPIO20"
 		(at 59.69 31.75 180)
 		(effects
 			(font
@@ -5556,6 +5698,16 @@
 		)
 		(uuid "4fe2a143-5b6e-41ea-b3ec-5dd683bf80f6")
 	)
+	(label "GPIO20"
+		(at 153.67 114.3 0)
+		(effects
+			(font
+				(size 1.016 1.016)
+			)
+			(justify left)
+		)
+		(uuid "51624103-b0f5-4585-a5ec-43366e22f22f")
+	)
 	(label "GPIO7"
 		(at 60.96 149.86 180)
 		(effects
@@ -5567,7 +5719,7 @@
 		(uuid "577329be-7758-459d-8039-e41be6d58d3e")
 	)
 	(label "FB"
-		(at 234.95 59.69 0)
+		(at 237.49 64.77 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5646,6 +5798,16 @@
 		)
 		(uuid "716b64d6-bf71-4973-8e80-2d15704e96b4")
 	)
+	(label "GPIO27"
+		(at 123.19 106.68 180)
+		(effects
+			(font
+				(size 1.016 1.016)
+			)
+			(justify right)
+		)
+		(uuid "75f71c37-04c7-4e23-8559-8b68e189e42c")
+	)
 	(label "GPIO7"
 		(at 123.19 124.46 180)
 		(effects
@@ -5675,6 +5837,16 @@
 			(justify left)
 		)
 		(uuid "7e1bd4d7-907f-4fd6-bff8-3f8cb8a0eb94")
+	)
+	(label "GPIO27"
+		(at 68.58 167.64 180)
+		(effects
+			(font
+				(size 1.016 1.016)
+			)
+			(justify right)
+		)
+		(uuid "7f07eb90-46e2-4e6f-9d7d-bec58e7d9818")
 	)
 	(label "+3V3"
 		(at 105.41 101.6 0)
@@ -5765,6 +5937,16 @@
 			(justify left bottom)
 		)
 		(uuid "afe82d4d-ee58-4b82-96d6-eb2343506065")
+	)
+	(label "VBAT"
+		(at 100.33 57.15 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left top)
+		)
+		(uuid "b006a60a-386e-4a45-85aa-4456ad9f57ff")
 	)
 	(label "+5V"
 		(at 246.38 54.61 0)
@@ -6302,6 +6484,72 @@
 			(project "toytalk_demo_v2"
 				(path "/8b06e27d-c9ba-4aea-9c4d-1d0126478b18"
 					(reference "#PWR028")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:PWR_FLAG")
+		(at 219.71 20.32 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "0faefb87-6dbe-4bb6-8023-f222e21ca801")
+		(property "Reference" "#FLG02"
+			(at 219.71 18.415 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "PWR_FLAG"
+			(at 219.71 15.24 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 219.71 20.32 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 219.71 20.32 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Special symbol for telling ERC where power comes from"
+			(at 219.71 20.32 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "1a899486-caec-47e6-b051-d22cc9dafcbf")
+		)
+		(instances
+			(project "toytalk_demo_v3"
+				(path "/8b06e27d-c9ba-4aea-9c4d-1d0126478b18"
+					(reference "#FLG02")
 					(unit 1)
 				)
 			)
@@ -7047,6 +7295,201 @@
 		)
 	)
 	(symbol
+		(lib_id "SKRPABE010:SKRPABE010")
+		(at 76.2 167.64 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "2c7c9968-cfef-488f-bb21-3a5577370b26")
+		(property "Reference" "S3"
+			(at 76.2 157.48 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "SKRPABE010"
+			(at 76.2 160.02 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "footprints:SW_SKRPABE010"
+			(at 76.2 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 76.2 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" ""
+			(at 76.2 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MF" "ALPS"
+			(at 76.2 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+				(hide yes)
+			)
+		)
+		(property "MAXIMUM_PACKAGE_HEIGHT" "2.5 mm"
+			(at 76.2 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+				(hide yes)
+			)
+		)
+		(property "Package" "None"
+			(at 76.2 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+				(hide yes)
+			)
+		)
+		(property "Price" "None"
+			(at 76.2 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+				(hide yes)
+			)
+		)
+		(property "Check_prices" "https://www.snapeda.com/parts/SKRPABE010/ALPS/view-part/?ref=eda"
+			(at 76.2 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+				(hide yes)
+			)
+		)
+		(property "STANDARD" "Manufacturer Recommendations"
+			(at 76.2 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+				(hide yes)
+			)
+		)
+		(property "SnapEDA_Link" "https://www.snapeda.com/parts/SKRPABE010/ALPS/view-part/?ref=snap"
+			(at 76.2 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+				(hide yes)
+			)
+		)
+		(property "MP" "SKRPABE010"
+			(at 76.2 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+				(hide yes)
+			)
+		)
+		(property "Purchase-URL" "https://www.snapeda.com/api/url_track_click_mouser/?unipart_id=652544&manufacturer=ALPS&part_name=SKRPABE010&search_term=skrpabe010"
+			(at 76.2 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+				(hide yes)
+			)
+		)
+		(property "Description_1" "Switch Tactile N.O. SPST Button J-Bend 0.05A 16VDC 1.57N SMD Automotive T/R"
+			(at 76.2 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+				(hide yes)
+			)
+		)
+		(property "Availability" "In Stock"
+			(at 76.2 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+				(hide yes)
+			)
+		)
+		(property "MANUFACTURER" "Alps"
+			(at 76.2 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "da2ed7e5-5011-4bbc-b3f8-eaba57535320")
+		)
+		(pin "2"
+			(uuid "6f2cf089-7c08-4ec2-a268-bffbc80ff34b")
+		)
+		(pin "3"
+			(uuid "0f4e12ea-a246-4e5c-9597-dd2bd77ad57d")
+		)
+		(pin "4"
+			(uuid "a7061ca0-42ed-4b16-b7be-66c08d075d7d")
+		)
+		(instances
+			(project "toytalk_demo_v3"
+				(path "/8b06e27d-c9ba-4aea-9c4d-1d0126478b18"
+					(reference "S3")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "AP2112K-3.3TRG1:AP2112K-3.3TRG1")
 		(at 207.01 27.94 0)
 		(unit 1)
@@ -7225,6 +7668,76 @@
 			(project ""
 				(path "/8b06e27d-c9ba-4aea-9c4d-1d0126478b18"
 					(reference "U4")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:C")
+		(at 100.33 60.96 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "2e022815-6fbc-43d9-b2e7-36e5c93b5ed7")
+		(property "Reference" "C12"
+			(at 104.14 59.6899 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "10uF"
+			(at 104.14 62.2299 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
+			(at 101.2952 64.77 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 100.33 60.96 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Unpolarized capacitor"
+			(at 100.33 60.96 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "2"
+			(uuid "7095b861-ab44-4f1b-82ad-423621212143")
+		)
+		(pin "1"
+			(uuid "ddce4f0a-a5e1-40fb-aaa7-67828f78ba6e")
+		)
+		(instances
+			(project "toytalk_demo_v3"
+				(path "/8b06e27d-c9ba-4aea-9c4d-1d0126478b18"
+					(reference "C12")
 					(unit 1)
 				)
 			)
@@ -9295,6 +9808,72 @@
 	)
 	(symbol
 		(lib_id "power:GND")
+		(at 83.82 167.64 90)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "7aab5008-edd6-4fd7-9d95-446c83c5deda")
+		(property "Reference" "#PWR035"
+			(at 90.17 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "GND"
+			(at 87.122 167.64 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Footprint" ""
+			(at 83.82 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 83.82 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 83.82 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "ba089a48-f9a7-4af3-ba69-b5d2782c2227")
+		)
+		(instances
+			(project "toytalk_demo_v3"
+				(path "/8b06e27d-c9ba-4aea-9c4d-1d0126478b18"
+					(reference "#PWR035")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
 		(at 105.41 127 0)
 		(unit 1)
 		(exclude_from_sim no)
@@ -9683,7 +10262,7 @@
 	)
 	(symbol
 		(lib_id "Device:R")
-		(at 231.14 59.69 90)
+		(at 233.68 64.77 90)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -9691,7 +10270,7 @@
 		(dnp no)
 		(uuid "8e081575-e1d8-44ac-83e0-46fb9aeef923")
 		(property "Reference" "R4"
-			(at 231.14 60.452 90)
+			(at 233.68 65.532 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -9700,7 +10279,7 @@
 			)
 		)
 		(property "Value" "732k"
-			(at 231.14 62.484 90)
+			(at 233.68 67.564 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -9709,7 +10288,7 @@
 			)
 		)
 		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
-			(at 231.14 61.468 90)
+			(at 233.68 66.548 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -9718,7 +10297,7 @@
 			)
 		)
 		(property "Datasheet" "~"
-			(at 231.14 59.69 0)
+			(at 233.68 64.77 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -9727,7 +10306,7 @@
 			)
 		)
 		(property "Description" "Resistor"
-			(at 231.14 59.69 0)
+			(at 233.68 64.77 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -10016,6 +10595,71 @@
 			(project "toytalk_demo_v2"
 				(path "/8b06e27d-c9ba-4aea-9c4d-1d0126478b18"
 					(reference "SP1")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 100.33 63.5 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "971776c1-90c3-486c-a23f-d51c73b67321")
+		(property "Reference" "#PWR034"
+			(at 100.33 69.85 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "GND"
+			(at 100.33 66.802 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 100.33 63.5 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 100.33 63.5 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 100.33 63.5 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "53b6757f-b9c6-4cd6-86e2-994e49586207")
+		)
+		(instances
+			(project "toytalk_demo_v3"
+				(path "/8b06e27d-c9ba-4aea-9c4d-1d0126478b18"
+					(reference "#PWR034")
 					(unit 1)
 				)
 			)
@@ -10390,6 +11034,71 @@
 			(project "toytalk_demo_v2"
 				(path "/8b06e27d-c9ba-4aea-9c4d-1d0126478b18"
 					(reference "#PWR017")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:PWR_FLAG")
+		(at 172.72 19.05 180)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "9c13f6b2-836d-4c0d-b7af-f6d1d24993c1")
+		(property "Reference" "#FLG03"
+			(at 172.72 20.955 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "PWR_FLAG"
+			(at 172.72 23.114 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 172.72 19.05 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 172.72 19.05 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Special symbol for telling ERC where power comes from"
+			(at 172.72 19.05 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "d6550c1f-e7a3-4fb4-a917-c91a44d25bdf")
+		)
+		(instances
+			(project "toytalk_demo_v3"
+				(path "/8b06e27d-c9ba-4aea-9c4d-1d0126478b18"
+					(reference "#FLG03")
 					(unit 1)
 				)
 			)
