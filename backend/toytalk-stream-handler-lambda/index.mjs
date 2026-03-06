@@ -211,27 +211,37 @@
   async function ttsToBase64Gemini(text, { model = "gemini-2.5-flash-preview-tts", voiceName = "Kore" } = {}) {
     const key = process.env.GOOGLE_API_KEY;
     if (!key) throw new Error("GOOGLE_API_KEY is not set");
-    const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-      {
-        method: "POST",
-        headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text }] }],
-          generationConfig: {
-            responseModalities: ["AUDIO"],
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
-          },
-          model,
-        }),
+    // Gemini TTSはテキスト生成を防ぐため、明示的に読み上げ指示を付ける
+    const ttsPrompt = `Read the following text aloud: ${text}`;
+
+    const maxRetries = 2;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const resp = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+        {
+          method: "POST",
+          headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: ttsPrompt }] }],
+            generationConfig: {
+              responseModalities: ["AUDIO"],
+              speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
+            },
+            model,
+          }),
+        }
+      );
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json?.error?.message || "Gemini TTS failed");
+      const b64Pcm = json?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || "";
+      if (b64Pcm) {
+        // 24kHz/mono PCM16 → 既存の WAV ラッパで包む
+        return pcm16ToWavBase64(b64Pcm, 24000, 1);
       }
-    );
-    const json = await resp.json();
-    if (!resp.ok) throw new Error(json?.error?.message || "Gemini TTS failed");
-    const b64Pcm = json?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || "";
-    if (!b64Pcm) throw new Error("Gemini TTS: empty audio");
-    // 24kHz/mono PCM16 → 既存の WAV ラッパで包む
-    return pcm16ToWavBase64(b64Pcm, 24000, 1);
+      // empty audio の場合はリトライ
+      console.log(`[Gemini TTS] empty audio, retry ${attempt + 1}/${maxRetries + 1}`);
+    }
+    throw new Error("Gemini TTS: empty audio after retries");
   }
 
   // ElevenLabs TTS → base64(WAV)
