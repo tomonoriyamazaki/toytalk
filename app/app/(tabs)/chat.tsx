@@ -83,12 +83,12 @@ export default function Chat() {
   }, [debugTime]);
 
   // STTモード
-  const [sttMode, setSttMode] = useState<"local" | "soniox">("local");
+  const [sttMode, setSttMode] = useState<"local" | "soniox">("soniox");
   useFocusEffect(
     useCallback(() => {
       (async () => {
         const saved = await AsyncStorage.getItem("sttMode");
-        setSttMode(saved === "soniox" ? "soniox" : "local");
+        if (saved === "local" || saved === "soniox") setSttMode(saved);
       })();
     }, [])
   );
