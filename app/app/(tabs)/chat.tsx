@@ -155,11 +155,15 @@ export default function Chat() {
       },
     },
     FishAudio: {
-      label: "Fish Audio",
+      label: "Fish Audio (β)",
       desc: "Fish Audio TTS",
-      defaultVoice: "reze",
+      defaultVoice: "sansan",
       voices: {
-        reze: { label: "Reze", vendorId: "6fdaebea7db042129f03ecb0a57ea7b6" },
+        sansan: { label: "サンサン", vendorId: "15454ccda92d4246a821a5d8f9728fb9" },
+        makima: { label: "マキマ", vendorId: "028c4c7eb08c43358a3e30fef264ca0e" },
+        reze: { label: "レゼ", vendorId: "6fdaebea7db042129f03ecb0a57ea7b6" },
+        light: { label: "夜神月", vendorId: "4bc1d3d1fa60415f989b8e0b99f333e1" },
+        naoya: { label: "禪院直哉", vendorId: "028e1ae4ba6d4c039ce29726a694500e" },
       },
     },
   } as const;
