@@ -154,6 +154,14 @@ export default function Chat() {
         sameno: { label: "Sameno", vendorId: "hMK7c1GPJmptCzI4bQIu" },
       },
     },
+    FishAudio: {
+      label: "Fish Audio",
+      desc: "Fish Audio TTS",
+      defaultVoice: "reze",
+      voices: {
+        reze: { label: "Reze", vendorId: "6fdaebea7db042129f03ecb0a57ea7b6" },
+      },
+    },
   } as const;
 
   const [model, setModel] = useState<keyof typeof MODEL_MAP>("OpenAI");
