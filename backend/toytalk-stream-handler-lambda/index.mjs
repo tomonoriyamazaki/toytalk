@@ -42,12 +42,12 @@
       ttsVendor: "gemini",
       ttsModel:  "gemini-2.5-flash-preview-tts",   // 名称は任意（識別用）
     },
-    // 置き石
-    NijiVoice: {
+    // LLM: OpenAI / TTS: ElevenLabs
+    ElevenLabs: {
       llmVendor: "openai",
       llmModel:  "gpt-4.1-mini",
-      ttsVendor: "",       // 後で変更
-      ttsModel:  "",
+      ttsVendor: "elevenlabs",
+      ttsModel:  "eleven_turbo_v2_5",
     },
   };
 
@@ -234,8 +234,55 @@
     return pcm16ToWavBase64(b64Pcm, 24000, 1);
   }
 
+  // ElevenLabs TTS → base64(WAV)
+  async function ttsToBase64ElevenLabs(text, { model = "eleven_turbo_v2_5", voiceId = "hMK7c1GPJmptCzI4bQIu" } = {}) {
+    const key = process.env.ELEVENLABS_API_KEY;
+    if (!key) throw new Error("ELEVENLABS_API_KEY is not set");
 
-  
+    const resp = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=pcm_24000&optimize_streaming_latency=0`,
+      {
+        method: "POST",
+        headers: {
+          "xi-api-key": key,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          text,
+          model_id: model,
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.75
+          }
+        })
+      }
+    );
+
+    if (!resp.ok) {
+      const errorText = await resp.text();
+      throw new Error(`ElevenLabs TTS failed: ${resp.status} ${errorText}`);
+    }
+
+    // PCMバイナリデータを取得
+    const pcmBuffer = Buffer.from(await resp.arrayBuffer());
+
+    // PCM16 → WAV base64 に変換
+    const pcmB64 = pcmBuffer.toString("base64");
+    return pcm16ToWavBase64(pcmB64, 24000, 1);
+  }
+
+  // ElevenLabs voice ID 解決
+  function resolveElevenLabsTtsFromBody(body, cfg) {
+    const t = body?.tts || {};
+    const cand = t.voiceId || body?.voiceId || body?.voice;
+    // ElevenLabsのvoiceIdは英数字とハイフンで構成される
+    const isElevenLabsVoiceId = typeof cand === "string" && /^[a-zA-Z0-9]{20,}$/.test(cand);
+    const voiceId = isElevenLabsVoiceId ? cand : "hMK7c1GPJmptCzI4bQIu"; // デフォルト: Sameno
+    return { model: cfg.ttsModel, voiceId };
+  }
+
+
+
   export const handler = awslambda.streamifyResponse(async (event, res) => {
     res.setContentType("text/event-stream");
 
@@ -249,10 +296,10 @@
     function normalizeModelKey(k) {
       if (!k) return undefined;
       const s = String(k).toLowerCase();
-      if (s.includes("openai"))  return "OpenAI";
-      if (s.includes("google"))  return "Google";
-      if (s.includes("gemini"))  return "Gemini";
-      if (s.includes("niji"))    return "NijiVoice";
+      if (s.includes("openai"))      return "OpenAI";
+      if (s.includes("google"))      return "Google";
+      if (s.includes("gemini"))      return "Gemini";
+      if (s.includes("elevenlabs"))  return "ElevenLabs";
       return undefined; // 不明ならデフォルトにフォールバック
     }
 
@@ -330,6 +377,10 @@
         } else if (cfg.ttsVendor === "gemini") {
           const g = resolveGeminiTtsFromBody(body, cfg);
           b64 = await ttsToBase64Gemini(t, g);
+          fmt = "wav";
+        } else if (cfg.ttsVendor === "elevenlabs") {
+          const e = resolveElevenLabsTtsFromBody(body, cfg);
+          b64 = await ttsToBase64ElevenLabs(t, e);
           fmt = "wav";
         } else {
           throw new Error("Unknown ttsVendor");

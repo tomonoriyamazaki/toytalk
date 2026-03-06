@@ -30,7 +30,7 @@ import Sound from "react-native-sound";
 
 /* === Soniox定数 === */
 const SONIOX_WS_URL = "wss://stt-rt.soniox.com/transcribe-websocket"; // 公式
-const SONIOX_MODEL = "stt-rt-preview";
+const SONIOX_MODEL = "stt-rt-v3";
 const SONIOX_SAMPLE_RATE = 16000;
 const SONIOX_CHANNELS = 1;
 
@@ -83,12 +83,12 @@ export default function Chat() {
   }, [debugTime]);
 
   // STTモード
-  const [sttMode, setSttMode] = useState<"local" | "soniox">("local");
+  const [sttMode, setSttMode] = useState<"local" | "soniox">("soniox");
   useFocusEffect(
     useCallback(() => {
       (async () => {
         const saved = await AsyncStorage.getItem("sttMode");
-        setSttMode(saved === "soniox" ? "soniox" : "local");
+        if (saved === "local" || saved === "soniox") setSttMode(saved);
       })();
     }, [])
   );
@@ -146,12 +146,12 @@ export default function Chat() {
         puck: { label: "Puck – clear male", vendorId: "puck" },
       },
     },
-    NijiVoice: {
-      label: "Niji Voice",
-      desc: "Anime-style",
-      defaultVoice: "default",
+    ElevenLabs: {
+      label: "ElevenLabs",
+      desc: "Turbo v2.5",
+      defaultVoice: "sameno",
       voices: {
-        default: { label: "Default", vendorId: "niji-default" },
+        sameno: { label: "Sameno", vendorId: "hMK7c1GPJmptCzI4bQIu" },
       },
     },
   } as const;
