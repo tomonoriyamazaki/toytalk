@@ -155,7 +155,7 @@ export default function Chat() {
       },
     },
     FishAudio: {
-      label: "Fish Audio (β)",
+      label: "Fish Audio (demo)",
       desc: "Fish Audio TTS",
       defaultVoice: "sansan",
       voices: {
@@ -163,6 +163,9 @@ export default function Chat() {
         pikachu: { label: "ピカチュウ", vendorId: "d940622bd99742c6b10ececd13c7ee1c" },
         doraemon: { label: "ドラえもん", vendorId: "7ad5d736bec7410090caf00dd91db21f" },
         conan: { label: "コナン", vendorId: "8481836597324f1697052575e2ca1a7e" },
+        tanjiro: { label: "竈門炭治郎", vendorId: "00948a6e032249199e4a2699f0e0828e" },
+        rengoku: { label: "煉獄杏寿郎", vendorId: "738068acdf0346d4ad15873cf582b9c9" },
+        muzan: { label: "鬼舞辻無惨", vendorId: "18833cce92cc42e682f68073177f0e8f" },
         marine: { label: "マリン船長", vendorId: "b24f3e45d0fc49ee942eb00741d70316" },
         frieren: { label: "フリーレン", vendorId: "5a7a3dec0d9c415db57e9a7ce2ecee51" },
         fern: { label: "フェルン", vendorId: "1dac8f5fd50648388edfcb4ca6cfb378" },
