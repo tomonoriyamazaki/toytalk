@@ -105,6 +105,8 @@ export default function Settings() {
 
         <View style={{ height: 32 }} />
         <Text style={s.title}>バージョン</Text>
+        <Text style={s.item}>・ver0.6.0   20260306：ボイス追加：ElevenLabs / Fish Audio（※デモ用） </Text>
+        <Text style={s.item}>・ver0.5.6   20260210：おもちゃにWIFI設定機能追加</Text>
         <Text style={s.item}>・ver0.5.5   20251005：STT（音声認識）を選択可能にしてリアルタイム表示。スピードも改善</Text>
         <Text style={s.item}>・ver0.4.2   20250907：ボイス追加：Google TTS/Gemini Speech Generation</Text>
         <Text style={s.item}>・ver0.3.0   20250901：マイク機能追加</Text>
