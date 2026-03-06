@@ -146,12 +146,12 @@ export default function Chat() {
         puck: { label: "Puck – clear male", vendorId: "puck" },
       },
     },
-    NijiVoice: {
-      label: "Niji Voice",
-      desc: "Anime-style",
-      defaultVoice: "default",
+    ElevenLabs: {
+      label: "ElevenLabs",
+      desc: "Turbo v2.5",
+      defaultVoice: "sameno",
       voices: {
-        default: { label: "Default", vendorId: "niji-default" },
+        sameno: { label: "Sameno", vendorId: "hMK7c1GPJmptCzI4bQIu" },
       },
     },
   } as const;
