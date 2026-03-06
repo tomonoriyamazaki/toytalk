@@ -30,7 +30,7 @@ import Sound from "react-native-sound";
 
 /* === Soniox定数 === */
 const SONIOX_WS_URL = "wss://stt-rt.soniox.com/transcribe-websocket"; // 公式
-const SONIOX_MODEL = "stt-rt-preview";
+const SONIOX_MODEL = "stt-rt-v3";
 const SONIOX_SAMPLE_RATE = 16000;
 const SONIOX_CHANNELS = 1;
 
