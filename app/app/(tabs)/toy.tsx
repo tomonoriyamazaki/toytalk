@@ -153,7 +153,8 @@ export default function Toy() {
       connected.onDisconnected(() => {
         setConnectedDevice(null);
         setStatus("disconnected");
-        setStatusMessage("切断されました");
+        setStatusMessage("");
+        setScreen("home");
       });
     } catch (error: any) {
       setStatus("disconnected");
@@ -216,6 +217,8 @@ export default function Toy() {
       await connectedDevice.writeCharacteristicWithResponseForService(SERVICE_UUID, CHAR_COMMAND_UUID, btoa("CONNECT"));
       setStatusMessage("設定送信完了、WiFi接続を待機中...");
     } catch (error: any) {
+      // BLE切断エラーはCONNECTコマンド処理後の正常切断の可能性があるので無視
+      if (error.message?.toLowerCase().includes("disconnect")) return;
       setStatus("connected");
       setStatusMessage("送信エラー: " + error.message);
     }

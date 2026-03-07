@@ -905,7 +905,7 @@ void sendToLambdaAndPlay(const String& text) {
 
   Serial.println("🔊 Playback complete");
 
-  delay(2000);
+  delay(1500);
   Serial.println("🔊 Buffer flushed");
 
   addToHistory("user", text);
