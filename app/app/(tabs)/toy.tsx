@@ -30,7 +30,7 @@ const DEFAULT_VOICE_ID   = "elevenlabs_sameno";
 const bleManager = new BleManager();
 
 type ConnectionStatus = "disconnected" | "scanning" | "connecting" | "connected" | "configuring";
-type Screen = "home" | "device-settings" | "voice-select";
+type Screen = "home" | "wifi-setup" | "device-settings" | "voice-select";
 
 type VoiceItem = {
   voice_id: string;
@@ -137,6 +137,7 @@ export default function Toy() {
       setConnectedDevice(connected);
       setStatus("connected");
       setStatusMessage("接続完了！WiFi設定を入力してください");
+      setScreen("wifi-setup");
 
       connected.monitorCharacteristicForService(
         SERVICE_UUID,
@@ -229,6 +230,7 @@ export default function Toy() {
     setStatusMessage("");
     setSsid("");
     setPassword("");
+    setScreen("home");
     // registeredDevice と deviceId はAsyncStorageに保持（画面に残す）
   };
 
@@ -346,6 +348,69 @@ export default function Toy() {
     );
   }
 
+  // ---- WiFi設定画面 ----
+  if (screen === "wifi-setup") {
+    return (
+      <SafeAreaView style={s.root}>
+        <View style={s.header}>
+          <TouchableOpacity onPress={disconnect}>
+            <Text style={s.back}>← 戻る</Text>
+          </TouchableOpacity>
+          <Text style={s.headerTitle}>WiFi設定</Text>
+        </View>
+        <ScrollView contentContainerStyle={s.wrap}>
+          {statusMessage ? (
+            <View style={s.statusBox}>
+              <Text style={s.statusText}>{statusMessage}</Text>
+            </View>
+          ) : null}
+
+          {status === "connecting" && (
+            <View style={s.center}>
+              <ActivityIndicator size="large" color="#007AFF" />
+              <Text style={s.loadingText}>接続中...</Text>
+            </View>
+          )}
+
+          {(status === "connected" || status === "configuring") && (
+            <View style={s.form}>
+              <Text style={s.label}>SSID (WiFi名)</Text>
+              <TextInput
+                style={s.input}
+                value={ssid}
+                onChangeText={setSsid}
+                placeholder="WiFiのSSIDを入力"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <Text style={s.label}>パスワード</Text>
+              <TextInput
+                style={s.input}
+                value={password}
+                onChangeText={setPassword}
+                placeholder="WiFiのパスワードを入力"
+                secureTextEntry
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <TouchableOpacity
+                style={[s.button, status === "configuring" && s.buttonDisabled]}
+                onPress={sendWiFiConfig}
+                disabled={status === "configuring"}
+              >
+                {status === "configuring" ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={s.buttonText}>WiFi設定を送信</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          )}
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
   // ---- ホーム画面 ----
   return (
     <SafeAreaView style={s.root}>
@@ -401,50 +466,6 @@ export default function Toy() {
           <View style={s.center}>
             <ActivityIndicator size="large" color="#007AFF" />
             <Text style={s.loadingText}>接続中...</Text>
-          </View>
-        )}
-
-        {/* 接続済み: WiFi設定フォーム */}
-        {(status === "connected" || status === "configuring") && (
-          <View style={s.form}>
-            <Text style={s.subtitle}>WiFi設定</Text>
-
-            <Text style={s.label}>SSID (WiFi名)</Text>
-            <TextInput
-              style={s.input}
-              value={ssid}
-              onChangeText={setSsid}
-              placeholder="WiFiのSSIDを入力"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-
-            <Text style={s.label}>パスワード</Text>
-            <TextInput
-              style={s.input}
-              value={password}
-              onChangeText={setPassword}
-              placeholder="WiFiのパスワードを入力"
-              secureTextEntry
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-
-            <TouchableOpacity
-              style={[s.button, status === "configuring" && s.buttonDisabled]}
-              onPress={sendWiFiConfig}
-              disabled={status === "configuring"}
-            >
-              {status === "configuring" ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={s.buttonText}>WiFi設定を送信</Text>
-              )}
-            </TouchableOpacity>
-
-            <TouchableOpacity style={s.buttonSecondary} onPress={disconnect}>
-              <Text style={s.buttonTextSecondary}>切断</Text>
-            </TouchableOpacity>
           </View>
         )}
 
