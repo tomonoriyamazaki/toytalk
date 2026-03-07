@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   SafeAreaView,
   Text,
@@ -62,6 +63,14 @@ export default function Toy() {
     if (Platform.OS === "android") {
       requestAndroidPermissions();
     }
+    // AsyncStorageから登録済みデバイスを復元
+    AsyncStorage.getItem("registeredDevice").then((val) => {
+      if (val) {
+        const d = JSON.parse(val);
+        setRegisteredDevice(d);
+        setDeviceId(d.device_id);
+      }
+    });
     return () => {
       bleManager.stopDeviceScan();
     };
@@ -182,6 +191,7 @@ export default function Toy() {
       const deviceRes = await fetch(`${DEVICE_SETTING_URL}/devices/${encodeURIComponent(mac)}`);
       const deviceData = await deviceRes.json();
       setRegisteredDevice(deviceData);
+      await AsyncStorage.setItem("registeredDevice", JSON.stringify(deviceData));
       setStatusMessage("デバイス登録完了！");
     } catch (e: any) {
       setStatusMessage("デバイス登録エラー: " + e.message);
@@ -219,8 +229,7 @@ export default function Toy() {
     setStatusMessage("");
     setSsid("");
     setPassword("");
-    setRegisteredDevice(null);
-    setDeviceId(null);
+    // registeredDevice と deviceId はAsyncStorageに保持（画面に残す）
   };
 
   const openDeviceSettings = () => {
@@ -251,7 +260,11 @@ export default function Toy() {
         body: JSON.stringify({ voice_id: voiceId }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setRegisteredDevice((prev) => prev ? { ...prev, voice_id: voiceId } : prev);
+      setRegisteredDevice((prev) => {
+        const updated = prev ? { ...prev, voice_id: voiceId } : prev;
+        if (updated) AsyncStorage.setItem("registeredDevice", JSON.stringify(updated));
+        return updated;
+      });
       setScreen("device-settings");
     } catch (e: any) {
       Alert.alert("エラー", "ボイスの更新に失敗しました");
@@ -345,22 +358,6 @@ export default function Toy() {
           </View>
         ) : null}
 
-        {/* 登録済みデバイス */}
-        {registeredDevice && (
-          <View style={s.section}>
-            <Text style={s.subtitle}>登録済みデバイス</Text>
-            <TouchableOpacity style={s.deviceItem} onPress={openDeviceSettings}>
-              <View>
-                <Text style={s.deviceName}>{registeredDevice.device_id}</Text>
-                <Text style={s.deviceSub}>
-                  ボイス: {registeredDevice.voice_id ?? "未設定"}
-                </Text>
-              </View>
-              <Text style={s.chevron}>›</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
         {/* 未接続時: スキャン */}
         {status === "disconnected" && (
           <>
@@ -447,6 +444,22 @@ export default function Toy() {
 
             <TouchableOpacity style={s.buttonSecondary} onPress={disconnect}>
               <Text style={s.buttonTextSecondary}>切断</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* 登録済みデバイス（常に最下部に表示） */}
+        {registeredDevice && (
+          <View style={s.section}>
+            <Text style={s.subtitle}>登録済みデバイス</Text>
+            <TouchableOpacity style={s.deviceItem} onPress={openDeviceSettings}>
+              <View>
+                <Text style={s.deviceName}>{registeredDevice.device_id}</Text>
+                <Text style={s.deviceSub}>
+                  ボイス: {registeredDevice.voice_id ?? "未設定"}
+                </Text>
+              </View>
+              <Text style={s.chevron}>›</Text>
             </TouchableOpacity>
           </View>
         )}
