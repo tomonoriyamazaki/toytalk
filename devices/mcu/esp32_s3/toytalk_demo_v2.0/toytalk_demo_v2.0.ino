@@ -27,6 +27,7 @@ Preferences preferences;
 #define CHAR_PASSWORD_UUID     "12345678-1234-1234-1234-123456789ab2"
 #define CHAR_COMMAND_UUID      "12345678-1234-1234-1234-123456789ab3"
 #define CHAR_STATUS_UUID       "12345678-1234-1234-1234-123456789ab4"
+#define CHAR_MAC_UUID          "12345678-1234-1234-1234-123456789ab5"
 
 // ==== デバイスモード ====
 enum DeviceMode {
@@ -298,6 +299,13 @@ void startBLE() {
   );
   pStatusChar->addDescriptor(new BLE2902());
   pStatusChar->setValue("READY");
+
+  // MACアドレスキャラクタリスティック（Read only）
+  BLECharacteristic* pMacChar = pService->createCharacteristic(
+    CHAR_MAC_UUID,
+    BLECharacteristic::PROPERTY_READ
+  );
+  pMacChar->setValue(BLEDevice::getAddress().toString().c_str());
 
   pService->start();
 
