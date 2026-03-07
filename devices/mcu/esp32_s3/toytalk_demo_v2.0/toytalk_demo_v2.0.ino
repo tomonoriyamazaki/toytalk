@@ -27,6 +27,7 @@ Preferences preferences;
 #define CHAR_PASSWORD_UUID     "12345678-1234-1234-1234-123456789ab2"
 #define CHAR_COMMAND_UUID      "12345678-1234-1234-1234-123456789ab3"
 #define CHAR_STATUS_UUID       "12345678-1234-1234-1234-123456789ab4"
+#define CHAR_MAC_UUID          "12345678-1234-1234-1234-123456789ab5"
 
 // ==== デバイスモード ====
 enum DeviceMode {
@@ -41,6 +42,7 @@ BLEServer* pServer = NULL;
 BLECharacteristic* pStatusChar = NULL;
 bool bleDeviceConnected = false;
 bool oldBleDeviceConnected = false;
+String deviceMacAddress = "";
 
 // ==== Lambda (TTS) - Binary Streaming ====
 const char* LAMBDA_HOST = "koufofwm3w4tidbe52crbyhpyq0cshss.lambda-url.ap-northeast-1.on.aws";
@@ -186,6 +188,20 @@ void saveWiFiCredentials(const String& ssid, const String& password) {
   Serial.println("💾 WiFi credentials saved to NVS");
 }
 
+void saveDeviceMac(const String& mac) {
+  preferences.begin("device", false);
+  preferences.putString("mac", mac);
+  preferences.end();
+  Serial.printf("💾 Device MAC saved to NVS: %s\n", mac.c_str());
+}
+
+String loadDeviceMac() {
+  preferences.begin("device", true);
+  String mac = preferences.getString("mac", "");
+  preferences.end();
+  return mac;
+}
+
 bool loadWiFiCredentials() {
   preferences.begin("wifi", true);
   wifiSSID = preferences.getString("ssid", "");
@@ -298,6 +314,14 @@ void startBLE() {
   );
   pStatusChar->addDescriptor(new BLE2902());
   pStatusChar->setValue("READY");
+
+  // MACアドレスキャラクタリスティック（Read only）
+  BLECharacteristic* pMacChar = pService->createCharacteristic(
+    CHAR_MAC_UUID,
+    BLECharacteristic::PROPERTY_READ
+  );
+  deviceMacAddress = BLEDevice::getAddress().toString().c_str();
+  pMacChar->setValue(deviceMacAddress.c_str());
 
   pService->start();
 
@@ -817,6 +841,7 @@ void sendToLambdaAndPlay(const String& text) {
 
   String payload =
     "{\"model\":\"" + String(TTS_PROVIDER) + "\",\"voice\":\"" + String(TTS_CHARACTER) + "\","
+    "\"device_id\":\"" + deviceMacAddress + "\","
     "\"messages\":" + messagesJson + "}";
 
   Serial.printf("📝 History count: %d\n", historyCount);
@@ -880,7 +905,7 @@ void sendToLambdaAndPlay(const String& text) {
 
   Serial.println("🔊 Playback complete");
 
-  delay(1000);
+  delay(1500);
   Serial.println("🔊 Buffer flushed");
 
   addToHistory("user", text);
@@ -1042,12 +1067,15 @@ void tryConnectWiFiFromBLE(const String& ssid, const String& password) {
       wifiSSID = ssid;
       wifiPassword = password;
 
+      // BLE MACをNVSに保存（以降の起動でdevice_idとして使用）
+      deviceMacAddress = BLEDevice::getAddress().toString().c_str();
+      saveDeviceMac(deviceMacAddress);
+
       sendBLEStatus("CONNECTED");
 
-      // 少し待ってからBLE停止、通常モードへ
+      // NVS保存済みなので再起動して通常モードへ（BLE deinitの詰まり回避）
       delay(1000);
-      stopBLE();
-      startNormalOperation();
+      ESP.restart();
       return;
     }
 
@@ -1112,6 +1140,12 @@ void setup() {
   // LED初期化（PWM使用 - 新API）
   ledcAttach(PIN_LED, LED_FREQ, LED_RESOLUTION);
   setLEDMode(LED_ON);  // 起動中は点灯
+
+  // NVSからBLE MACアドレスを読み込み（WiFi設定時に保存済みの場合）
+  deviceMacAddress = loadDeviceMac();
+  if (deviceMacAddress.length() > 0) {
+    Serial.printf("📱 Device MAC (from NVS): %s\n", deviceMacAddress.c_str());
+  }
 
   // ボタン初期化
   pinMode(PIN_BUTTON, INPUT_PULLUP);

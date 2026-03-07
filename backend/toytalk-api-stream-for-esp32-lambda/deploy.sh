@@ -4,7 +4,10 @@
 cd "$(dirname "$0")"
 
 echo "📦 Bundling with esbuild..."
-"/c/Program Files/nodejs/npx.cmd" esbuild index.mjs --bundle --platform=node --format=esm --outfile=bundle.mjs
+"/c/Program Files/nodejs/npx.cmd" esbuild index.mjs --bundle --platform=node --format=esm \
+  --external:@aws-sdk/client-dynamodb \
+  --external:@aws-sdk/lib-dynamodb \
+  --outfile=bundle.mjs
 
 echo "📁 Creating zip..."
 mkdir -p temp_deploy
