@@ -1,8 +1,15 @@
   // Node.js 18+ / ESM（index.mjs）
   // Handler: index.handler
-  // Env: OPENAI_API_KEY
+  // Env: OPENAI_API_KEY, GOOGLE_API_KEY, ELEVENLABS_API_KEY, FISHAUDIO_API_KEY
   import OpenAI from "openai";
   import { createHash } from "node:crypto";
+  import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+  import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
+
+  const ddbClient = new DynamoDBClient({ region: "ap-northeast-1" });
+  const ddb = DynamoDBDocumentClient.from(ddbClient);
+  const DEVICES_TABLE = "toytalker-devices";
+  const VOICES_TABLE  = "toytalker-voices";
 
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -41,33 +48,35 @@
   const MODEL_DEFAULT = "OpenAI";
   /** 将来の拡張用にテーブル化しておく（今は OpenAI だけ使う） */
   const MODEL_TABLE = {
-    // LLM: OpenAI / TTS: OpenAI
     OpenAI: {
       llmVendor: "openai",
       llmModel:  "gpt-4.1-mini",
       ttsVendor: "openai",
       ttsModel:  "gpt-4o-mini-tts-2025-03-20",
     },
-    // LLM: OpenAI / TTS: Google Cloud Text-to-Speech
     Google: {
       llmVendor: "openai",
       llmModel:  "gpt-4.1-mini",
       ttsVendor: "google",
       ttsModel:  "google-tts",
     },
-    // LLM: OpenAI / TTS: Gemini Speech Generation
     Gemini: {
       llmVendor: "openai",
       llmModel:  "gpt-4.1-mini",
       ttsVendor: "gemini",
-      ttsModel:  "gemini-2.5-flash-preview-tts",   // 名称は任意（識別用）
+      ttsModel:  "gemini-2.5-flash-preview-tts",
     },
-    // LLM: OpenAI / TTS: ElevenLabs
     ElevenLabs: {
       llmVendor: "openai",
       llmModel:  "gpt-4.1-mini",
       ttsVendor: "elevenlabs",
       ttsModel:  "eleven_turbo_v2_5",
+    },
+    FishAudio: {
+      llmVendor: "openai",
+      llmModel:  "gpt-4.1-mini",
+      ttsVendor: "fishaudio",
+      ttsModel:  "fishaudio",
     },
   };
 
@@ -260,15 +269,54 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
   }
 
 
+  // FishAudio TTS → Buffer (raw PCM via MP3 decode is not feasible on Lambda;
+  // FishAudio supports pcm output via format param)
+  async function ttsBufferFishAudio(text, { referenceId = "hMK7c1GPJmptCzI4bQIu" } = {}) {
+    const key = process.env.FISHAUDIO_API_KEY;
+    if (!key) throw new Error("FISHAUDIO_API_KEY is not set");
+    const resp = await fetch("https://api.fish.audio/v1/tts", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ text, reference_id: referenceId, format: "pcm", sample_rate: 24000, latency: "normal" }),
+    });
+    if (!resp.ok) {
+      const errorText = await resp.text();
+      throw new Error(`FishAudio TTS failed: ${resp.status} ${errorText}`);
+    }
+    const pcmBuffer = Buffer.from(await resp.arrayBuffer());
+    console.log(`[TTS FishAudio] PCM size: ${pcmBuffer.length} bytes`);
+    return pcmBuffer;
+  }
+
+  // DynamoDBからdevice_idに紐づくvoice設定を解決
+  async function resolveVoiceFromDynamo(deviceId) {
+    try {
+      const deviceRes = await ddb.send(new GetCommand({
+        TableName: DEVICES_TABLE,
+        Key: { device_id: deviceId },
+      }));
+      const voiceId = deviceRes.Item?.voice_id;
+      if (!voiceId) return null;
+
+      const voiceRes = await ddb.send(new GetCommand({
+        TableName: VOICES_TABLE,
+        Key: { voice_id: voiceId },
+      }));
+      if (!voiceRes.Item) return null;
+
+      return { provider: voiceRes.Item.provider, vendorId: voiceRes.Item.vendor_id };
+    } catch (e) {
+      console.error("[DynamoDB] resolveVoiceFromDynamo error:", e);
+      return null;
+    }
+  }
+
   export const handler = awslambda.streamifyResponse(async (event, res) => {
     res.setContentType("application/octet-stream");
 
     const body    = event.body ? JSON.parse(event.body) : {};
-    const voice   = body.voice ?? VOICE_DEFAULT;
     const messages= body.messages ?? [{ role:"user", content:"自己紹介して" }];
-    const rawModel = typeof body.model === "string" ? body.model : undefined;
-    const modelKey = normalizeModelKey(rawModel) ?? MODEL_DEFAULT;
-    const cfg      = MODEL_TABLE[modelKey] ?? MODEL_TABLE[MODEL_DEFAULT];
+    const deviceId = typeof body.device_id === "string" ? body.device_id : null;
 
     function normalizeModelKey(k) {
       if (!k) return undefined;
@@ -277,8 +325,26 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       if (s.includes("google"))      return "Google";
       if (s.includes("gemini"))      return "Gemini";
       if (s.includes("elevenlabs"))  return "ElevenLabs";
-      return undefined; // 不明ならデフォルトにフォールバック
+      if (s.includes("fishaudio") || s.includes("fish")) return "FishAudio";
+      return undefined;
     }
+
+    // device_idがあればDynamoDBからボイス設定を取得、なければbodyの値を使う
+    let modelKey = normalizeModelKey(body.model) ?? MODEL_DEFAULT;
+    let voice    = body.voice ?? VOICE_DEFAULT;
+
+    if (deviceId) {
+      const voiceConfig = await resolveVoiceFromDynamo(deviceId);
+      if (voiceConfig) {
+        modelKey = normalizeModelKey(voiceConfig.provider) ?? modelKey;
+        voice    = voiceConfig.vendorId ?? voice;
+        console.log(`[DynamoDB] device=${deviceId}, provider=${voiceConfig.provider}, vendorId=${voiceConfig.vendorId}`);
+      } else {
+        console.log(`[DynamoDB] device=${deviceId} not found or no voice set, using defaults`);
+      }
+    }
+
+    const cfg = MODEL_TABLE[modelKey] ?? MODEL_TABLE[MODEL_DEFAULT];
 
 
     // クライアント側の計測・デバッグ用に「採用モデル」を通知
@@ -365,6 +431,9 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         } else if (cfg.ttsVendor === "elevenlabs") {
           const voiceId = voice === "default" ? "hMK7c1GPJmptCzI4bQIu" : voice;  // Sameno（子供向け）
           pcmBuffer = await ttsBufferElevenLabs(t, { model: cfg.ttsModel, voiceId });
+        } else if (cfg.ttsVendor === "fishaudio") {
+          const referenceId = voice === "default" ? "hMK7c1GPJmptCzI4bQIu" : voice;
+          pcmBuffer = await ttsBufferFishAudio(t, { referenceId });
         } else {
           throw new Error("Unknown ttsVendor");
         }
