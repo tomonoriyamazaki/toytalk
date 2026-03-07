@@ -7,7 +7,7 @@ import {
   StyleSheet,
   TouchableOpacity,
   TextInput,
-  FlatList,
+  SectionList,
   Alert,
   ActivityIndicator,
   Platform,
@@ -24,8 +24,9 @@ const CHAR_COMMAND_UUID  = "12345678-1234-1234-1234-123456789ab3";
 const CHAR_STATUS_UUID   = "12345678-1234-1234-1234-123456789ab4";
 const CHAR_MAC_UUID      = "12345678-1234-1234-1234-123456789ab5";
 
-const DEVICE_SETTING_URL = "https://7k6nkpy3tf2drljy77pnouohjm0buoux.lambda-url.ap-northeast-1.on.aws";
-const DEFAULT_VOICE_ID   = "elevenlabs_sameno";
+const DEVICE_SETTING_URL  = "https://7k6nkpy3tf2drljy77pnouohjm0buoux.lambda-url.ap-northeast-1.on.aws";
+const DEFAULT_VOICE_ID    = "elevenlabs_sameno";
+const PROVIDER_ORDER      = ["OpenAI", "Google", "Gemini", "ElevenLabs", "FishAudio"];
 
 const bleManager = new BleManager();
 
@@ -287,6 +288,13 @@ export default function Toy() {
   // ---- ボイス選択画面 ----
   if (screen === "voice-select") {
     const currentId = registeredDevice?.voice_id ?? DEFAULT_VOICE_ID;
+    const sections = PROVIDER_ORDER
+      .map((provider) => ({
+        title: provider,
+        data: voices.filter((v) => v.provider === provider),
+      }))
+      .filter((s) => s.data.length > 0);
+
     return (
       <SafeAreaView style={s.root}>
         <View style={s.header}>
@@ -300,10 +308,13 @@ export default function Toy() {
             <ActivityIndicator size="large" color="#007AFF" />
           </View>
         ) : (
-          <FlatList
-            data={voices}
+          <SectionList
+            sections={sections}
             keyExtractor={(item) => item.voice_id}
             contentContainerStyle={{ padding: 16, gap: 8 }}
+            renderSectionHeader={({ section }) => (
+              <Text style={s.sectionHeader}>{section.title}</Text>
+            )}
             renderItem={({ item }) => {
               const selected = item.voice_id === currentId;
               return (
@@ -313,10 +324,7 @@ export default function Toy() {
                 >
                   <View style={s.voiceRow}>
                     <View style={[s.radio, selected && s.radioSelected]} />
-                    <View>
-                      <Text style={[s.voiceLabel, selected && s.voiceLabelSelected]}>{item.label}</Text>
-                      <Text style={s.voiceProvider}>{item.provider}</Text>
-                    </View>
+                    <Text style={[s.voiceLabel, selected && s.voiceLabelSelected]}>{item.label}</Text>
                   </View>
                 </TouchableOpacity>
               );
@@ -532,4 +540,5 @@ const s = StyleSheet.create({
   voiceLabel:         { fontSize: 15, fontWeight: "500" },
   voiceLabelSelected: { color: "#007AFF", fontWeight: "600" },
   voiceProvider:      { fontSize: 12, color: "#888", marginTop: 2 },
+  sectionHeader:      { fontSize: 13, fontWeight: "700", color: "#555", marginTop: 12, marginBottom: 6, textTransform: "uppercase" },
 });
