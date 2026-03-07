@@ -1073,10 +1073,9 @@ void tryConnectWiFiFromBLE(const String& ssid, const String& password) {
 
       sendBLEStatus("CONNECTED");
 
-      // 少し待ってからBLE停止、通常モードへ
+      // NVS保存済みなので再起動して通常モードへ（BLE deinitの詰まり回避）
       delay(1000);
-      stopBLE();
-      startNormalOperation();
+      ESP.restart();
       return;
     }
 
