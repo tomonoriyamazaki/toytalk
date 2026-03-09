@@ -307,12 +307,12 @@ export default function Settings() {
           <Text style={[s.sectionTitle, { marginTop: 12 }]}>説明</Text>
           <TextInput style={s.input} value={charDesc} onChangeText={setCharDesc} placeholder="例：勇敢な海賊キャラクター" autoCorrect={false} />
 
-          <Text style={[s.sectionTitle, { marginTop: 12 }]}>キャラクタープロンプト</Text>
+          <Text style={[s.sectionTitle, { marginTop: 12 }]}>性格・口調</Text>
           <TextInput
             style={[s.input, s.inputMultiline]}
             value={charPrompt}
             onChangeText={setCharPrompt}
-            placeholder="キャラクターの口調・性格を自由に記述..."
+            placeholder="キャラクターの性格や口調を自由に記述..."
             multiline
             numberOfLines={4}
             autoCorrect={false}
