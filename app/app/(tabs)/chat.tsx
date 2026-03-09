@@ -311,7 +311,8 @@ export default function Chat() {
 
     if (!isListening) {
       setLog(L => [...L, JSON.stringify({ type: "user", text: t })]);
-      
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 50);
+
       if (t !== lastSentRef.current && !sendingRef.current) {
         lastSentRef.current = t;
         (async () => {
@@ -760,6 +761,7 @@ export default function Chat() {
     setMsg("");
     if (textArg === undefined) {
       setLog((L) => [...L, JSON.stringify({ type: "user", text: t })]);
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 50);
       textSentRef.current = true;
       if (isListening) stopSTT();
     }
@@ -1029,6 +1031,7 @@ export default function Chat() {
           <Text style={s.userBubbleText}>{partial}</Text>
         </View>
       ) : null}
+
 
         {SHOW_STT_DEBUG_UI && (
           <View style={{ marginTop: 12 }}>

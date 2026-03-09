@@ -422,10 +422,6 @@ export default function Settings() {
           <Text style={s.headerTitle}>キャラクター管理</Text>
         </View>
         <ScrollView contentContainerStyle={s.wrap}>
-          <TouchableOpacity style={s.button} onPress={() => openCharacterEdit(null)}>
-            <Text style={s.buttonText}>＋ キャラクターを作成</Text>
-          </TouchableOpacity>
-
           {charsLoading ? (
             <ActivityIndicator size="large" color="#007AFF" style={{ marginTop: 24 }} />
           ) : (
@@ -462,6 +458,10 @@ export default function Settings() {
               {characters.length === 0 && <Text style={s.emptyText}>キャラクターがありません</Text>}
             </>
           )}
+
+          <TouchableOpacity style={[s.button, { marginTop: 24 }]} onPress={() => openCharacterEdit(null)}>
+            <Text style={s.buttonText}>＋ キャラクターを作成</Text>
+          </TouchableOpacity>
         </ScrollView>
         </Animated.View>
       </SafeAreaView>
