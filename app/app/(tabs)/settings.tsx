@@ -93,7 +93,7 @@ export default function Settings() {
   const handleSttChange = async (value: "local" | "soniox") => {
     setSttMode(value);
     await AsyncStorage.setItem("sttMode", value);
-    setScreen("main");
+    navigateTo("main", "back");
   };
 
   // ---- キャラクター一覧 ----
@@ -471,23 +471,25 @@ export default function Settings() {
   // ---- メイン設定画面 ----
   return (
     <SafeAreaView style={s.root}>
-      <View style={[s.header, { justifyContent: "space-between" }]}>
-        <Text style={s.pageTitle}>設定</Text>
-        <TouchableOpacity onPress={() => navigateTo("version")}>
-          <Text style={s.versionChip}>Version</Text>
-        </TouchableOpacity>
-      </View>
-      <ScrollView contentContainerStyle={s.wrap}>
-        <TouchableOpacity style={s.navRow} onPress={() => navigateTo("stt-select")}>
-          <Text style={s.navText}>音声認識</Text>
-          <Text style={s.chevron}>›</Text>
-        </TouchableOpacity>
+      <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
+        <View style={[s.header, { justifyContent: "space-between" }]}>
+          <Text style={s.pageTitle}>設定</Text>
+          <TouchableOpacity onPress={() => navigateTo("version")}>
+            <Text style={s.versionChip}>Version</Text>
+          </TouchableOpacity>
+        </View>
+        <ScrollView contentContainerStyle={s.wrap}>
+          <TouchableOpacity style={s.navRow} onPress={() => navigateTo("stt-select")}>
+            <Text style={s.navText}>音声認識</Text>
+            <Text style={s.chevron}>›</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity style={s.navRow} onPress={openCharacterList}>
-          <Text style={s.navText}>キャラクター管理</Text>
-          <Text style={s.chevron}>›</Text>
-        </TouchableOpacity>
-      </ScrollView>
+          <TouchableOpacity style={s.navRow} onPress={openCharacterList}>
+            <Text style={s.navText}>キャラクター管理</Text>
+            <Text style={s.chevron}>›</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </Animated.View>
     </SafeAreaView>
   );
 }
