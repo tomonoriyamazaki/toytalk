@@ -479,6 +479,11 @@ export default function Settings() {
           </TouchableOpacity>
         </View>
         <ScrollView contentContainerStyle={s.wrap}>
+          <TouchableOpacity style={s.navRow} onPress={() => {}}>
+            <Text style={s.navText}>アカウント情報</Text>
+            <Text style={s.chevron}>›</Text>
+          </TouchableOpacity>
+
           <TouchableOpacity style={s.navRow} onPress={() => navigateTo("stt-select")}>
             <Text style={s.navText}>音声認識</Text>
             <Text style={s.chevron}>›</Text>
@@ -486,6 +491,11 @@ export default function Settings() {
 
           <TouchableOpacity style={s.navRow} onPress={openCharacterList}>
             <Text style={s.navText}>キャラクター管理</Text>
+            <Text style={s.chevron}>›</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={s.navRow} onPress={() => {}}>
+            <Text style={s.navText}>利用状況</Text>
             <Text style={s.chevron}>›</Text>
           </TouchableOpacity>
         </ScrollView>
