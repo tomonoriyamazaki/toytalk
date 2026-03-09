@@ -25,7 +25,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Menu, Provider } from "react-native-paper";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "@react-navigation/native";
-import { MODEL_MAP, ModelKey } from "@/constants/ModelMap";
 import AudioRecord from "react-native-audio-record";
 import Sound from "react-native-sound";
 
@@ -109,17 +108,30 @@ export default function Chat() {
   );
 
 
-  // TTSモデル選択UI（既存）
+  // キャラクター選択UI
   const [menuVisible, setMenuVisible] = useState(false);
   const [anchor, setAnchor] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const pillRef = useRef<View>(null);
   const { width: SCREEN_W } = Dimensions.get("window");
-
-  const [submenuFor, setSubmenuFor] = useState<ModelKey | null>(null);
   const MENU_W = 240;
 
-  const [model, setModel] = useState<ModelKey>("OpenAI");
-  const [voiceKey, setVoiceKey] = useState<string>(MODEL_MAP[model].defaultVoice as string);
+  type CharacterItem = { character_id: string; name: string; owner_id: string; };
+  const [characters, setCharacters] = useState<CharacterItem[]>([]);
+  const [selectedCharacter, setSelectedCharacter] = useState<CharacterItem>({ character_id: "default", name: "トイトーカー", owner_id: "system" });
+
+  const DEVICE_SETTING_URL = "https://7k6nkpy3tf2drljy77pnouohjm0buoux.lambda-url.ap-northeast-1.on.aws";
+
+  useFocusEffect(
+    useCallback(() => {
+      (async () => {
+        try {
+          const res = await fetch(`${DEVICE_SETTING_URL}/characters`);
+          const data = await res.json();
+          setCharacters(data.characters ?? []);
+        } catch {}
+      })();
+    }, [])
+  );
 
   // 会話履歴
   const historyRef = useRef<Turn[]>([]);
@@ -862,14 +874,8 @@ export default function Chat() {
       const recentTurns = historyRef.current.slice(-HISTORY_TURNS_TO_SEND);
       const historyMessages = recentTurns.map((t) => ({ role: t.role, content: t.text }));
 
-      const voices = MODEL_MAP[model].voices as any;
-      const voiceToSend =
-        MODEL_MAP[model].voices[voiceKey]?.vendorId ??
-        MODEL_MAP[model].voices[MODEL_MAP[model].defaultVoice].vendorId;
-
       const payload = {
-        model,
-        voice: voiceToSend,
+        character_id: selectedCharacter.character_id,
         messages: [...historyMessages, { role: "user", content: t }],
       };
       console.log("🚀 payload to Lambda:", JSON.stringify(payload, null, 2));
@@ -891,16 +897,11 @@ export default function Chat() {
           onPress={() => {
             pillRef.current?.measureInWindow((x, y, w, h) => {
               setAnchor({ x, y, w, h });
-              setSubmenuFor(null);
               setMenuVisible(true);
             });
           }}
         >
-          <Text style={s.modelPillText}>
-            {MODEL_MAP[model].label} ·{" "}
-            {MODEL_MAP[model].voices[voiceKey]?.label ??
-              MODEL_MAP[model].voices[MODEL_MAP[model].defaultVoice].label}
-          </Text>
+          <Text style={s.modelPillText}>{selectedCharacter.name}</Text>
         </TouchableOpacity>
         <View style={{ flex: 1 }} />
         <TouchableOpacity
@@ -918,7 +919,7 @@ export default function Chat() {
         </TouchableOpacity>
       </View>
 
-      {/* モデル/ボイス選択 */}
+      {/* キャラクター選択 */}
       <Modal
         visible={menuVisible}
         transparent
@@ -938,61 +939,21 @@ export default function Chat() {
                 },
               ]}
             >
-              {Object.keys(MODEL_MAP).map((k) => {
-                const key = k as keyof typeof MODEL_MAP;
-                const opt = MODEL_MAP[key];
-                const active = submenuFor === key || model === key;
-                return (
-                  <TouchableOpacity
-                    key={key}
-                    style={[s.dropdownItem, active && s.dropdownItemActive]}
-                    onPress={() => setSubmenuFor(key)}
-                  >
-                    <View style={s.dropdownRow}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={s.dropdownTitle}>{opt.label}</Text>
-                        <Text style={s.dropdownSub}>{opt.desc}</Text>
-                      </View>
-                      {model === key && <Text style={s.dropdownCheck}>✓</Text>}
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          )}
-
-          {anchor && submenuFor && (
-            <View
-              style={[
-                s.dropdown,
-                {
-                  top: anchor.y + anchor.h + 8,
-                  left: Math.min(anchor.x + MENU_W + 8, SCREEN_W - MENU_W - 12),
-                  width: MENU_W,
-                },
-              ]}
-            >
-              {Object.entries(MODEL_MAP[submenuFor].voices).map(([vk, v]) => (
+              {characters.map((c) => (
                 <TouchableOpacity
-                  key={vk}
-                  style={[
-                    s.dropdownItem,
-                    model === submenuFor && voiceKey === vk && s.dropdownItemActive,
-                  ]}
+                  key={c.character_id}
+                  style={[s.dropdownItem, selectedCharacter.character_id === c.character_id && s.dropdownItemActive]}
                   onPress={() => {
-                    setModel(submenuFor);
-                    setVoiceKey(vk);
-                    setSubmenuFor(null);
+                    setSelectedCharacter(c);
                     setMenuVisible(false);
                   }}
                 >
                   <View style={s.dropdownRow}>
                     <View style={{ flex: 1 }}>
-                      <Text style={s.dropdownTitle}>{v.label}</Text>
+                      <Text style={s.dropdownTitle}>{c.name}</Text>
+                      <Text style={s.dropdownSub}>{c.owner_id === "system" ? "システム" : "カスタム"}</Text>
                     </View>
-                    {model === submenuFor && voiceKey === vk && (
-                      <Text style={s.dropdownCheck}>✓</Text>
-                    )}
+                    {selectedCharacter.character_id === c.character_id && <Text style={s.dropdownCheck}>✓</Text>}
                   </View>
                 </TouchableOpacity>
               ))}
