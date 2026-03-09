@@ -160,7 +160,8 @@ export default function Chat() {
   // 音声キュー
   const playingRef = useRef(false);
   const queueRef = useRef<Array<{ uri: string }>>([]);
-  const loopBeatRef = useRef(0);  
+  const loopBeatRef = useRef(0);
+  const currentSoundRef = useRef<any>(null); // 再生中のSoundオブジェクト
 
   // STT共通state
   const [isListening, setIsListening] = useState(false);
@@ -552,11 +553,20 @@ export default function Chat() {
 
   // STT開始/停止トグル
   const startSTT = async () => {
-    if(DEBUG)setLog(L => [...L, "=== startSTT CALLED ==="]);  
+    if(DEBUG)setLog(L => [...L, "=== startSTT CALLED ==="]);
     if(DEBUG)setLog((L) => [...L, `sttMode=${sttMode}`]);
 
     // 二重起動ガード（無反応の原因になりやすいので明示）
     if (isListening) return;
+
+    // 再生中なら強制停止してキューをリセット
+    if (playingRef.current) {
+      currentSoundRef.current?.stop();
+      currentSoundRef.current?.release();
+      currentSoundRef.current = null;
+      queueRef.current = [];
+      playingRef.current = false;
+    }
 
     // iOS録音カテゴリ
     if (Platform.OS === "ios") {
@@ -660,15 +670,18 @@ export default function Chat() {
           const s = new Sound(path, "", (error) => {
             if (error) {
               console.log("❌ Sound load error:", error);
+              currentSoundRef.current = null;
               resolve();
               return;
             }
             console.log("✅ Sound loaded:", path);
+            currentSoundRef.current = s;
             loopBeatRef.current = Date.now();
             s.play((success) => {
               if (success) console.log("🏁 Finished playing:", path);
               else console.log("⚠️ Playback failed:", path);
               s.release();
+              currentSoundRef.current = null;
               loopBeatRef.current = Date.now();
               resolve();
             });
