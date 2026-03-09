@@ -1003,14 +1003,12 @@ export default function Chat() {
           if (isUser) {
               return (
                 <View key={i} style={s.userBubble}>
-                  <Text style={s.userBubbleText}>{content}</Text>
+                  <TextInput editable={false} multiline scrollEnabled={false} value={content} style={[s.userBubbleText, { padding: 0 }]} />
                 </View>
               );
             } else {
               return (
-                <Text key={i} style={s.line}>
-                  {content}
-                </Text>
+                <TextInput key={i} editable={false} multiline scrollEnabled={false} value={content} style={s.line} />
               );
             }
           })}
