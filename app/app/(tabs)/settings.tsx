@@ -4,6 +4,8 @@ import {
   View,
   StyleSheet,
   Modal,
+  KeyboardAvoidingView,
+  Platform,
   TouchableOpacity,
   TextInput,
   Alert,
@@ -280,13 +282,14 @@ export default function Settings() {
 
     return (
       <SafeAreaView style={s.root}>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
         <View style={s.header}>
           <TouchableOpacity onPress={() => setScreen("character-list")}>
             <Text style={s.back}>← 戻る</Text>
           </TouchableOpacity>
           <Text style={s.headerTitle}>{editingCharacter ? "キャラクター編集" : "キャラクター作成"}</Text>
         </View>
-        <ScrollView contentContainerStyle={s.wrap}>
+        <ScrollView contentContainerStyle={s.wrap} keyboardShouldPersistTaps="handled">
 
           <Text style={s.sectionTitle}>テンプレート</Text>
           <View style={s.templateRow}>
@@ -342,6 +345,7 @@ export default function Settings() {
           </TouchableOpacity>
         </ScrollView>
 
+        </KeyboardAvoidingView>
         {/* ボイス選択モーダル */}
         <Modal visible={voiceModalVisible} animationType="slide">
           <SafeAreaView style={s.root}>

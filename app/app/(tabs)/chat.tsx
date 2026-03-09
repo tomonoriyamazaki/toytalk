@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  KeyboardAvoidingView,
   Platform,
   PermissionsAndroid,
   Modal,
@@ -67,6 +68,8 @@ export default function Chat() {
   const [msg, setMsg] = useState("");
   const [log, setLog] = useState<string[]>([]);
   const readyRef = useRef(false);
+  const scrollRef = useRef<ScrollView>(null);
+  const [showScrollButton, setShowScrollButton] = useState(false);
 
   // セッション管理とウォッチドッグ
   const sonioxSessionRef = useRef(0);  // 起動ごとに +1
@@ -901,6 +904,11 @@ export default function Chat() {
 
   return (
     <SafeAreaView style={s.root}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={0}
+      >
       {/* ヘッダー */}
       <View style={s.header}>
         <View style={{ flex: 1 }} />
@@ -968,7 +976,16 @@ export default function Chat() {
         </View>
       </Modal>
 
-      <ScrollView style={s.chat}>
+      <ScrollView
+        ref={scrollRef}
+        style={s.chat}
+        onScroll={(e) => {
+          const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+          const distanceFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
+          setShowScrollButton(distanceFromBottom > 100);
+        }}
+        scrollEventThrottle={16}
+      >
         {log.map((l, i) => {
           let content = l;
           let isUser = false;
@@ -1013,6 +1030,17 @@ export default function Chat() {
         )}
       </ScrollView>
 
+      <View style={{ height: 0 }}>
+        {showScrollButton && (
+          <TouchableOpacity
+            style={s.scrollToBottomBtn}
+            onPress={() => scrollRef.current?.scrollToEnd({ animated: true })}
+          >
+            <Text style={s.scrollToBottomText}>↓</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
       <View style={s.inputRow}>
         <TouchableOpacity
           style={[s.micBtn, { backgroundColor: isListening ? "#b00020" : "#0a7" }]}
@@ -1031,6 +1059,7 @@ export default function Chat() {
           <Text style={s.btnText}>送信</Text>
         </TouchableOpacity>
       </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -1057,6 +1086,22 @@ const s = StyleSheet.create({
     padding: 10,
     minHeight: 40,
     fontSize: 16,
+  },
+  scrollToBottomBtn: {
+    position: "absolute",
+    bottom: 12,
+    alignSelf: "center",
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  scrollToBottomText: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "700",
   },
   inputRow: {
     flexDirection: "row",
