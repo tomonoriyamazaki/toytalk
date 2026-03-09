@@ -1,8 +1,15 @@
   // Node.js 18+ / ESM（index.mjs）
   // Handler: index.handler
-  // Env: OPENAI_API_KEY
+  // Env: OPENAI_API_KEY, GOOGLE_API_KEY, ELEVENLABS_API_KEY, FISHAUDIO_API_KEY
   import OpenAI from "openai";
   import { createHash } from "node:crypto";
+  import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+  import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
+
+  const ddbClient = new DynamoDBClient({ region: "ap-northeast-1" });
+  const ddb = DynamoDBDocumentClient.from(ddbClient);
+  const CHARACTERS_TABLE = "toytalker-characters";
+  const VOICES_TABLE     = "toytalker-voices";
 
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -337,15 +344,59 @@
 
 
 
+  // character_id → voice(provider + vendor_id) + personality_prompt を解決
+  async function resolveCharacterFromDynamo(characterId) {
+    try {
+      const charRes = await ddb.send(new GetCommand({
+        TableName: CHARACTERS_TABLE,
+        Key: { character_id: characterId },
+      }));
+      if (!charRes.Item) return null;
+
+      const voiceId = charRes.Item.voice_id;
+      const personalityPrompt = charRes.Item.personality_prompt || null;
+      if (!voiceId) return null;
+
+      const voiceRes = await ddb.send(new GetCommand({
+        TableName: VOICES_TABLE,
+        Key: { voice_id: voiceId },
+      }));
+      if (!voiceRes.Item) return null;
+
+      return {
+        provider: voiceRes.Item.provider,
+        vendorId: voiceRes.Item.vendor_id,
+        personalityPrompt,
+      };
+    } catch (e) {
+      console.error("[DynamoDB] resolveCharacterFromDynamo error:", e);
+      return null;
+    }
+  }
+
   export const handler = awslambda.streamifyResponse(async (event, res) => {
     res.setContentType("text/event-stream");
 
     const body    = event.body ? JSON.parse(event.body) : {};
-    const voice   = body.voice ?? VOICE_DEFAULT;
     const messages= body.messages ?? [{ role:"user", content:"自己紹介して" }];
     const rawModel = typeof body.model === "string" ? body.model : undefined;
-    const modelKey = normalizeModelKey(rawModel) ?? MODEL_DEFAULT;
-    const cfg      = MODEL_TABLE[modelKey] ?? MODEL_TABLE[MODEL_DEFAULT];
+    let modelKey = normalizeModelKey(rawModel) ?? MODEL_DEFAULT;
+    let voice    = body.voice ?? VOICE_DEFAULT;
+    let personalityPrompt = null;
+
+    // character_id が来たら DynamoDB でキャラクター → ボイスを解決
+    const characterId = typeof body.character_id === "string" ? body.character_id : null;
+    if (characterId && characterId !== "default") {
+      const charConfig = await resolveCharacterFromDynamo(characterId);
+      if (charConfig) {
+        modelKey = normalizeModelKey(charConfig.provider) ?? modelKey;
+        voice    = charConfig.vendorId ?? voice;
+        personalityPrompt = charConfig.personalityPrompt;
+        console.log(`[Character] id=${characterId}, provider=${charConfig.provider}, vendorId=${charConfig.vendorId}`);
+      }
+    }
+
+    const cfg = MODEL_TABLE[modelKey] ?? MODEL_TABLE[MODEL_DEFAULT];
 
     function normalizeModelKey(k) {
       if (!k) return undefined;
@@ -373,13 +424,18 @@
     if (DEBUG_TIME) {
       send(res, "mark", { k: "llm_start", t: Date.now() });
     }
+    // キャラクターの性格 + 共通システムプロンプトを結合
+    const basePrompt = "あなたは子供向けの友好的な音声アシスタントです。簡潔に答えて、自然に会話を続けてください。漢字は最小限にして、ひらがな多めで答えてください。";
+    const systemContent = personalityPrompt ? `${personalityPrompt}\n\n${basePrompt}` : basePrompt;
+    const messagesWithSystem = [{ role: "system", content: systemContent }, ...messages];
+
     let llmStream;
     if (cfg.llmVendor === "openai") {
       const llm = await openai.chat.completions.create({
         model: cfg.llmModel,
         temperature: 0.7,
         stream: true,
-        messages,
+        messages: messagesWithSystem,
       });
       llmStream = (async function* () {
         for await (const chunk of llm) {
@@ -426,19 +482,23 @@
           fmt = "wav";
         } else if (cfg.ttsVendor === "google") {
           const g = resolveGoogleTtsFromBody(body);
+          if (voice) g.voiceName = voice;
           const w = await ttsToBase64Google(t, g);
           b64 = w;
           fmt = "wav";
         } else if (cfg.ttsVendor === "gemini") {
           const g = resolveGeminiTtsFromBody(body, cfg);
+          if (voice) g.voiceName = voice;
           b64 = await ttsToBase64Gemini(t, g);
           fmt = "wav";
         } else if (cfg.ttsVendor === "elevenlabs") {
           const e = resolveElevenLabsTtsFromBody(body, cfg);
+          if (voice) e.voiceId = voice;
           b64 = await ttsToBase64ElevenLabs(t, e);
           fmt = "wav";
         } else if (cfg.ttsVendor === "fishaudio") {
           const f = resolveFishAudioTtsFromBody(body);
+          if (voice) f.referenceId = voice;
           b64 = await ttsToBase64FishAudio(t, f);
           fmt = "mp3";
         } else {

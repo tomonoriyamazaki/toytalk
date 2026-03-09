@@ -3,17 +3,22 @@ import {
   Text,
   View,
   StyleSheet,
-  Modal,
+  KeyboardAvoidingView,
+  Platform,
   TouchableOpacity,
   TextInput,
   Alert,
   ActivityIndicator,
   ScrollView,
+  Animated,
+  Dimensions,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect, useRef, useState } from "react";
 
-type SettingsScreen = "main" | "stt-select" | "character-list" | "character-edit" | "version";
+const SCREEN_WIDTH = Dimensions.get("window").width;
+
+type SettingsScreen = "main" | "stt-select" | "character-list" | "character-edit" | "voice-select" | "version";
 
 type CharacterItem = {
   character_id: string;
@@ -44,6 +49,18 @@ const PERSONALITY_TEMPLATES = [
 
 export default function Settings() {
   const [screen, setScreen] = useState<SettingsScreen>("main");
+  const slideAnim = useRef(new Animated.Value(0)).current;
+
+  const navigateTo = (next: SettingsScreen, direction: "forward" | "back" = "forward") => {
+    const from = direction === "forward" ? SCREEN_WIDTH : -SCREEN_WIDTH;
+    slideAnim.setValue(from);
+    setScreen(next);
+    Animated.timing(slideAnim, {
+      toValue: 0,
+      duration: 280,
+      useNativeDriver: true,
+    }).start();
+  };
 
   // STT設定
   const [sttMode, setSttMode] = useState<"local" | "soniox">("soniox");
@@ -65,7 +82,6 @@ export default function Settings() {
   // ボイス一覧
   const [voices, setVoices] = useState<VoiceItem[]>([]);
   const [voicesLoading, setVoicesLoading] = useState(false);
-  const [voiceModalVisible, setVoiceModalVisible] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -77,7 +93,7 @@ export default function Settings() {
   const handleSttChange = async (value: "local" | "soniox") => {
     setSttMode(value);
     await AsyncStorage.setItem("sttMode", value);
-    setScreen("main");
+    navigateTo("main", "back");
   };
 
   // ---- キャラクター一覧 ----
@@ -108,7 +124,7 @@ export default function Settings() {
   };
 
   const openCharacterList = () => {
-    setScreen("character-list");
+    navigateTo("character-list");
     loadCharacters();
   };
 
@@ -119,7 +135,7 @@ export default function Settings() {
     setCharPrompt(character?.personality_prompt ?? "");
     setCharVoiceId(character?.voice_id ?? "elevenlabs_sameno");
     setSelectedTemplate(null);
-    setScreen("character-edit");
+    navigateTo("character-edit");
     loadVoices();
   };
 
@@ -133,7 +149,7 @@ export default function Settings() {
           try {
             await fetch(`${DEVICE_SETTING_URL}/characters/${encodeURIComponent(characterId)}`, { method: "DELETE" });
             setCharacters((prev) => prev.filter((c) => c.character_id !== characterId));
-            setScreen("character-list");
+            navigateTo("character-list", "back");
           } catch {
             Alert.alert("エラー", "削除に失敗しました");
           } finally {
@@ -175,7 +191,7 @@ export default function Settings() {
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
       }
-      setScreen("character-list");
+      navigateTo("character-list", "back");
       loadCharacters();
     } catch {
       Alert.alert("エラー", "保存に失敗しました");
@@ -188,8 +204,9 @@ export default function Settings() {
   if (screen === "version") {
     return (
       <SafeAreaView style={s.root}>
+        <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
         <View style={s.header}>
-          <TouchableOpacity onPress={() => setScreen("main")}>
+          <TouchableOpacity onPress={() => navigateTo("main", "back")}>
             <Text style={s.back}>← 戻る</Text>
           </TouchableOpacity>
           <Text style={s.headerTitle}>バージョン情報</Text>
@@ -216,6 +233,7 @@ export default function Settings() {
             </View>
           ))}
         </ScrollView>
+        </Animated.View>
       </SafeAreaView>
     );
   }
@@ -237,8 +255,9 @@ export default function Settings() {
 
     return (
       <SafeAreaView style={s.root}>
+        <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
         <View style={s.header}>
-          <TouchableOpacity onPress={() => setScreen("main")}>
+          <TouchableOpacity onPress={() => navigateTo("main", "back")}>
             <Text style={s.back}>← 戻る</Text>
           </TouchableOpacity>
           <Text style={s.headerTitle}>音声認識</Text>
@@ -263,30 +282,70 @@ export default function Settings() {
             );
           })}
         </View>
+        </Animated.View>
+      </SafeAreaView>
+    );
+  }
+
+  const voiceSections = PROVIDER_ORDER
+    .map((provider) => ({ title: provider, data: voices.filter((v) => v.provider === provider) }))
+    .filter((sec) => sec.data.length > 0);
+
+  const currentVoiceLabel = () => {
+    const v = voices.find((v) => v.voice_id === charVoiceId);
+    return v ? `${v.label} (${v.provider})` : charVoiceId;
+  };
+
+  // ---- ボイス選択画面 ----
+  if (screen === "voice-select") {
+    return (
+      <SafeAreaView style={s.root}>
+        <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
+          <View style={s.header}>
+            <TouchableOpacity onPress={() => navigateTo("character-edit", "back")}>
+              <Text style={s.back}>← 戻る</Text>
+            </TouchableOpacity>
+            <Text style={s.headerTitle}>ボイス選択</Text>
+          </View>
+          <ScrollView contentContainerStyle={{ padding: 16, gap: 8 }}>
+            {voiceSections.map((section) => (
+              <View key={section.title}>
+                <Text style={s.listSectionHeader}>{section.title}</Text>
+                {section.data.map((v) => {
+                  const selected = v.voice_id === charVoiceId;
+                  return (
+                    <TouchableOpacity
+                      key={v.voice_id}
+                      style={[s.voiceRow, selected && s.voiceRowSelected]}
+                      onPress={() => { setCharVoiceId(v.voice_id); navigateTo("character-edit", "back"); }}
+                    >
+                      <View style={[s.radio, selected && s.radioSelected]} />
+                      <Text style={[s.voiceLabel, selected && s.voiceLabelSelected]}>{v.label}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            ))}
+          </ScrollView>
+        </Animated.View>
       </SafeAreaView>
     );
   }
 
   // ---- キャラクター編集画面 ----
   if (screen === "character-edit") {
-    const voiceSections = PROVIDER_ORDER
-      .map((provider) => ({ title: provider, data: voices.filter((v) => v.provider === provider) }))
-      .filter((s) => s.data.length > 0);
-
-    const currentVoiceLabel = () => {
-      const v = voices.find((v) => v.voice_id === charVoiceId);
-      return v ? `${v.label} (${v.provider})` : charVoiceId;
-    };
 
     return (
       <SafeAreaView style={s.root}>
+        <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
         <View style={s.header}>
-          <TouchableOpacity onPress={() => setScreen("character-list")}>
+          <TouchableOpacity onPress={() => navigateTo("character-list", "back")}>
             <Text style={s.back}>← 戻る</Text>
           </TouchableOpacity>
           <Text style={s.headerTitle}>{editingCharacter ? "キャラクター編集" : "キャラクター作成"}</Text>
         </View>
-        <ScrollView contentContainerStyle={s.wrap}>
+        <ScrollView contentContainerStyle={s.wrap} keyboardShouldPersistTaps="handled">
 
           <Text style={s.sectionTitle}>テンプレート</Text>
           <View style={s.templateRow}>
@@ -319,7 +378,7 @@ export default function Settings() {
           />
 
           <Text style={[s.sectionTitle, { marginTop: 16 }]}>ボイス</Text>
-          <TouchableOpacity style={s.settingRow} onPress={() => setVoiceModalVisible(true)}>
+          <TouchableOpacity style={s.settingRow} onPress={() => navigateTo("voice-select")}>
             <Text style={s.settingRowText}>{voicesLoading ? "読み込み中..." : currentVoiceLabel()}</Text>
             <Text style={s.chevron}>›</Text>
           </TouchableOpacity>
@@ -342,37 +401,8 @@ export default function Settings() {
           </TouchableOpacity>
         </ScrollView>
 
-        {/* ボイス選択モーダル */}
-        <Modal visible={voiceModalVisible} animationType="slide">
-          <SafeAreaView style={s.root}>
-            <View style={s.header}>
-              <TouchableOpacity onPress={() => setVoiceModalVisible(false)}>
-                <Text style={s.back}>← 閉じる</Text>
-              </TouchableOpacity>
-              <Text style={s.headerTitle}>ボイス選択</Text>
-            </View>
-            <ScrollView contentContainerStyle={{ padding: 16, gap: 8 }}>
-              {voiceSections.map((section) => (
-                <View key={section.title}>
-                  <Text style={s.listSectionHeader}>{section.title}</Text>
-                  {section.data.map((v) => {
-                    const selected = v.voice_id === charVoiceId;
-                    return (
-                      <TouchableOpacity
-                        key={v.voice_id}
-                        style={[s.voiceRow, selected && s.voiceRowSelected]}
-                        onPress={() => { setCharVoiceId(v.voice_id); setVoiceModalVisible(false); }}
-                      >
-                        <View style={[s.radio, selected && s.radioSelected]} />
-                        <Text style={[s.voiceLabel, selected && s.voiceLabelSelected]}>{v.label}</Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              ))}
-            </ScrollView>
-          </SafeAreaView>
-        </Modal>
+        </KeyboardAvoidingView>
+        </Animated.View>
       </SafeAreaView>
     );
   }
@@ -384,17 +414,14 @@ export default function Settings() {
 
     return (
       <SafeAreaView style={s.root}>
+        <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
         <View style={s.header}>
-          <TouchableOpacity onPress={() => setScreen("main")}>
+          <TouchableOpacity onPress={() => navigateTo("main", "back")}>
             <Text style={s.back}>← 戻る</Text>
           </TouchableOpacity>
           <Text style={s.headerTitle}>キャラクター管理</Text>
         </View>
         <ScrollView contentContainerStyle={s.wrap}>
-          <TouchableOpacity style={s.button} onPress={() => openCharacterEdit(null)}>
-            <Text style={s.buttonText}>＋ キャラクターを作成</Text>
-          </TouchableOpacity>
-
           {charsLoading ? (
             <ActivityIndicator size="large" color="#007AFF" style={{ marginTop: 24 }} />
           ) : (
@@ -431,7 +458,12 @@ export default function Settings() {
               {characters.length === 0 && <Text style={s.emptyText}>キャラクターがありません</Text>}
             </>
           )}
+
+          <TouchableOpacity style={[s.button, { marginTop: 24 }]} onPress={() => openCharacterEdit(null)}>
+            <Text style={s.buttonText}>＋ キャラクターを作成</Text>
+          </TouchableOpacity>
         </ScrollView>
+        </Animated.View>
       </SafeAreaView>
     );
   }
@@ -439,29 +471,42 @@ export default function Settings() {
   // ---- メイン設定画面 ----
   return (
     <SafeAreaView style={s.root}>
-      <View style={[s.header, { justifyContent: "space-between" }]}>
-        <Text style={s.pageTitle}>設定</Text>
-        <TouchableOpacity onPress={() => setScreen("version")}>
-          <Text style={s.versionChip}>Version</Text>
-        </TouchableOpacity>
-      </View>
-      <ScrollView contentContainerStyle={s.wrap}>
-        <TouchableOpacity style={s.navRow} onPress={() => setScreen("stt-select")}>
-          <Text style={s.navText}>音声認識</Text>
-          <Text style={s.chevron}>›</Text>
-        </TouchableOpacity>
+      <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
+        <View style={[s.header, { justifyContent: "space-between" }]}>
+          <Text style={s.pageTitle}>設定</Text>
+          <TouchableOpacity onPress={() => navigateTo("version")}>
+            <Text style={s.versionChip}>Version</Text>
+          </TouchableOpacity>
+        </View>
+        <ScrollView contentContainerStyle={s.wrap}>
+          <TouchableOpacity style={s.navRow} onPress={() => {}}>
+            <Text style={s.navText}>アカウント情報</Text>
+            <Text style={s.chevron}>›</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity style={s.navRow} onPress={openCharacterList}>
-          <Text style={s.navText}>キャラクター管理</Text>
-          <Text style={s.chevron}>›</Text>
-        </TouchableOpacity>
-      </ScrollView>
+          <TouchableOpacity style={s.navRow} onPress={() => navigateTo("stt-select")}>
+            <Text style={s.navText}>音声認識</Text>
+            <Text style={s.chevron}>›</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={s.navRow} onPress={openCharacterList}>
+            <Text style={s.navText}>キャラクター管理</Text>
+            <Text style={s.chevron}>›</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={s.navRow} onPress={() => {}}>
+            <Text style={s.navText}>利用状況</Text>
+            <Text style={s.chevron}>›</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </Animated.View>
     </SafeAreaView>
   );
 }
 
 const s = StyleSheet.create({
   root:                    { flex: 1, backgroundColor: "#fff" },
+  flex:                    { flex: 1 },
   wrap:                    { padding: 20, gap: 12 },
   pageTitle:               { fontSize: 20, fontWeight: "700" },
   versionChip:             { fontSize: 13, color: "#007AFF", fontWeight: "600", borderWidth: 1, borderColor: "#007AFF", borderRadius: 12, paddingHorizontal: 10, paddingVertical: 3 },
@@ -483,7 +528,7 @@ const s = StyleSheet.create({
   navText:                 { fontSize: 16, color: "#333" },
   chevron:                 { fontSize: 20, color: "#999" },
   // ヘッダー
-  header:                  { flexDirection: "row", alignItems: "center", padding: 16, gap: 12, backgroundColor: "#fff", borderBottomWidth: 1, borderBottomColor: "#e0e0e0" },
+  header:                  { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 8, gap: 12, backgroundColor: "#fff", borderBottomWidth: 1, borderBottomColor: "#e0e0e0" },
   headerTitle:             { fontSize: 18, fontWeight: "600" },
   back:                    { fontSize: 16, color: "#007AFF" },
   // キャラクター一覧

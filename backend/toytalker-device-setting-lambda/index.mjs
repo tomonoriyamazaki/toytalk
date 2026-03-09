@@ -40,7 +40,10 @@ export const handler = async (event) => {
         FilterExpression: "owner_id = :system OR owner_id = :userId",
         ExpressionAttributeValues: { ":system": "system", ":userId": userId },
       }));
-      return response(200, { characters: result.Items ?? [] });
+      const sorted = (result.Items ?? []).sort((a, b) =>
+        (a.created_at ?? "").localeCompare(b.created_at ?? "")
+      );
+      return response(200, { characters: sorted });
     }
 
     // ---- POST /characters ---- キャラクター作成

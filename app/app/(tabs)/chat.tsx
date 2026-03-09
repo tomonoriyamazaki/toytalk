@@ -8,6 +8,8 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  KeyboardAvoidingView,
+  Keyboard,
   Platform,
   PermissionsAndroid,
   Modal,
@@ -25,7 +27,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Menu, Provider } from "react-native-paper";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "@react-navigation/native";
-import { MODEL_MAP, ModelKey } from "@/constants/ModelMap";
 import AudioRecord from "react-native-audio-record";
 import Sound from "react-native-sound";
 
@@ -68,6 +69,8 @@ export default function Chat() {
   const [msg, setMsg] = useState("");
   const [log, setLog] = useState<string[]>([]);
   const readyRef = useRef(false);
+  const scrollRef = useRef<ScrollView>(null);
+  const [showScrollButton, setShowScrollButton] = useState(false);
 
   // セッション管理とウォッチドッグ
   const sonioxSessionRef = useRef(0);  // 起動ごとに +1
@@ -109,17 +112,51 @@ export default function Chat() {
   );
 
 
-  // TTSモデル選択UI（既存）
+  // キャラクター選択UI
   const [menuVisible, setMenuVisible] = useState(false);
   const [anchor, setAnchor] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const pillRef = useRef<View>(null);
+  const inputRef = useRef<import("react-native").TextInput>(null);
   const { width: SCREEN_W } = Dimensions.get("window");
-
-  const [submenuFor, setSubmenuFor] = useState<ModelKey | null>(null);
   const MENU_W = 240;
 
-  const [model, setModel] = useState<ModelKey>("OpenAI");
-  const [voiceKey, setVoiceKey] = useState<string>(MODEL_MAP[model].defaultVoice as string);
+  type CharacterItem = { character_id: string; name: string; owner_id: string; };
+  const [characters, setCharacters] = useState<CharacterItem[]>([]);
+  const [selectedCharacter, setSelectedCharacter] = useState<CharacterItem>({ character_id: "default", name: "トイトーカー", owner_id: "system" });
+  const selectedCharacterRef = useRef<CharacterItem>({ character_id: "default", name: "トイトーカー", owner_id: "system" });
+
+  const DEVICE_SETTING_URL = "https://7k6nkpy3tf2drljy77pnouohjm0buoux.lambda-url.ap-northeast-1.on.aws";
+
+  // 起動時に保存済みキャラクターを復元
+  useEffect(() => {
+    AsyncStorage.getItem("selectedCharacter").then((val) => {
+      if (val) {
+        const c = JSON.parse(val);
+        setSelectedCharacter(c);
+        selectedCharacterRef.current = c;
+      }
+    });
+  }, []);
+
+  const selectCharacter = (c: CharacterItem) => {
+    setSelectedCharacter(c);
+    selectedCharacterRef.current = c;
+    AsyncStorage.setItem("selectedCharacter", JSON.stringify(c));
+    setMenuVisible(false);
+    Keyboard.dismiss();
+  };
+
+  useFocusEffect(
+    useCallback(() => {
+      (async () => {
+        try {
+          const res = await fetch(`${DEVICE_SETTING_URL}/characters`);
+          const data = await res.json();
+          setCharacters(data.characters ?? []);
+        } catch {}
+      })();
+    }, [])
+  );
 
   // 会話履歴
   const historyRef = useRef<Turn[]>([]);
@@ -129,7 +166,8 @@ export default function Chat() {
   // 音声キュー
   const playingRef = useRef(false);
   const queueRef = useRef<Array<{ uri: string }>>([]);
-  const loopBeatRef = useRef(0);  
+  const loopBeatRef = useRef(0);
+  const currentSoundRef = useRef<any>(null); // 再生中のSoundオブジェクト
 
   // STT共通state
   const [isListening, setIsListening] = useState(false);
@@ -139,6 +177,7 @@ export default function Chat() {
   const lastSentRef = useRef<string>("");
   const autoSendTimerRef = useRef<NodeJS.Timeout | null>(null);
   const sendingRef = useRef(false);
+  const textSentRef = useRef(false); // テキスト送信時はSTT自動再起動をスキップ
   const sttDetectAtRef = useRef<number | null>(null);
   const lastActivityAtRef = useRef<number>(0);
   const inactivityTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -279,7 +318,8 @@ export default function Chat() {
 
     if (!isListening) {
       setLog(L => [...L, JSON.stringify({ type: "user", text: t })]);
-      
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 50);
+
       if (t !== lastSentRef.current && !sendingRef.current) {
         lastSentRef.current = t;
         (async () => {
@@ -519,11 +559,20 @@ export default function Chat() {
 
   // STT開始/停止トグル
   const startSTT = async () => {
-    if(DEBUG)setLog(L => [...L, "=== startSTT CALLED ==="]);  
+    if(DEBUG)setLog(L => [...L, "=== startSTT CALLED ==="]);
     if(DEBUG)setLog((L) => [...L, `sttMode=${sttMode}`]);
 
     // 二重起動ガード（無反応の原因になりやすいので明示）
     if (isListening) return;
+
+    // 再生中なら強制停止してキューをリセット
+    if (playingRef.current) {
+      currentSoundRef.current?.stop();
+      currentSoundRef.current?.release();
+      currentSoundRef.current = null;
+      queueRef.current = [];
+      playingRef.current = false;
+    }
 
     // iOS録音カテゴリ
     if (Platform.OS === "ios") {
@@ -627,15 +676,18 @@ export default function Chat() {
           const s = new Sound(path, "", (error) => {
             if (error) {
               console.log("❌ Sound load error:", error);
+              currentSoundRef.current = null;
               resolve();
               return;
             }
             console.log("✅ Sound loaded:", path);
+            currentSoundRef.current = s;
             loopBeatRef.current = Date.now();
             s.play((success) => {
               if (success) console.log("🏁 Finished playing:", path);
               else console.log("⚠️ Playback failed:", path);
               s.release();
+              currentSoundRef.current = null;
               loopBeatRef.current = Date.now();
               resolve();
             });
@@ -657,6 +709,11 @@ export default function Chat() {
         const doAutoRestart = async () => {
           if (sendingRef.current) {
             console.log("⏸️ sending in progress, skip auto-restart");
+            return;
+          }
+          if (textSentRef.current) {
+            console.log("⏸️ text sent, skip auto-restart STT");
+            textSentRef.current = false;
             return;
           }
 
@@ -721,6 +778,12 @@ export default function Chat() {
     if (DEBUG) setLog((L) => [...L, `→ POST ${t}`]);
     if (DEBUG_TIME) sendStartAtRef.current = Date.now();
     setMsg("");
+    if (textArg === undefined) {
+      setLog((L) => [...L, JSON.stringify({ type: "user", text: t })]);
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 50);
+      textSentRef.current = true;
+      if (isListening) stopSTT();
+    }
 
     try {
       const xhr = new XMLHttpRequest();
@@ -862,14 +925,8 @@ export default function Chat() {
       const recentTurns = historyRef.current.slice(-HISTORY_TURNS_TO_SEND);
       const historyMessages = recentTurns.map((t) => ({ role: t.role, content: t.text }));
 
-      const voices = MODEL_MAP[model].voices as any;
-      const voiceToSend =
-        MODEL_MAP[model].voices[voiceKey]?.vendorId ??
-        MODEL_MAP[model].voices[MODEL_MAP[model].defaultVoice].vendorId;
-
       const payload = {
-        model,
-        voice: voiceToSend,
+        character_id: selectedCharacterRef.current.character_id,
         messages: [...historyMessages, { role: "user", content: t }],
       };
       console.log("🚀 payload to Lambda:", JSON.stringify(payload, null, 2));
@@ -882,43 +939,31 @@ export default function Chat() {
 
   return (
     <SafeAreaView style={s.root}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={0}
+      >
       {/* ヘッダー */}
       <View style={s.header}>
+        <View style={{ flex: 1 }} />
         <TouchableOpacity
           ref={pillRef}
           style={s.modelPill}
           activeOpacity={0.7}
           onPress={() => {
+            inputRef.current?.blur();
             pillRef.current?.measureInWindow((x, y, w, h) => {
               setAnchor({ x, y, w, h });
-              setSubmenuFor(null);
               setMenuVisible(true);
             });
           }}
         >
-          <Text style={s.modelPillText}>
-            {MODEL_MAP[model].label} ·{" "}
-            {MODEL_MAP[model].voices[voiceKey]?.label ??
-              MODEL_MAP[model].voices[MODEL_MAP[model].defaultVoice].label}
-          </Text>
-        </TouchableOpacity>
-        <View style={{ flex: 1 }} />
-        <TouchableOpacity
-          onPress={() => setDebugTime(!debugTime)}
-          style={{
-            paddingHorizontal: 10,
-            paddingVertical: 6,
-            borderRadius: 12,
-            backgroundColor: "rgba(0,0,0,0.06)",
-          }}
-        >
-          <Text style={{ fontSize: 14, fontWeight: "600", color: debugTime ? "#b00" : "#333" }}>
-            {debugTime ? "Debug:ON" : "Debug:OFF"}
-          </Text>
+          <Text style={s.modelPillText}>{selectedCharacter.name}</Text>
         </TouchableOpacity>
       </View>
 
-      {/* モデル/ボイス選択 */}
+      {/* キャラクター選択 */}
       <Modal
         visible={menuVisible}
         transparent
@@ -938,70 +983,44 @@ export default function Chat() {
                 },
               ]}
             >
-              {Object.keys(MODEL_MAP).map((k) => {
-                const key = k as keyof typeof MODEL_MAP;
-                const opt = MODEL_MAP[key];
-                const active = submenuFor === key || model === key;
+              <Text style={s.dropdownHeader}>キャラクター</Text>
+              {(["system", "custom"] as const).map((group) => {
+                const filtered = characters
+                  .filter((c) => group === "system" ? c.owner_id === "system" : c.owner_id !== "system");
+                if (filtered.length === 0) return null;
                 return (
-                  <TouchableOpacity
-                    key={key}
-                    style={[s.dropdownItem, active && s.dropdownItemActive]}
-                    onPress={() => setSubmenuFor(key)}
-                  >
-                    <View style={s.dropdownRow}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={s.dropdownTitle}>{opt.label}</Text>
-                        <Text style={s.dropdownSub}>{opt.desc}</Text>
-                      </View>
-                      {model === key && <Text style={s.dropdownCheck}>✓</Text>}
-                    </View>
-                  </TouchableOpacity>
+                  <View key={group}>
+                    <Text style={s.dropdownSection}>{group === "system" ? "システム" : "カスタム"}</Text>
+                    {filtered.map((c) => (
+                      <TouchableOpacity
+                        key={c.character_id}
+                        style={[s.dropdownItem, selectedCharacter.character_id === c.character_id && s.dropdownItemActive]}
+                        onPress={() => selectCharacter(c)}
+                      >
+                        <View style={s.dropdownRow}>
+                          <Text style={s.dropdownTitle}>{c.name}</Text>
+                          {selectedCharacter.character_id === c.character_id && <Text style={s.dropdownCheck}>✓</Text>}
+                        </View>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
                 );
               })}
-            </View>
-          )}
-
-          {anchor && submenuFor && (
-            <View
-              style={[
-                s.dropdown,
-                {
-                  top: anchor.y + anchor.h + 8,
-                  left: Math.min(anchor.x + MENU_W + 8, SCREEN_W - MENU_W - 12),
-                  width: MENU_W,
-                },
-              ]}
-            >
-              {Object.entries(MODEL_MAP[submenuFor].voices).map(([vk, v]) => (
-                <TouchableOpacity
-                  key={vk}
-                  style={[
-                    s.dropdownItem,
-                    model === submenuFor && voiceKey === vk && s.dropdownItemActive,
-                  ]}
-                  onPress={() => {
-                    setModel(submenuFor);
-                    setVoiceKey(vk);
-                    setSubmenuFor(null);
-                    setMenuVisible(false);
-                  }}
-                >
-                  <View style={s.dropdownRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={s.dropdownTitle}>{v.label}</Text>
-                    </View>
-                    {model === submenuFor && voiceKey === vk && (
-                      <Text style={s.dropdownCheck}>✓</Text>
-                    )}
-                  </View>
-                </TouchableOpacity>
-              ))}
             </View>
           )}
         </View>
       </Modal>
 
-      <ScrollView style={s.chat}>
+      <ScrollView
+        ref={scrollRef}
+        style={s.chat}
+        onScroll={(e) => {
+          const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+          const distanceFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
+          setShowScrollButton(distanceFromBottom > 100);
+        }}
+        scrollEventThrottle={16}
+      >
         {log.map((l, i) => {
           let content = l;
           let isUser = false;
@@ -1015,14 +1034,12 @@ export default function Chat() {
           if (isUser) {
               return (
                 <View key={i} style={s.userBubble}>
-                  <Text style={s.userBubbleText}>{content}</Text>
+                  <TextInput editable={false} multiline scrollEnabled={false} value={content} style={[s.userBubbleText, { padding: 0 }]} />
                 </View>
               );
             } else {
               return (
-                <Text key={i} style={s.line}>
-                  {content}
-                </Text>
+                <TextInput key={i} editable={false} multiline scrollEnabled={false} value={content} style={s.line} />
               );
             }
           })}
@@ -1033,6 +1050,7 @@ export default function Chat() {
           <Text style={s.userBubbleText}>{partial}</Text>
         </View>
       ) : null}
+
 
         {SHOW_STT_DEBUG_UI && (
           <View style={{ marginTop: 12 }}>
@@ -1046,6 +1064,17 @@ export default function Chat() {
         )}
       </ScrollView>
 
+      <View style={{ height: 0 }}>
+        {showScrollButton && (
+          <TouchableOpacity
+            style={s.scrollToBottomBtn}
+            onPress={() => scrollRef.current?.scrollToEnd({ animated: true })}
+          >
+            <Text style={s.scrollToBottomText}>↓</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
       <View style={s.inputRow}>
         <TouchableOpacity
           style={[s.micBtn, { backgroundColor: isListening ? "#b00020" : "#0a7" }]}
@@ -1055,6 +1084,7 @@ export default function Chat() {
         </TouchableOpacity>
 
         <TextInput
+          ref={inputRef}
           value={msg}
           onChangeText={setMsg}
           placeholder="メッセージを入力…"
@@ -1064,6 +1094,7 @@ export default function Chat() {
           <Text style={s.btnText}>送信</Text>
         </TouchableOpacity>
       </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -1090,6 +1121,22 @@ const s = StyleSheet.create({
     padding: 10,
     minHeight: 40,
     fontSize: 16,
+  },
+  scrollToBottomBtn: {
+    position: "absolute",
+    bottom: 12,
+    alignSelf: "center",
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  scrollToBottomText: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "700",
   },
   inputRow: {
     flexDirection: "row",
@@ -1138,7 +1185,7 @@ const s = StyleSheet.create({
     fontSize: 16,
   },
   header: {
-    height: 48,
+    height: 36,
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 12,
@@ -1219,6 +1266,27 @@ const s = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+  },
+  dropdownHeader: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 4,
+    textTransform: "uppercase",
+  },
+  dropdownSection: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 2,
+    textTransform: "uppercase",
+    borderTopWidth: 1,
+    borderTopColor: "#e0e0e0",
+    marginTop: 4,
   },
   dropdownTitle: {
     fontSize: 16,
