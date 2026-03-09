@@ -9,6 +9,7 @@ import {
   StyleSheet,
   ScrollView,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
   PermissionsAndroid,
   Modal,
@@ -115,6 +116,7 @@ export default function Chat() {
   const [menuVisible, setMenuVisible] = useState(false);
   const [anchor, setAnchor] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const pillRef = useRef<View>(null);
+  const inputRef = useRef<import("react-native").TextInput>(null);
   const { width: SCREEN_W } = Dimensions.get("window");
   const MENU_W = 240;
 
@@ -135,6 +137,7 @@ export default function Chat() {
     setSelectedCharacter(c);
     AsyncStorage.setItem("selectedCharacter", JSON.stringify(c));
     setMenuVisible(false);
+    Keyboard.dismiss();
   };
 
   useFocusEffect(
@@ -917,6 +920,7 @@ export default function Chat() {
           style={s.modelPill}
           activeOpacity={0.7}
           onPress={() => {
+            inputRef.current?.blur();
             pillRef.current?.measureInWindow((x, y, w, h) => {
               setAnchor({ x, y, w, h });
               setMenuVisible(true);
@@ -1050,6 +1054,7 @@ export default function Chat() {
         </TouchableOpacity>
 
         <TextInput
+          ref={inputRef}
           value={msg}
           onChangeText={setMsg}
           placeholder="メッセージを入力…"
