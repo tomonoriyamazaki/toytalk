@@ -65,6 +65,32 @@ export const handler = async (event) => {
       return response(200, { character_id, message: "Character created" });
     }
 
+    // ---- PUT /characters/{character_id} ---- キャラクター更新
+    if (method === "PUT" && path.startsWith("/characters/")) {
+      const character_id = decodeURIComponent(path.split("/")[2]);
+      const body = JSON.parse(event.body ?? "{}");
+      const { name, description, personality_prompt, voice_id } = body;
+
+      // name / description は DynamoDB 予約語なので ExpressionAttributeNames でエスケープ
+      const updates = [];
+      const vals = {};
+      const names = {};
+      if (name              !== undefined) { updates.push("#nm = :n");  names["#nm"] = "name";        vals[":n"] = name; }
+      if (description       !== undefined) { updates.push("#ds = :d");  names["#ds"] = "description"; vals[":d"] = description; }
+      if (personality_prompt !== undefined) { updates.push("personality_prompt = :p");                 vals[":p"] = personality_prompt; }
+      if (voice_id          !== undefined) { updates.push("voice_id = :v");                            vals[":v"] = voice_id; }
+      if (updates.length === 0) return response(400, { error: "No fields to update" });
+
+      await ddb.send(new UpdateCommand({
+        TableName: CHARACTERS_TABLE,
+        Key: { character_id },
+        UpdateExpression: "SET " + updates.join(", "),
+        ExpressionAttributeNames: Object.keys(names).length ? names : undefined,
+        ExpressionAttributeValues: vals,
+      }));
+      return response(200, { character_id, message: "Character updated" });
+    }
+
     // ---- DELETE /characters/{character_id} ---- キャラクター削除（自分のキャラのみ）
     if (method === "DELETE" && path.startsWith("/characters/")) {
       const character_id = decodeURIComponent(path.split("/")[2]);
