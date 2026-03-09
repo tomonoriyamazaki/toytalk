@@ -903,6 +903,7 @@ export default function Chat() {
     <SafeAreaView style={s.root}>
       {/* ヘッダー */}
       <View style={s.header}>
+        <View style={{ flex: 1 }} />
         <TouchableOpacity
           ref={pillRef}
           style={s.modelPill}
@@ -915,20 +916,6 @@ export default function Chat() {
           }}
         >
           <Text style={s.modelPillText}>{selectedCharacter.name}</Text>
-        </TouchableOpacity>
-        <View style={{ flex: 1 }} />
-        <TouchableOpacity
-          onPress={() => setDebugTime(!debugTime)}
-          style={{
-            paddingHorizontal: 10,
-            paddingVertical: 6,
-            borderRadius: 12,
-            backgroundColor: "rgba(0,0,0,0.06)",
-          }}
-        >
-          <Text style={{ fontSize: 14, fontWeight: "600", color: debugTime ? "#b00" : "#333" }}>
-            {debugTime ? "Debug:ON" : "Debug:OFF"}
-          </Text>
         </TouchableOpacity>
       </View>
 
@@ -954,7 +941,9 @@ export default function Chat() {
             >
               <Text style={s.dropdownHeader}>キャラクター</Text>
               {(["system", "custom"] as const).map((group) => {
-                const filtered = characters.filter((c) => group === "system" ? c.owner_id === "system" : c.owner_id !== "system");
+                const filtered = characters
+                  .filter((c) => group === "system" ? c.owner_id === "system" : c.owner_id !== "system")
+                  .sort((a, b) => a.character_id === "default" ? -1 : b.character_id === "default" ? 1 : 0);
                 if (filtered.length === 0) return null;
                 return (
                   <View key={group}>
