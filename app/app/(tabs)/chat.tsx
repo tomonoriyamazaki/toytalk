@@ -170,6 +170,7 @@ export default function Chat() {
   const lastSentRef = useRef<string>("");
   const autoSendTimerRef = useRef<NodeJS.Timeout | null>(null);
   const sendingRef = useRef(false);
+  const textSentRef = useRef(false); // テキスト送信時はSTT自動再起動をスキップ
   const sttDetectAtRef = useRef<number | null>(null);
   const lastActivityAtRef = useRef<number>(0);
   const inactivityTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -690,6 +691,11 @@ export default function Chat() {
             console.log("⏸️ sending in progress, skip auto-restart");
             return;
           }
+          if (textSentRef.current) {
+            console.log("⏸️ text sent, skip auto-restart STT");
+            textSentRef.current = false;
+            return;
+          }
 
           if (sttMode === "soniox") {
             startSonioxSTT();
@@ -752,6 +758,11 @@ export default function Chat() {
     if (DEBUG) setLog((L) => [...L, `→ POST ${t}`]);
     if (DEBUG_TIME) sendStartAtRef.current = Date.now();
     setMsg("");
+    if (textArg === undefined) {
+      setLog((L) => [...L, JSON.stringify({ type: "user", text: t })]);
+      textSentRef.current = true;
+      if (isListening) stopSTT();
+    }
 
     try {
       const xhr = new XMLHttpRequest();
