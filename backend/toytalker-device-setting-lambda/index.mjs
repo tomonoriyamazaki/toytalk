@@ -2,14 +2,15 @@
 // Handler: index.handler
 // Env: なし（DynamoDBはIAMロールで接続）
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, ScanCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
 
 const client = new DynamoDBClient({ region: "ap-northeast-1" });
 const ddb = DynamoDBDocumentClient.from(client);
 
 // ---- テーブル定義 ----
-const DEVICES_TABLE = "toytalker-devices";
-const VOICES_TABLE  = "toytalker-voices";
+const DEVICES_TABLE    = "toytalker-devices";
+const VOICES_TABLE     = "toytalker-voices";
+const CHARACTERS_TABLE = "toytalker-characters";
 
 const response = (statusCode, body) => ({
   statusCode,
@@ -31,6 +32,56 @@ export const handler = async (event) => {
       return response(200, { voices: result.Items ?? [] });
     }
 
+    // ---- GET /characters ---- キャラクター一覧取得（system + 自分のキャラ）
+    if (method === "GET" && path === "/characters") {
+      const userId = event.queryStringParameters?.owner_id ?? "user_123";
+      const result = await ddb.send(new ScanCommand({
+        TableName: CHARACTERS_TABLE,
+        FilterExpression: "owner_id = :system OR owner_id = :userId",
+        ExpressionAttributeValues: { ":system": "system", ":userId": userId },
+      }));
+      return response(200, { characters: result.Items ?? [] });
+    }
+
+    // ---- POST /characters ---- キャラクター作成
+    if (method === "POST" && path === "/characters") {
+      const body = JSON.parse(event.body ?? "{}");
+      const { name, description = "", personality_prompt = "", voice_id = "elevenlabs_sameno", owner_id = "user_123" } = body;
+      if (!name) return response(400, { error: "name is required" });
+
+      const character_id = `${owner_id}_${Date.now()}`;
+      await ddb.send(new PutCommand({
+        TableName: CHARACTERS_TABLE,
+        Item: {
+          character_id,
+          owner_id,
+          name,
+          description,
+          personality_prompt,
+          voice_id,
+          created_at: new Date().toISOString(),
+        },
+      }));
+      return response(200, { character_id, message: "Character created" });
+    }
+
+    // ---- DELETE /characters/{character_id} ---- キャラクター削除（自分のキャラのみ）
+    if (method === "DELETE" && path.startsWith("/characters/")) {
+      const character_id = decodeURIComponent(path.split("/")[2]);
+      const existing = await ddb.send(new GetCommand({
+        TableName: CHARACTERS_TABLE,
+        Key: { character_id },
+      }));
+      if (!existing.Item) return response(404, { error: "Character not found" });
+      if (existing.Item.owner_id === "system") return response(403, { error: "Cannot delete system character" });
+
+      await ddb.send(new DeleteCommand({
+        TableName: CHARACTERS_TABLE,
+        Key: { character_id },
+      }));
+      return response(200, { message: "Character deleted" });
+    }
+
     // ---- POST /devices ---- デバイス登録
     if (method === "POST" && path === "/devices") {
       const body      = JSON.parse(event.body ?? "{}");
@@ -44,7 +95,6 @@ export const handler = async (event) => {
           device_id,
           owner_id,
           character_id: "default",
-          voice_id: null,
           created_at: now,
           last_seen: now,
         },
@@ -78,23 +128,23 @@ export const handler = async (event) => {
       return response(200, result.Item);
     }
 
-    // ---- PUT /devices/{device_id} ---- ボイス設定更新
+    // ---- PUT /devices/{device_id} ---- キャラクター設定更新
     if (method === "PUT" && path.startsWith("/devices/")) {
       const device_id = decodeURIComponent(path.split("/")[2]);
       const body      = JSON.parse(event.body ?? "{}");
-      const { voice_id } = body;
-      if (!voice_id) return response(400, { error: "voice_id is required" });
+      const { character_id } = body;
+      if (!character_id) return response(400, { error: "character_id is required" });
 
       await ddb.send(new UpdateCommand({
         TableName: DEVICES_TABLE,
         Key: { device_id },
-        UpdateExpression: "SET voice_id = :v, last_seen = :t",
+        UpdateExpression: "SET character_id = :c, last_seen = :t",
         ExpressionAttributeValues: {
-          ":v": voice_id,
+          ":c": character_id,
           ":t": new Date().toISOString(),
         },
       }));
-      return response(200, { device_id, voice_id, message: "Device updated" });
+      return response(200, { device_id, character_id, message: "Device updated" });
     }
 
     return response(404, { error: "Not found" });

@@ -8,8 +8,9 @@
 
   const ddbClient = new DynamoDBClient({ region: "ap-northeast-1" });
   const ddb = DynamoDBDocumentClient.from(ddbClient);
-  const DEVICES_TABLE = "toytalker-devices";
-  const VOICES_TABLE  = "toytalker-voices";
+  const DEVICES_TABLE    = "toytalker-devices";
+  const VOICES_TABLE     = "toytalker-voices";
+  const CHARACTERS_TABLE = "toytalker-characters";
 
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -288,14 +289,34 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     return pcmBuffer;
   }
 
-  // DynamoDBからdevice_idに紐づくvoice設定を解決
-  async function resolveVoiceFromDynamo(deviceId) {
+  // DynamoDBからdevice_idに紐づくキャラクター＆ボイス設定を解決
+  // 解決チェーン: device → character(voice_id + personality_prompt) → voice(provider + vendor_id)
+  async function resolveCharacterFromDynamo(deviceId) {
     try {
       const deviceRes = await ddb.send(new GetCommand({
         TableName: DEVICES_TABLE,
         Key: { device_id: deviceId },
       }));
-      const voiceId = deviceRes.Item?.voice_id;
+      const device = deviceRes.Item;
+      if (!device) return null;
+
+      let voiceId = null;
+      let personalityPrompt = null;
+
+      // character_id があればキャラクターテーブルを参照
+      if (device.character_id && device.character_id !== "default") {
+        const charRes = await ddb.send(new GetCommand({
+          TableName: CHARACTERS_TABLE,
+          Key: { character_id: device.character_id },
+        }));
+        if (charRes.Item) {
+          voiceId = charRes.Item.voice_id ?? null;
+          personalityPrompt = charRes.Item.personality_prompt || null;
+        }
+      }
+
+      // character_id が未設定またはキャラに voice_id がなければ device.voice_id にフォールバック（後方互換）
+      if (!voiceId) voiceId = device.voice_id ?? null;
       if (!voiceId) return null;
 
       const voiceRes = await ddb.send(new GetCommand({
@@ -304,9 +325,13 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       }));
       if (!voiceRes.Item) return null;
 
-      return { provider: voiceRes.Item.provider, vendorId: voiceRes.Item.vendor_id };
+      return {
+        provider: voiceRes.Item.provider,
+        vendorId: voiceRes.Item.vendor_id,
+        personalityPrompt,
+      };
     } catch (e) {
-      console.error("[DynamoDB] resolveVoiceFromDynamo error:", e);
+      console.error("[DynamoDB] resolveCharacterFromDynamo error:", e);
       return null;
     }
   }
@@ -329,18 +354,20 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       return undefined;
     }
 
-    // device_idがあればDynamoDBからボイス設定を取得、なければbodyの値を使う
+    // device_idがあればDynamoDBからキャラクター＆ボイス設定を取得、なければbodyの値を使う
     let modelKey = normalizeModelKey(body.model) ?? MODEL_DEFAULT;
     let voice    = body.voice ?? VOICE_DEFAULT;
+    let personalityPrompt = null;
 
     if (deviceId) {
-      const voiceConfig = await resolveVoiceFromDynamo(deviceId);
-      if (voiceConfig) {
-        modelKey = normalizeModelKey(voiceConfig.provider) ?? modelKey;
-        voice    = voiceConfig.vendorId ?? voice;
-        console.log(`[DynamoDB] device=${deviceId}, provider=${voiceConfig.provider}, vendorId=${voiceConfig.vendorId}`);
+      const charConfig = await resolveCharacterFromDynamo(deviceId);
+      if (charConfig) {
+        modelKey = normalizeModelKey(charConfig.provider) ?? modelKey;
+        voice    = charConfig.vendorId ?? voice;
+        personalityPrompt = charConfig.personalityPrompt;
+        console.log(`[DynamoDB] device=${deviceId}, provider=${charConfig.provider}, vendorId=${charConfig.vendorId}, hasPersonality=${!!personalityPrompt}`);
       } else {
-        console.log(`[DynamoDB] device=${deviceId} not found or no voice set, using defaults`);
+        console.log(`[DynamoDB] device=${deviceId} not found or no character set, using defaults`);
       }
     }
 
@@ -362,10 +389,11 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       sendMeta(res, "mark", { k: "llm_start", t: Date.now() });
     }
 
-    // システムプロンプトを追加（会話履歴がある場合は挨拶を省略）
+    // システムプロンプトを追加（キャラクターの個性 + 共通指示）
+    const basePrompt = "あなたは子供向けの友好的な音声アシスタントです。簡潔に答えて、自然に会話を続けてください。漢字は最小限にして、ひらがな多めで答えてください。";
     const systemPrompt = {
       role: "system",
-      content: "あなたは子供向けの友好的な音声アシスタントです。簡潔に答えて、自然に会話を続けてください。漢字は最小限にして、ひらがな多めで答えてください。"
+      content: personalityPrompt ? `${personalityPrompt}\n\n${basePrompt}` : basePrompt,
     };
     const messagesWithSystem = [systemPrompt, ...messages];
 

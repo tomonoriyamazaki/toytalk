@@ -7,7 +7,7 @@ import {
   StyleSheet,
   TouchableOpacity,
   TextInput,
-  SectionList,
+  FlatList,
   Alert,
   ActivityIndicator,
   Platform,
@@ -24,41 +24,42 @@ const CHAR_COMMAND_UUID  = "12345678-1234-1234-1234-123456789ab3";
 const CHAR_STATUS_UUID   = "12345678-1234-1234-1234-123456789ab4";
 const CHAR_MAC_UUID      = "12345678-1234-1234-1234-123456789ab5";
 
-const DEVICE_SETTING_URL  = "https://7k6nkpy3tf2drljy77pnouohjm0buoux.lambda-url.ap-northeast-1.on.aws";
-const DEFAULT_VOICE_ID    = "elevenlabs_sameno";
-const PROVIDER_ORDER      = ["OpenAI", "Google", "Gemini", "ElevenLabs", "FishAudio"];
+const DEVICE_SETTING_URL   = "https://7k6nkpy3tf2drljy77pnouohjm0buoux.lambda-url.ap-northeast-1.on.aws";
+const DEFAULT_CHARACTER_ID = "default";
 
 const bleManager = new BleManager();
 
 type ConnectionStatus = "disconnected" | "scanning" | "connecting" | "connected" | "configuring";
-type Screen = "home" | "wifi-setup" | "device-settings" | "voice-select";
+type Screen = "home" | "wifi-setup" | "device-settings" | "character-select";
 
-type VoiceItem = {
+type CharacterItem = {
+  character_id: string;
+  name: string;
+  description: string;
+  owner_id: string;
   voice_id: string;
-  label: string;
-  provider: string;
-  vendor_id: string;
+  personality_prompt?: string;
 };
 
 type RegisteredDevice = {
   device_id: string;
-  voice_id: string | null;
+  character_id: string | null;
   owner_id: string;
 };
 
 export default function Toy() {
-  const [status, setStatus]                     = useState<ConnectionStatus>("disconnected");
-  const [bleDevices, setBleDevices]             = useState<Device[]>([]);
-  const [connectedDevice, setConnectedDevice]   = useState<Device | null>(null);
-  const [ssid, setSsid]                         = useState("");
-  const [password, setPassword]                 = useState("");
-  const [statusMessage, setStatusMessage]       = useState("");
-  const [screen, setScreen]                     = useState<Screen>("home");
-  const [deviceId, setDeviceId]                 = useState<string | null>(null);
-  const [registeredDevice, setRegisteredDevice] = useState<RegisteredDevice | null>(null);
-  const [voices, setVoices]                     = useState<VoiceItem[]>([]);
-  const [voicesLoading, setVoicesLoading]       = useState(false);
-  const [updatingVoice, setUpdatingVoice]       = useState(false);
+  const [status, setStatus]                         = useState<ConnectionStatus>("disconnected");
+  const [bleDevices, setBleDevices]                 = useState<Device[]>([]);
+  const [connectedDevice, setConnectedDevice]       = useState<Device | null>(null);
+  const [ssid, setSsid]                             = useState("");
+  const [password, setPassword]                     = useState("");
+  const [statusMessage, setStatusMessage]           = useState("");
+  const [screen, setScreen]                         = useState<Screen>("home");
+  const [deviceId, setDeviceId]                     = useState<string | null>(null);
+  const [registeredDevice, setRegisteredDevice]     = useState<RegisteredDevice | null>(null);
+  const [characters, setCharacters]                 = useState<CharacterItem[]>([]);
+  const [charactersLoading, setCharactersLoading]   = useState(false);
+  const [updatingCharacter, setUpdatingCharacter]   = useState(false);
 
   useEffect(() => {
     if (Platform.OS === "android") {
@@ -242,58 +243,59 @@ export default function Toy() {
     setScreen("device-settings");
   };
 
-  const openVoiceSelect = async () => {
-    setVoicesLoading(true);
-    setScreen("voice-select");
+  const openCharacterSelect = async () => {
+    setCharactersLoading(true);
+    setScreen("character-select");
     try {
-      const res = await fetch(`${DEVICE_SETTING_URL}/voices`);
+      const res = await fetch(`${DEVICE_SETTING_URL}/characters`);
       const data = await res.json();
-      setVoices(data.voices ?? []);
+      setCharacters(data.characters ?? []);
     } catch (e: any) {
-      Alert.alert("エラー", "ボイス一覧の取得に失敗しました");
+      Alert.alert("エラー", "キャラクター一覧の取得に失敗しました");
     } finally {
-      setVoicesLoading(false);
+      setCharactersLoading(false);
     }
   };
 
-  const selectVoice = async (voiceId: string) => {
+  const selectCharacter = async (characterId: string) => {
     if (!deviceId) return;
-    setUpdatingVoice(true);
+    setUpdatingCharacter(true);
     try {
       const res = await fetch(`${DEVICE_SETTING_URL}/devices/${encodeURIComponent(deviceId)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ voice_id: voiceId }),
+        body: JSON.stringify({ character_id: characterId }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setRegisteredDevice((prev) => {
-        const updated = prev ? { ...prev, voice_id: voiceId } : prev;
+        const updated = prev ? { ...prev, character_id: characterId } : prev;
         if (updated) AsyncStorage.setItem("registeredDevice", JSON.stringify(updated));
         return updated;
       });
       setScreen("device-settings");
     } catch (e: any) {
-      Alert.alert("エラー", "ボイスの更新に失敗しました");
+      Alert.alert("エラー", "キャラクターの更新に失敗しました");
     } finally {
-      setUpdatingVoice(false);
+      setUpdatingCharacter(false);
     }
   };
 
-  const currentVoiceLabel = () => {
-    if (!registeredDevice?.voice_id) return "未設定";
-    const v = voices.find((v) => v.voice_id === registeredDevice.voice_id);
-    return v ? `${v.label} (${v.provider})` : registeredDevice.voice_id;
+  const currentCharacterLabel = () => {
+    if (!registeredDevice?.character_id || registeredDevice.character_id === "default") return "デフォルト";
+    const c = characters.find((c) => c.character_id === registeredDevice.character_id);
+    return c ? c.name : registeredDevice.character_id;
   };
 
-  // ---- ボイス選択画面 ----
-  if (screen === "voice-select") {
-    const currentId = registeredDevice?.voice_id ?? DEFAULT_VOICE_ID;
-    const sections = PROVIDER_ORDER
-      .map((provider) => ({
-        title: provider,
-        data: voices.filter((v) => v.provider === provider),
-      }))
-      .filter((s) => s.data.length > 0);
+  // ---- キャラクター選択画面 ----
+  if (screen === "character-select") {
+    const currentId = registeredDevice?.character_id ?? DEFAULT_CHARACTER_ID;
+    const systemChars = characters.filter((c) => c.owner_id === "system");
+    const userChars   = characters.filter((c) => c.owner_id !== "system");
+
+    const sections = [
+      { title: "システム", data: systemChars },
+      { title: "カスタム", data: userChars },
+    ].filter((s) => s.data.length > 0);
 
     return (
       <SafeAreaView style={s.root}>
@@ -301,34 +303,47 @@ export default function Toy() {
           <TouchableOpacity onPress={() => setScreen("device-settings")}>
             <Text style={s.back}>← 戻る</Text>
           </TouchableOpacity>
-          <Text style={s.headerTitle}>ボイス選択</Text>
+          <Text style={s.headerTitle}>キャラクター選択</Text>
         </View>
-        {voicesLoading || updatingVoice ? (
+        {charactersLoading || updatingCharacter ? (
           <View style={s.center}>
             <ActivityIndicator size="large" color="#007AFF" />
           </View>
         ) : (
-          <SectionList
-            sections={sections}
-            keyExtractor={(item) => item.voice_id}
+          <FlatList
+            data={characters}
+            keyExtractor={(item) => item.character_id}
             contentContainerStyle={{ padding: 16, gap: 8 }}
-            renderSectionHeader={({ section }) => (
-              <Text style={s.sectionHeader}>{section.title}</Text>
-            )}
-            renderItem={({ item }) => {
-              const selected = item.voice_id === currentId;
-              return (
-                <TouchableOpacity
-                  style={[s.voiceItem, selected && s.voiceItemSelected]}
-                  onPress={() => selectVoice(item.voice_id)}
-                >
-                  <View style={s.voiceRow}>
-                    <View style={[s.radio, selected && s.radioSelected]} />
-                    <Text style={[s.voiceLabel, selected && s.voiceLabelSelected]}>{item.label}</Text>
+            ListHeaderComponent={
+              <>
+                {sections.map((section) => (
+                  <View key={section.title}>
+                    <Text style={s.sectionHeader}>{section.title}</Text>
+                    {section.data.map((item) => {
+                      const selected = item.character_id === currentId;
+                      return (
+                        <TouchableOpacity
+                          key={item.character_id}
+                          style={[s.characterItem, selected && s.characterItemSelected]}
+                          onPress={() => selectCharacter(item.character_id)}
+                        >
+                          <View style={s.characterRow}>
+                            <View style={[s.radio, selected && s.radioSelected]} />
+                            <View style={{ flex: 1 }}>
+                              <Text style={[s.characterLabel, selected && s.characterLabelSelected]}>{item.name}</Text>
+                              {item.description ? (
+                                <Text style={s.characterDesc}>{item.description}</Text>
+                              ) : null}
+                            </View>
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
                   </View>
-                </TouchableOpacity>
-              );
-            }}
+                ))}
+              </>
+            }
+            renderItem={() => null}
           />
         )}
       </SafeAreaView>
@@ -347,10 +362,10 @@ export default function Toy() {
         </View>
         <View style={s.wrap}>
           <Text style={s.deviceIdText}>{deviceId}</Text>
-          <TouchableOpacity style={s.settingRow} onPress={openVoiceSelect}>
+          <TouchableOpacity style={s.settingRow} onPress={openCharacterSelect}>
             <View>
-              <Text style={s.settingLabel}>ボイス</Text>
-              <Text style={s.settingValue}>{currentVoiceLabel()}</Text>
+              <Text style={s.settingLabel}>キャラクター</Text>
+              <Text style={s.settingValue}>{currentCharacterLabel()}</Text>
             </View>
             <Text style={s.chevron}>›</Text>
           </TouchableOpacity>
@@ -488,7 +503,7 @@ export default function Toy() {
               <View>
                 <Text style={s.deviceName}>{registeredDevice.device_id}</Text>
                 <Text style={s.deviceSub}>
-                  ボイス: {registeredDevice.voice_id ?? "未設定"}
+                  キャラクター: {registeredDevice.character_id ?? "未設定"}
                 </Text>
               </View>
               <Text style={s.chevron}>›</Text>
@@ -501,44 +516,44 @@ export default function Toy() {
 }
 
 const s = StyleSheet.create({
-  root:               { flex: 1, backgroundColor: "#f5f5f5" },
-  wrap:               { padding: 20, gap: 16 },
-  title:              { fontSize: 24, fontWeight: "700", marginBottom: 8 },
-  subtitle:           { fontSize: 16, fontWeight: "600", marginBottom: 8, color: "#333" },
-  section:            { gap: 8 },
-  statusBox:          { backgroundColor: "#e3f2fd", padding: 12, borderRadius: 8 },
-  statusText:         { fontSize: 14, color: "#1976d2" },
-  button:             { backgroundColor: "#007AFF", padding: 16, borderRadius: 12, alignItems: "center" },
-  buttonDisabled:     { backgroundColor: "#999" },
-  buttonText:         { color: "#fff", fontSize: 16, fontWeight: "600" },
-  buttonSecondary:    { backgroundColor: "#fff", padding: 14, borderRadius: 12, alignItems: "center", borderWidth: 1, borderColor: "#ddd" },
-  buttonTextSecondary:{ color: "#666", fontSize: 16 },
-  deviceItem:         { backgroundColor: "#fff", padding: 16, borderRadius: 12, borderWidth: 1, borderColor: "#e0e0e0", flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  deviceName:         { fontSize: 15, fontWeight: "600" },
-  deviceSub:          { fontSize: 12, color: "#888", marginTop: 2 },
-  center:             { alignItems: "center", gap: 16, marginTop: 20 },
-  loadingText:        { fontSize: 16, color: "#666" },
-  form:               { gap: 12 },
-  label:              { fontSize: 14, fontWeight: "500", color: "#333" },
-  input:              { backgroundColor: "#fff", padding: 14, borderRadius: 8, borderWidth: 1, borderColor: "#ddd", fontSize: 16 },
-  chevron:            { fontSize: 20, color: "#999" },
+  root:                  { flex: 1, backgroundColor: "#f5f5f5" },
+  wrap:                  { padding: 20, gap: 16 },
+  title:                 { fontSize: 24, fontWeight: "700", marginBottom: 8 },
+  subtitle:              { fontSize: 16, fontWeight: "600", marginBottom: 8, color: "#333" },
+  section:               { gap: 8 },
+  statusBox:             { backgroundColor: "#e3f2fd", padding: 12, borderRadius: 8 },
+  statusText:            { fontSize: 14, color: "#1976d2" },
+  button:                { backgroundColor: "#007AFF", padding: 16, borderRadius: 12, alignItems: "center" },
+  buttonDisabled:        { backgroundColor: "#999" },
+  buttonText:            { color: "#fff", fontSize: 16, fontWeight: "600" },
+  buttonSecondary:       { backgroundColor: "#fff", padding: 14, borderRadius: 12, alignItems: "center", borderWidth: 1, borderColor: "#ddd" },
+  buttonTextSecondary:   { color: "#666", fontSize: 16 },
+  deviceItem:            { backgroundColor: "#fff", padding: 16, borderRadius: 12, borderWidth: 1, borderColor: "#e0e0e0", flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  deviceName:            { fontSize: 15, fontWeight: "600" },
+  deviceSub:             { fontSize: 12, color: "#888", marginTop: 2 },
+  center:                { alignItems: "center", gap: 16, marginTop: 20 },
+  loadingText:           { fontSize: 16, color: "#666" },
+  form:                  { gap: 12 },
+  label:                 { fontSize: 14, fontWeight: "500", color: "#333" },
+  input:                 { backgroundColor: "#fff", padding: 14, borderRadius: 8, borderWidth: 1, borderColor: "#ddd", fontSize: 16 },
+  chevron:               { fontSize: 20, color: "#999" },
   // ヘッダー
-  header:             { flexDirection: "row", alignItems: "center", padding: 16, gap: 12, backgroundColor: "#fff", borderBottomWidth: 1, borderBottomColor: "#e0e0e0" },
-  headerTitle:        { fontSize: 18, fontWeight: "600" },
-  back:               { fontSize: 16, color: "#007AFF" },
-  deviceIdText:       { fontSize: 12, color: "#999", marginBottom: 4 },
+  header:                { flexDirection: "row", alignItems: "center", padding: 16, gap: 12, backgroundColor: "#fff", borderBottomWidth: 1, borderBottomColor: "#e0e0e0" },
+  headerTitle:           { fontSize: 18, fontWeight: "600" },
+  back:                  { fontSize: 16, color: "#007AFF" },
+  deviceIdText:          { fontSize: 12, color: "#999", marginBottom: 4 },
   // デバイス設定画面
-  settingRow:         { backgroundColor: "#fff", padding: 16, borderRadius: 12, borderWidth: 1, borderColor: "#e0e0e0", flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  settingLabel:       { fontSize: 15, fontWeight: "600" },
-  settingValue:       { fontSize: 13, color: "#666", marginTop: 2 },
-  // ボイス選択画面
-  voiceItem:          { backgroundColor: "#fff", padding: 16, borderRadius: 12, borderWidth: 1, borderColor: "#e0e0e0" },
-  voiceItemSelected:  { borderColor: "#007AFF", backgroundColor: "#f0f7ff" },
-  voiceRow:           { flexDirection: "row", alignItems: "center", gap: 12 },
-  radio:              { width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: "#ccc" },
-  radioSelected:      { borderColor: "#007AFF", backgroundColor: "#007AFF" },
-  voiceLabel:         { fontSize: 15, fontWeight: "500" },
-  voiceLabelSelected: { color: "#007AFF", fontWeight: "600" },
-  voiceProvider:      { fontSize: 12, color: "#888", marginTop: 2 },
-  sectionHeader:      { fontSize: 13, fontWeight: "700", color: "#555", marginTop: 12, marginBottom: 6, textTransform: "uppercase" },
+  settingRow:            { backgroundColor: "#fff", padding: 16, borderRadius: 12, borderWidth: 1, borderColor: "#e0e0e0", flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  settingLabel:          { fontSize: 15, fontWeight: "600" },
+  settingValue:          { fontSize: 13, color: "#666", marginTop: 2 },
+  // キャラクター選択画面
+  characterItem:         { backgroundColor: "#fff", padding: 16, borderRadius: 12, borderWidth: 1, borderColor: "#e0e0e0", marginBottom: 8 },
+  characterItemSelected: { borderColor: "#007AFF", backgroundColor: "#f0f7ff" },
+  characterRow:          { flexDirection: "row", alignItems: "center", gap: 12 },
+  radio:                 { width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: "#ccc" },
+  radioSelected:         { borderColor: "#007AFF", backgroundColor: "#007AFF" },
+  characterLabel:        { fontSize: 15, fontWeight: "500" },
+  characterLabelSelected:{ color: "#007AFF", fontWeight: "600" },
+  characterDesc:         { fontSize: 12, color: "#888", marginTop: 2 },
+  sectionHeader:         { fontSize: 13, fontWeight: "700", color: "#555", marginTop: 12, marginBottom: 6, textTransform: "uppercase" },
 });
