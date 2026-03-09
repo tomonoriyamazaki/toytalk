@@ -123,18 +123,24 @@ export default function Chat() {
   type CharacterItem = { character_id: string; name: string; owner_id: string; };
   const [characters, setCharacters] = useState<CharacterItem[]>([]);
   const [selectedCharacter, setSelectedCharacter] = useState<CharacterItem>({ character_id: "default", name: "トイトーカー", owner_id: "system" });
+  const selectedCharacterRef = useRef<CharacterItem>({ character_id: "default", name: "トイトーカー", owner_id: "system" });
 
   const DEVICE_SETTING_URL = "https://7k6nkpy3tf2drljy77pnouohjm0buoux.lambda-url.ap-northeast-1.on.aws";
 
   // 起動時に保存済みキャラクターを復元
   useEffect(() => {
     AsyncStorage.getItem("selectedCharacter").then((val) => {
-      if (val) setSelectedCharacter(JSON.parse(val));
+      if (val) {
+        const c = JSON.parse(val);
+        setSelectedCharacter(c);
+        selectedCharacterRef.current = c;
+      }
     });
   }, []);
 
   const selectCharacter = (c: CharacterItem) => {
     setSelectedCharacter(c);
+    selectedCharacterRef.current = c;
     AsyncStorage.setItem("selectedCharacter", JSON.stringify(c));
     setMenuVisible(false);
     Keyboard.dismiss();
@@ -920,7 +926,7 @@ export default function Chat() {
       const historyMessages = recentTurns.map((t) => ({ role: t.role, content: t.text }));
 
       const payload = {
-        character_id: selectedCharacter.character_id,
+        character_id: selectedCharacterRef.current.character_id,
         messages: [...historyMessages, { role: "user", content: t }],
       };
       console.log("🚀 payload to Lambda:", JSON.stringify(payload, null, 2));
