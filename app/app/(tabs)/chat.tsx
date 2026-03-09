@@ -1105,7 +1105,7 @@ const s = StyleSheet.create({
     fontSize: 16,
   },
   header: {
-    height: 48,
+    height: 36,
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 12,
