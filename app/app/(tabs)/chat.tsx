@@ -954,8 +954,7 @@ export default function Chat() {
               <Text style={s.dropdownHeader}>キャラクター</Text>
               {(["system", "custom"] as const).map((group) => {
                 const filtered = characters
-                  .filter((c) => group === "system" ? c.owner_id === "system" : c.owner_id !== "system")
-                  .sort((a, b) => a.character_id === "default" ? -1 : b.character_id === "default" ? 1 : 0);
+                  .filter((c) => group === "system" ? c.owner_id === "system" : c.owner_id !== "system");
                 if (filtered.length === 0) return null;
                 return (
                   <View key={group}>
