@@ -482,19 +482,25 @@
           fmt = "wav";
         } else if (cfg.ttsVendor === "google") {
           const g = resolveGoogleTtsFromBody(body);
+          if (voice && voice !== VOICE_DEFAULT) g.voiceName = voice;
           const w = await ttsToBase64Google(t, g);
           b64 = w;
           fmt = "wav";
         } else if (cfg.ttsVendor === "gemini") {
           const g = resolveGeminiTtsFromBody(body, cfg);
+          if (voice && voice !== VOICE_DEFAULT) g.voiceName = voice;
           b64 = await ttsToBase64Gemini(t, g);
           fmt = "wav";
         } else if (cfg.ttsVendor === "elevenlabs") {
           const e = resolveElevenLabsTtsFromBody(body, cfg);
+          // DynamoDB解決済みのvoiceがあれば優先
+          if (voice && voice !== VOICE_DEFAULT) e.voiceId = voice;
           b64 = await ttsToBase64ElevenLabs(t, e);
           fmt = "wav";
         } else if (cfg.ttsVendor === "fishaudio") {
           const f = resolveFishAudioTtsFromBody(body);
+          // DynamoDB解決済みのvoiceがあれば優先
+          if (voice && voice !== VOICE_DEFAULT) f.referenceId = voice;
           b64 = await ttsToBase64FishAudio(t, f);
           fmt = "mp3";
         } else {
