@@ -13,7 +13,7 @@ import {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect, useRef, useState } from "react";
 
-type SettingsScreen = "main" | "stt-select" | "character-list" | "character-edit";
+type SettingsScreen = "main" | "stt-select" | "character-list" | "character-edit" | "version";
 
 type CharacterItem = {
   character_id: string;
@@ -183,6 +183,42 @@ export default function Settings() {
       setSaving(false);
     }
   };
+
+  // ---- バージョン情報画面 ----
+  if (screen === "version") {
+    return (
+      <SafeAreaView style={s.root}>
+        <View style={s.header}>
+          <TouchableOpacity onPress={() => setScreen("main")}>
+            <Text style={s.back}>← 戻る</Text>
+          </TouchableOpacity>
+          <Text style={s.headerTitle}>バージョン情報</Text>
+        </View>
+        <ScrollView contentContainerStyle={s.wrap}>
+          {[
+            { ver: "0.7.0", date: "20260309", desc: "キャラクターシステム追加" },
+            { ver: "0.6.0", date: "20260306", desc: "ボイス追加：ElevenLabs / Fish Audio（※デモ用）" },
+            { ver: "0.5.6", date: "20260210", desc: "おもちゃにWIFI設定機能追加" },
+            { ver: "0.5.5", date: "20251005", desc: "STT（音声認識）を選択可能にしてリアルタイム表示。スピードも改善" },
+            { ver: "0.4.2", date: "20250907", desc: "ボイス追加：Google TTS / Gemini Speech Generation" },
+            { ver: "0.3.0", date: "20250901", desc: "マイク機能追加" },
+            { ver: "0.2.0", date: "20250831", desc: "会話機能追加。マイクは利用不可" },
+            { ver: "0.1.0", date: "20250830", desc: "テストアプリ登録。ホーム/会話/設定画面のみ" },
+          ].map((v) => (
+            <View key={v.ver} style={s.versionRow}>
+              <View style={s.versionBadge}>
+                <Text style={s.versionBadgeText}>v{v.ver}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={s.versionDate}>{v.date}</Text>
+                <Text style={s.versionDesc}>{v.desc}</Text>
+              </View>
+            </View>
+          ))}
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
 
   // ---- STT 選択画面 ----
   if (screen === "stt-select") {
@@ -403,30 +439,22 @@ export default function Settings() {
   // ---- メイン設定画面 ----
   return (
     <SafeAreaView style={s.root}>
+      <View style={[s.header, { justifyContent: "space-between" }]}>
+        <Text style={s.pageTitle}>設定</Text>
+        <TouchableOpacity onPress={() => setScreen("version")}>
+          <Text style={s.versionChip}>Version</Text>
+        </TouchableOpacity>
+      </View>
       <ScrollView contentContainerStyle={s.wrap}>
-        <Text style={s.title}>設定</Text>
-
         <TouchableOpacity style={s.navRow} onPress={() => setScreen("stt-select")}>
           <Text style={s.navText}>音声認識</Text>
           <Text style={s.chevron}>›</Text>
         </TouchableOpacity>
 
-        <View style={{ height: 8 }} />
         <TouchableOpacity style={s.navRow} onPress={openCharacterList}>
           <Text style={s.navText}>キャラクター管理</Text>
           <Text style={s.chevron}>›</Text>
         </TouchableOpacity>
-
-        <View style={{ height: 32 }} />
-        <Text style={s.title}>バージョン</Text>
-        <Text style={s.item}>・ver0.7.0   20260309：キャラクターシステム追加</Text>
-        <Text style={s.item}>・ver0.6.0   20260306：ボイス追加：ElevenLabs / Fish Audio（※デモ用） </Text>
-        <Text style={s.item}>・ver0.5.6   20260210：おもちゃにWIFI設定機能追加</Text>
-        <Text style={s.item}>・ver0.5.5   20251005：STT（音声認識）を選択可能にしてリアルタイム表示。スピードも改善</Text>
-        <Text style={s.item}>・ver0.4.2   20250907：ボイス追加：Google TTS/Gemini Speech Generation</Text>
-        <Text style={s.item}>・ver0.3.0   20250901：マイク機能追加</Text>
-        <Text style={s.item}>・ver0.2.0   20250831：会話機能追加。マイクは利用不可</Text>
-        <Text style={s.item}>・ver0.1.0   20250830：テストアプリ登録。ホーム/会話/設定画面のみ</Text>
       </ScrollView>
     </SafeAreaView>
   );
@@ -435,8 +463,14 @@ export default function Settings() {
 const s = StyleSheet.create({
   root:                    { flex: 1, backgroundColor: "#fff" },
   wrap:                    { padding: 20, gap: 12 },
-  title:                   { fontSize: 20, fontWeight: "700" },
-  item:                    { fontSize: 16, color: "#444" },
+  pageTitle:               { fontSize: 20, fontWeight: "700" },
+  versionChip:             { fontSize: 13, color: "#007AFF", fontWeight: "600", borderWidth: 1, borderColor: "#007AFF", borderRadius: 12, paddingHorizontal: 10, paddingVertical: 3 },
+  // バージョン情報
+  versionRow:              { flexDirection: "row", alignItems: "flex-start", gap: 12, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#f0f0f0" },
+  versionBadge:            { backgroundColor: "#007AFF", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, minWidth: 56, alignItems: "center" },
+  versionBadgeText:        { color: "#fff", fontSize: 12, fontWeight: "700" },
+  versionDate:             { fontSize: 12, color: "#999" },
+  versionDesc:             { fontSize: 14, color: "#333", marginTop: 2 },
   // STT選択
   sttOption:               { backgroundColor: "#f9f9f9", padding: 16, borderRadius: 12, borderWidth: 1, borderColor: "#e0e0e0" },
   sttOptionSelected:       { borderColor: "#007AFF", backgroundColor: "#f0f7ff" },
