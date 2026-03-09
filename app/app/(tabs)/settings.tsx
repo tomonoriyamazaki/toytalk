@@ -231,7 +231,7 @@ export default function Settings() {
       {
         value: "local" as const,
         label: "ローカル STT",
-        description: "端末内で処理するオフライン音声認識。ネットワーク不要で動作します。",
+        description: "端末内で処理するオフライン音声認識で日本語のみ対応。ネットワーク不要で動作します。",
       },
     ];
 
