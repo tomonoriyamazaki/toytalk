@@ -3,22 +3,17 @@ import {
   Text,
   View,
   StyleSheet,
-  Pressable,
   Modal,
-  findNodeHandle,
-  UIManager,
   TouchableOpacity,
   TextInput,
   Alert,
   ActivityIndicator,
   ScrollView,
-  SectionList,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect, useRef, useState } from "react";
 
-type Pos = { x: number; y: number; w: number };
-type SettingsScreen = "main" | "character-list" | "character-edit";
+type SettingsScreen = "main" | "stt-select" | "character-list" | "character-edit";
 
 type CharacterItem = {
   character_id: string;
@@ -52,9 +47,6 @@ export default function Settings() {
 
   // STT設定
   const [sttMode, setSttMode] = useState<"local" | "soniox">("soniox");
-  const [modalVisible, setModalVisible] = useState(false);
-  const [dropdownPos, setDropdownPos] = useState<Pos | null>(null);
-  const selectorRef = useRef<any>(null);
 
   // キャラクター管理
   const [characters, setCharacters] = useState<CharacterItem[]>([]);
@@ -82,40 +74,10 @@ export default function Settings() {
     })();
   }, []);
 
-  // ---- STT ドロップダウン ----
-  const openDropdown = () => {
-    if (!selectorRef.current) { setDropdownPos(null); setModalVisible(true); return; }
-    const handle = findNodeHandle(selectorRef.current);
-    if (!handle) { setDropdownPos(null); setModalVisible(true); return; }
-    // @ts-ignore
-    const measure = (UIManager.measureInWindow ?? UIManager.measure).bind(UIManager);
-    measure(handle, (x: number, y: number, width: number, height: number, pageX?: number, pageY?: number) => {
-      const absX = typeof pageX === "number" ? pageX : x;
-      const absY = typeof pageY === "number" ? pageY : y;
-      setDropdownPos({ x: Number.isFinite(absX) ? absX : 24, y: Number.isFinite(absY) ? absY + height : 24, w: Number.isFinite(width) && width > 0 ? width : 200 });
-      setModalVisible(true);
-    });
-  };
-
   const handleSttChange = async (value: "local" | "soniox") => {
     setSttMode(value);
     await AsyncStorage.setItem("sttMode", value);
-    setModalVisible(false);
-  };
-
-  const renderDropdown = () => {
-    if (!modalVisible) return null;
-    const w = dropdownPos ? Math.max(140, Math.floor(dropdownPos.w * 0.5)) : 220;
-    return (
-      <Modal transparent visible animationType="fade">
-        <Pressable style={s.overlay} onPress={() => setModalVisible(false)}>
-          <View style={[s.dropdown, { top: dropdownPos?.y ?? 200, left: dropdownPos?.x ?? 24, width: w }]}>
-            <Pressable style={s.option} onPress={() => handleSttChange("soniox")}><Text style={s.optionText}>Soniox STT</Text></Pressable>
-            <Pressable style={s.option} onPress={() => handleSttChange("local")}><Text style={s.optionText}>ローカル STT</Text></Pressable>
-          </View>
-        </Pressable>
-      </Modal>
-    );
+    setScreen("main");
   };
 
   // ---- キャラクター一覧 ----
@@ -221,6 +183,53 @@ export default function Settings() {
       setSaving(false);
     }
   };
+
+  // ---- STT 選択画面 ----
+  if (screen === "stt-select") {
+    const STT_OPTIONS = [
+      {
+        value: "soniox" as const,
+        label: "Soniox STT",
+        description: "デフォルトで推奨。クラウドベースの高精度な音声認識で多言語に対応。高速なリアルタイム文字起こしができます。",
+      },
+      {
+        value: "local" as const,
+        label: "ローカル STT",
+        description: "端末内で処理するオフライン音声認識。ネットワーク不要で動作します。",
+      },
+    ];
+
+    return (
+      <SafeAreaView style={s.root}>
+        <View style={s.header}>
+          <TouchableOpacity onPress={() => setScreen("main")}>
+            <Text style={s.back}>← 戻る</Text>
+          </TouchableOpacity>
+          <Text style={s.headerTitle}>音声認識</Text>
+        </View>
+        <View style={s.wrap}>
+          {STT_OPTIONS.map((opt) => {
+            const selected = sttMode === opt.value;
+            return (
+              <TouchableOpacity
+                key={opt.value}
+                style={[s.sttOption, selected && s.sttOptionSelected]}
+                onPress={() => handleSttChange(opt.value)}
+              >
+                <View style={s.sttOptionRow}>
+                  <View style={[s.radio, selected && s.radioSelected]} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[s.sttLabel, selected && s.sttLabelSelected]}>{opt.label}</Text>
+                    <Text style={s.sttDesc}>{opt.description}</Text>
+                  </View>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   // ---- キャラクター編集画面 ----
   if (screen === "character-edit") {
@@ -397,11 +406,10 @@ export default function Settings() {
       <ScrollView contentContainerStyle={s.wrap}>
         <Text style={s.title}>設定</Text>
 
-        <Text style={s.item}>・音声認識</Text>
-        <Pressable ref={selectorRef} style={s.selector} onPress={openDropdown}>
-          <Text style={s.selectorText}>{sttMode === "local" ? "ローカル STT" : "Soniox STT"}</Text>
-        </Pressable>
-        {renderDropdown()}
+        <TouchableOpacity style={s.navRow} onPress={() => setScreen("stt-select")}>
+          <Text style={s.navText}>音声認識</Text>
+          <Text style={s.chevron}>›</Text>
+        </TouchableOpacity>
 
         <View style={{ height: 8 }} />
         <TouchableOpacity style={s.navRow} onPress={openCharacterList}>
@@ -429,12 +437,13 @@ const s = StyleSheet.create({
   wrap:                    { padding: 20, gap: 12 },
   title:                   { fontSize: 20, fontWeight: "700" },
   item:                    { fontSize: 16, color: "#444" },
-  selector:                { marginTop: 8, paddingVertical: 6, paddingHorizontal: 12, borderWidth: 1, borderColor: "#999", borderRadius: 6, backgroundColor: "#f9f9f9", width: "50%" },
-  selectorText:            { fontSize: 16 },
-  overlay:                 { flex: 1 },
-  dropdown:                { position: "absolute", backgroundColor: "#fff", borderWidth: 1, borderColor: "#ccc", borderRadius: 6, elevation: 3 },
-  option:                  { paddingVertical: 8, paddingHorizontal: 12 },
-  optionText:              { fontSize: 16 },
+  // STT選択
+  sttOption:               { backgroundColor: "#f9f9f9", padding: 16, borderRadius: 12, borderWidth: 1, borderColor: "#e0e0e0" },
+  sttOptionSelected:       { borderColor: "#007AFF", backgroundColor: "#f0f7ff" },
+  sttOptionRow:            { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  sttLabel:                { fontSize: 16, fontWeight: "600", color: "#333" },
+  sttLabelSelected:        { color: "#007AFF" },
+  sttDesc:                 { fontSize: 13, color: "#888", marginTop: 4 },
   // ナビゲーション
   navRow:                  { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 12, paddingHorizontal: 16, backgroundColor: "#f9f9f9", borderRadius: 8, borderWidth: 1, borderColor: "#e0e0e0" },
   navText:                 { fontSize: 16, color: "#333" },
