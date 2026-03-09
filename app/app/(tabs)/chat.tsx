@@ -121,6 +121,19 @@ export default function Chat() {
 
   const DEVICE_SETTING_URL = "https://7k6nkpy3tf2drljy77pnouohjm0buoux.lambda-url.ap-northeast-1.on.aws";
 
+  // 起動時に保存済みキャラクターを復元
+  useEffect(() => {
+    AsyncStorage.getItem("selectedCharacter").then((val) => {
+      if (val) setSelectedCharacter(JSON.parse(val));
+    });
+  }, []);
+
+  const selectCharacter = (c: CharacterItem) => {
+    setSelectedCharacter(c);
+    AsyncStorage.setItem("selectedCharacter", JSON.stringify(c));
+    setMenuVisible(false);
+  };
+
   useFocusEffect(
     useCallback(() => {
       (async () => {
@@ -939,24 +952,28 @@ export default function Chat() {
                 },
               ]}
             >
-              {characters.map((c) => (
-                <TouchableOpacity
-                  key={c.character_id}
-                  style={[s.dropdownItem, selectedCharacter.character_id === c.character_id && s.dropdownItemActive]}
-                  onPress={() => {
-                    setSelectedCharacter(c);
-                    setMenuVisible(false);
-                  }}
-                >
-                  <View style={s.dropdownRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={s.dropdownTitle}>{c.name}</Text>
-                      <Text style={s.dropdownSub}>{c.owner_id === "system" ? "システム" : "カスタム"}</Text>
-                    </View>
-                    {selectedCharacter.character_id === c.character_id && <Text style={s.dropdownCheck}>✓</Text>}
+              <Text style={s.dropdownHeader}>キャラクター</Text>
+              {(["system", "custom"] as const).map((group) => {
+                const filtered = characters.filter((c) => group === "system" ? c.owner_id === "system" : c.owner_id !== "system");
+                if (filtered.length === 0) return null;
+                return (
+                  <View key={group}>
+                    <Text style={s.dropdownSection}>{group === "system" ? "システム" : "カスタム"}</Text>
+                    {filtered.map((c) => (
+                      <TouchableOpacity
+                        key={c.character_id}
+                        style={[s.dropdownItem, selectedCharacter.character_id === c.character_id && s.dropdownItemActive]}
+                        onPress={() => selectCharacter(c)}
+                      >
+                        <View style={s.dropdownRow}>
+                          <Text style={s.dropdownTitle}>{c.name}</Text>
+                          {selectedCharacter.character_id === c.character_id && <Text style={s.dropdownCheck}>✓</Text>}
+                        </View>
+                      </TouchableOpacity>
+                    ))}
                   </View>
-                </TouchableOpacity>
-              ))}
+                );
+              })}
             </View>
           )}
         </View>
@@ -1180,6 +1197,27 @@ const s = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+  },
+  dropdownHeader: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 4,
+    textTransform: "uppercase",
+  },
+  dropdownSection: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 2,
+    textTransform: "uppercase",
+    borderTopWidth: 1,
+    borderTopColor: "#e0e0e0",
+    marginTop: 4,
   },
   dropdownTitle: {
     fontSize: 16,
