@@ -187,9 +187,9 @@ export const handler = async (event) => {
         KeyConditionExpression: "#pk = :pk",
         ExpressionAttributeNames: { "#pk": "owner_id#device_id" },
         ExpressionAttributeValues: { ":pk": pk },
-        ScanIndexForward: false, // 新しい順
+        ScanIndexForward: true, // 古い順→最初のユーザーメッセージをタイトルに使う
       }));
-      // session_id ごとに最初のユーザーメッセージだけ返す
+      // session_id ごとに最初のユーザーメッセージをタイトルとして取得し、最終活動時刻でソート
       const sessionMap = new Map();
       for (const item of (result.Items ?? [])) {
         const sid = item.session_id;
@@ -198,10 +198,20 @@ export const handler = async (event) => {
             session_id: sid,
             first_message: item.role === "user" ? item.content : "",
             timestamp: item.timestamp,
+            last_timestamp: item.timestamp,
           });
+        } else {
+          const entry = sessionMap.get(sid);
+          if (!entry.first_message && item.role === "user") {
+            entry.first_message = item.content;
+          }
+          entry.last_timestamp = item.timestamp;
         }
       }
-      return response(200, { sessions: Array.from(sessionMap.values()) });
+      // 最終活動時刻が新しい順にソート
+      const sessions = Array.from(sessionMap.values())
+        .sort((a, b) => b.last_timestamp.localeCompare(a.last_timestamp));
+      return response(200, { sessions });
     }
 
     // ---- GET /logs/messages ---- セッション内メッセージ取得
