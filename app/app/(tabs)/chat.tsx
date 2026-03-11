@@ -208,6 +208,7 @@ export default function Chat() {
       const messages: any[] = data.messages ?? [];
       const newLog: string[] = [];
       const newHistory: Turn[] = [];
+      let lastCharacterId: string | null = null;
       for (const m of messages) {
         if (m.role === "user") {
           newLog.push(JSON.stringify({ type: "user", text: m.content }));
@@ -215,12 +216,18 @@ export default function Chat() {
         } else if (m.role === "assistant") {
           newLog.push(m.content);
           newHistory.push({ role: "assistant", text: m.content, ts: new Date(m.timestamp).getTime() });
+          if (m.character_id) lastCharacterId = m.character_id;
         }
       }
       setLog(newLog);
       historyRef.current = newHistory;
       setSessionId(sid);
       sessionIdRef.current = sid;
+      // セッション内で最後に使ったキャラクターに切り替え
+      if (lastCharacterId) {
+        const found = characters.find(c => c.character_id === lastCharacterId);
+        if (found) selectCharacter(found);
+      }
     } catch {}
   };
 
