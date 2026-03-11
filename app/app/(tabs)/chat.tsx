@@ -15,6 +15,7 @@ import {
   Modal,
   Dimensions,
   Pressable,
+  Animated,
 } from "react-native";
 import * as FileSystem from "expo-file-system";
 import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from "expo-av";
@@ -68,7 +69,16 @@ export default function Chat() {
   // 時間計測
   const [msg, setMsg] = useState("");
   const [log, setLog] = useState<string[]>([]);
+  const [sessionId, setSessionId] = useState(() => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  const sessionIdRef = useRef(sessionId);
+  useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
   const readyRef = useRef(false);
+
+  // ドロワー
+  type SessionItem = { session_id: string; first_message: string; timestamp: string };
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerAnim = useRef(new Animated.Value(0)).current;
+  const [sessions, setSessions] = useState<SessionItem[]>([]);
   const scrollRef = useRef<ScrollView>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
 
@@ -119,6 +129,7 @@ export default function Chat() {
   const inputRef = useRef<import("react-native").TextInput>(null);
   const { width: SCREEN_W } = Dimensions.get("window");
   const MENU_W = 240;
+  const DRAWER_W = Math.round(SCREEN_W * 0.75);
 
   type CharacterItem = { character_id: string; name: string; owner_id: string; };
   const [characters, setCharacters] = useState<CharacterItem[]>([]);
@@ -157,6 +168,61 @@ export default function Chat() {
       })();
     }, [])
   );
+
+  // ドロワー操作
+  const openDrawer = () => {
+    setDrawerOpen(true);
+    drawerAnim.setValue(-DRAWER_W);
+    Animated.timing(drawerAnim, { toValue: 0, duration: 260, useNativeDriver: true }).start();
+    fetchSessions();
+  };
+
+  const closeDrawer = () => {
+    Animated.timing(drawerAnim, { toValue: -DRAWER_W, duration: 220, useNativeDriver: true }).start(() => {
+      setDrawerOpen(false);
+    });
+  };
+
+  const fetchSessions = async () => {
+    try {
+      const res = await fetch(`${DEVICE_SETTING_URL}/logs/sessions?owner_id=user_123&device_id=app`);
+      const data = await res.json();
+      setSessions(data.sessions ?? []);
+    } catch {}
+  };
+
+  const startNewChat = () => {
+    closeDrawer();
+    setLog([]);
+    historyRef.current = [];
+    const newId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setSessionId(newId);
+    sessionIdRef.current = newId;
+  };
+
+  const loadSession = async (sid: string) => {
+    closeDrawer();
+    try {
+      const res = await fetch(`${DEVICE_SETTING_URL}/logs/messages?owner_id=user_123&device_id=app&session_id=${sid}`);
+      const data = await res.json();
+      const messages: any[] = data.messages ?? [];
+      const newLog: string[] = [];
+      const newHistory: Turn[] = [];
+      for (const m of messages) {
+        if (m.role === "user") {
+          newLog.push(JSON.stringify({ type: "user", text: m.content }));
+          newHistory.push({ role: "user", text: m.content, ts: new Date(m.timestamp).getTime() });
+        } else if (m.role === "assistant") {
+          newLog.push(m.content);
+          newHistory.push({ role: "assistant", text: m.content, ts: new Date(m.timestamp).getTime() });
+        }
+      }
+      setLog(newLog);
+      historyRef.current = newHistory;
+      setSessionId(sid);
+      sessionIdRef.current = sid;
+    } catch {}
+  };
 
   // 会話履歴
   const historyRef = useRef<Turn[]>([]);
@@ -928,6 +994,10 @@ export default function Chat() {
       const payload = {
         character_id: selectedCharacterRef.current.character_id,
         messages: [...historyMessages, { role: "user", content: t }],
+        session_id: sessionIdRef.current,
+        owner_id: "user_123",
+        device_id: "app",
+        request_at: new Date().toISOString(),
       };
       console.log("🚀 payload to Lambda:", JSON.stringify(payload, null, 2));
       xhr.send(JSON.stringify(payload));
@@ -946,6 +1016,9 @@ export default function Chat() {
       >
       {/* ヘッダー */}
       <View style={s.header}>
+        <TouchableOpacity style={s.hamburgerBtn} onPress={openDrawer}>
+          <Text style={s.hamburgerText}>☰</Text>
+        </TouchableOpacity>
         <View style={{ flex: 1 }} />
         <TouchableOpacity
           ref={pillRef}
@@ -1094,6 +1167,36 @@ export default function Chat() {
           <Text style={s.btnText}>送信</Text>
         </TouchableOpacity>
       </View>
+      {/* サイドドロワー */}
+      {drawerOpen && (
+        <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+          <Pressable style={s.drawerOverlay} onPress={closeDrawer} />
+          <Animated.View style={[s.drawer, { width: DRAWER_W, transform: [{ translateX: drawerAnim }] }]}>
+            {/* New Chat */}
+            <TouchableOpacity style={s.drawerNewChat} onPress={startNewChat}>
+              <Text style={s.drawerNewChatText}>＋ New Chat</Text>
+            </TouchableOpacity>
+            <View style={s.drawerDivider} />
+            {/* 履歴リスト */}
+            <ScrollView style={{ flex: 1 }}>
+              {sessions.length === 0 ? (
+                <Text style={s.drawerEmpty}>履歴がありません</Text>
+              ) : (
+                sessions.map((s2) => (
+                  <TouchableOpacity key={s2.session_id} style={s.drawerItem} onPress={() => loadSession(s2.session_id)}>
+                    <Text style={s.drawerItemText} numberOfLines={2}>
+                      {s2.first_message || "（空のセッション）"}
+                    </Text>
+                    <Text style={s.drawerItemDate}>
+                      {new Date(s2.timestamp).toLocaleDateString("ja-JP")}
+                    </Text>
+                  </TouchableOpacity>
+                ))
+              )}
+            </ScrollView>
+          </Animated.View>
+        </View>
+      )}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -1311,5 +1414,65 @@ const s = StyleSheet.create({
     height: 1,
     backgroundColor: "#eee",
     marginVertical: 6,
+  },
+  hamburgerBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    justifyContent: "center",
+  },
+  hamburgerText: {
+    fontSize: 20,
+    color: "#333",
+  },
+  drawerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.3)",
+  },
+  drawer: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    bottom: 0,
+    backgroundColor: "#fff",
+    shadowColor: "#000",
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    shadowOffset: { width: 4, height: 0 },
+    elevation: 8,
+  },
+  drawerNewChat: {
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  drawerNewChatText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#007aff",
+  },
+  drawerDivider: {
+    height: 1,
+    backgroundColor: "#eee",
+  },
+  drawerItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f0f0f0",
+  },
+  drawerItemText: {
+    fontSize: 14,
+    color: "#111",
+  },
+  drawerItemDate: {
+    marginTop: 4,
+    fontSize: 11,
+    color: "#999",
+  },
+  drawerEmpty: {
+    padding: 20,
+    color: "#999",
+    fontSize: 14,
   },
 });
