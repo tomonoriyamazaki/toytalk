@@ -319,7 +319,7 @@
         text,
         reference_id: referenceId,
         format: "mp3",
-        latency: "normal",
+        latency: "low",
       }),
     });
 
