@@ -30,7 +30,7 @@ const DEFAULT_CHARACTER_ID = "default";
 const bleManager = new BleManager();
 
 type ConnectionStatus = "disconnected" | "scanning" | "connecting" | "connected" | "configuring";
-type Screen = "home" | "wifi-setup" | "device-settings" | "character-select";
+type Screen = "home" | "wifi-setup" | "device-settings" | "character-select" | "conversation-log" | "conversation-messages";
 
 type CharacterItem = {
   character_id: string;
@@ -47,6 +47,18 @@ type RegisteredDevice = {
   owner_id: string;
 };
 
+type SessionItem = {
+  session_id: string;
+  first_message: string;
+  timestamp: string;
+};
+
+type LogMessage = {
+  role: string;
+  content: string;
+  timestamp: string;
+};
+
 export default function Toy() {
   const [status, setStatus]                         = useState<ConnectionStatus>("disconnected");
   const [bleDevices, setBleDevices]                 = useState<Device[]>([]);
@@ -60,6 +72,11 @@ export default function Toy() {
   const [characters, setCharacters]                 = useState<CharacterItem[]>([]);
   const [charactersLoading, setCharactersLoading]   = useState(false);
   const [updatingCharacter, setUpdatingCharacter]   = useState(false);
+  const [sessions, setSessions]                     = useState<SessionItem[]>([]);
+  const [sessionsLoading, setSessionsLoading]       = useState(false);
+  const [logMessages, setLogMessages]               = useState<LogMessage[]>([]);
+  const [logMessagesLoading, setLogMessagesLoading] = useState(false);
+  const [selectedSessionId, setSelectedSessionId]   = useState<string | null>(null);
 
   useEffect(() => {
     if (Platform.OS === "android") {
@@ -280,11 +297,119 @@ export default function Toy() {
     }
   };
 
+  const openConversationLog = async () => {
+    if (!deviceId) return;
+    setSessionsLoading(true);
+    setScreen("conversation-log");
+    try {
+      const res = await fetch(`${DEVICE_SETTING_URL}/logs/sessions?owner_id=${encodeURIComponent(deviceId)}&device_id=${encodeURIComponent(deviceId)}`);
+      const data = await res.json();
+      setSessions(data.sessions ?? []);
+    } catch (e: any) {
+      Alert.alert("エラー", "会話ログの取得に失敗しました");
+    } finally {
+      setSessionsLoading(false);
+    }
+  };
+
+  const loadSessionMessages = async (sessionId: string) => {
+    if (!deviceId) return;
+    setLogMessagesLoading(true);
+    setSelectedSessionId(sessionId);
+    setScreen("conversation-messages");
+    try {
+      const res = await fetch(`${DEVICE_SETTING_URL}/logs/messages?owner_id=${encodeURIComponent(deviceId)}&device_id=${encodeURIComponent(deviceId)}&session_id=${encodeURIComponent(sessionId)}`);
+      const data = await res.json();
+      setLogMessages(data.messages ?? []);
+    } catch (e: any) {
+      Alert.alert("エラー", "メッセージの取得に失敗しました");
+    } finally {
+      setLogMessagesLoading(false);
+    }
+  };
+
   const currentCharacterLabel = () => {
     if (!registeredDevice?.character_id || registeredDevice.character_id === "default") return "デフォルト";
     const c = characters.find((c) => c.character_id === registeredDevice.character_id);
     return c ? c.name : registeredDevice.character_id;
   };
+
+  // ---- 会話メッセージ画面 ----
+  if (screen === "conversation-messages") {
+    return (
+      <SafeAreaView style={s.root}>
+        <View style={s.header}>
+          <TouchableOpacity onPress={() => setScreen("conversation-log")}>
+            <Text style={s.back}>← 戻る</Text>
+          </TouchableOpacity>
+          <Text style={s.headerTitle}>会話内容</Text>
+        </View>
+        {logMessagesLoading ? (
+          <View style={s.center}>
+            <ActivityIndicator size="large" color="#007AFF" />
+          </View>
+        ) : logMessages.length === 0 ? (
+          <View style={s.center}>
+            <Text style={s.emptyText}>メッセージがありません</Text>
+          </View>
+        ) : (
+          <FlatList
+            data={logMessages}
+            keyExtractor={(_, i) => String(i)}
+            contentContainerStyle={{ padding: 16, gap: 8 }}
+            renderItem={({ item }) => {
+              const isUser = item.role === "user";
+              return (
+                <View style={[s.msgBubble, isUser ? s.msgUser : s.msgAssistant]}>
+                  <Text style={[s.msgRole, isUser && { color: "rgba(255,255,255,0.7)" }]}>{isUser ? "こども" : "AI"}</Text>
+                  <Text style={[s.msgContent, isUser && { color: "#fff" }]}>{item.content}</Text>
+                  <Text style={[s.msgTime, isUser && { color: "rgba(255,255,255,0.6)" }]}>{new Date(item.timestamp).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}</Text>
+                </View>
+              );
+            }}
+          />
+        )}
+      </SafeAreaView>
+    );
+  }
+
+  // ---- 会話ログ画面（セッション一覧） ----
+  if (screen === "conversation-log") {
+    return (
+      <SafeAreaView style={s.root}>
+        <View style={s.header}>
+          <TouchableOpacity onPress={() => setScreen("device-settings")}>
+            <Text style={s.back}>← 戻る</Text>
+          </TouchableOpacity>
+          <Text style={s.headerTitle}>会話ログ</Text>
+        </View>
+        {sessionsLoading ? (
+          <View style={s.center}>
+            <ActivityIndicator size="large" color="#007AFF" />
+          </View>
+        ) : sessions.length === 0 ? (
+          <View style={s.center}>
+            <Text style={s.emptyText}>会話ログがありません</Text>
+          </View>
+        ) : (
+          <FlatList
+            data={sessions}
+            keyExtractor={(item) => item.session_id}
+            contentContainerStyle={{ padding: 16, gap: 8 }}
+            renderItem={({ item }) => (
+              <TouchableOpacity style={s.deviceItem} onPress={() => loadSessionMessages(item.session_id)}>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.deviceName} numberOfLines={2}>{item.first_message || "(空のセッション)"}</Text>
+                  <Text style={s.deviceSub}>{new Date(item.timestamp).toLocaleString("ja-JP")}</Text>
+                </View>
+                <Text style={s.chevron}>›</Text>
+              </TouchableOpacity>
+            )}
+          />
+        )}
+      </SafeAreaView>
+    );
+  }
 
   // ---- キャラクター選択画面 ----
   if (screen === "character-select") {
@@ -366,6 +491,13 @@ export default function Toy() {
             <View>
               <Text style={s.settingLabel}>キャラクター</Text>
               <Text style={s.settingValue}>{currentCharacterLabel()}</Text>
+            </View>
+            <Text style={s.chevron}>›</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={s.settingRow} onPress={openConversationLog}>
+            <View>
+              <Text style={s.settingLabel}>会話ログ</Text>
+              <Text style={s.settingValue}>デバイスの会話履歴を確認</Text>
             </View>
             <Text style={s.chevron}>›</Text>
           </TouchableOpacity>
@@ -556,4 +688,12 @@ const s = StyleSheet.create({
   characterLabelSelected:{ color: "#007AFF", fontWeight: "600" },
   characterDesc:         { fontSize: 12, color: "#888", marginTop: 2 },
   sectionHeader:         { fontSize: 13, fontWeight: "700", color: "#555", marginTop: 12, marginBottom: 6, textTransform: "uppercase" },
+  // 会話ログ
+  emptyText:             { fontSize: 14, color: "#999" },
+  msgBubble:             { padding: 12, borderRadius: 12, maxWidth: "85%" },
+  msgUser:               { backgroundColor: "#007AFF", alignSelf: "flex-end" },
+  msgAssistant:          { backgroundColor: "#fff", borderWidth: 1, borderColor: "#e0e0e0", alignSelf: "flex-start" },
+  msgRole:               { fontSize: 11, color: "#888", marginBottom: 4 },
+  msgContent:            { fontSize: 14, color: "#333" },
+  msgTime:               { fontSize: 10, color: "#aaa", marginTop: 4, textAlign: "right" },
 });

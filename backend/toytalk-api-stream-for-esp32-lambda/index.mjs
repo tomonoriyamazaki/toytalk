@@ -4,13 +4,22 @@
   import OpenAI from "openai";
   import { createHash } from "node:crypto";
   import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-  import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
+  import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 
   const ddbClient = new DynamoDBClient({ region: "ap-northeast-1" });
   const ddb = DynamoDBDocumentClient.from(ddbClient);
   const DEVICES_TABLE    = "toytalker-devices";
   const VOICES_TABLE     = "toytalker-voices";
   const CHARACTERS_TABLE = "toytalker-characters";
+  const CHAT_LOGS_TABLE  = "toytalker-chat-logs";
+
+  async function saveLog(item) {
+    try {
+      await ddb.send(new PutCommand({ TableName: CHAT_LOGS_TABLE, Item: item }));
+    } catch (e) {
+      console.error("[saveLog] error:", e);
+    }
+  }
 
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -343,6 +352,12 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     const messages= body.messages ?? [{ role:"user", content:"自己紹介して" }];
     const deviceId = typeof body.device_id === "string" ? body.device_id : null;
 
+    // ---- ログ用メタデータ ----
+    const sessionId  = typeof body.session_id === "string" ? body.session_id : "unknown";
+    const ownerId    = typeof body.owner_id   === "string" ? body.owner_id   : deviceId ?? "unknown";
+    const requestAt  = Date.now();
+    const userTimestamp = new Date(requestAt).toISOString();
+
     function normalizeModelKey(k) {
       if (!k) return undefined;
       const s = String(k).toLowerCase();
@@ -384,6 +399,18 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       sendMeta(res, "ping", { t: Date.now() });
     }
 
+    // ---- ユーザーメッセージ保存 ----
+    const lastUserMsg = messages[messages.length - 1];
+    if (lastUserMsg?.role === "user" && sessionId !== "unknown") {
+      saveLog({
+        "owner_id#device_id":   `owner_id#${ownerId}#device_id#${deviceId}`,
+        "session_id#timestamp": `session_id#${sessionId}#timestamp#${userTimestamp}`,
+        owner_id: ownerId, device_id: deviceId, source: "esp",
+        role: "user", content: lastUserMsg.content,
+        content_type: "audio", timestamp: userTimestamp, session_id: sessionId,
+      });
+    }
+
     // ---- LLM 開始 ----
     if (DEBUG_TIME) {
       sendMeta(res, "mark", { k: "llm_start", t: Date.now() });
@@ -403,10 +430,15 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         model: cfg.llmModel,
         temperature: 0.7,
         stream: true,
+        stream_options: { include_usage: true },
         messages: messagesWithSystem,
       });
       llmStream = (async function* () {
         for await (const chunk of llm) {
+          if (chunk.usage) {
+            llmTokensIn  = chunk.usage.prompt_tokens     ?? 0;
+            llmTokensOut = chunk.usage.completion_tokens ?? 0;
+          }
           const delta = chunk.choices?.[0]?.delta?.content ?? "";
           if (delta) yield delta;
         }
@@ -424,6 +456,8 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     let lastSegHash = "";
     let firstTtsMarked = false;
     let ttsChain = Promise.resolve();
+    let llmTokensIn = 0, llmTokensOut = 0;
+    let ttsInputChars = 0;
 
 
     // segment を送る唯一の経路
@@ -443,6 +477,8 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         sendMeta(res, "mark", { k: "tts_first_byte", t: Date.now() });
         firstTtsMarked = true;
       }
+
+      ttsInputChars += t.length;
 
       // 音声チャンク（生PCMバイナリとして送信）
       try {
@@ -495,6 +531,25 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         await emitSegment(tail, { final: true });
       }
       sendMeta(res, "done", {});
+
+      // ---- アシスタントログ保存 ----
+      if (sessionId !== "unknown" && textAll.trim()) {
+        const assistantTimestamp = new Date().toISOString();
+        saveLog({
+          "owner_id#device_id":   `owner_id#${ownerId}#device_id#${deviceId}`,
+          "session_id#timestamp": `session_id#${sessionId}#timestamp#${assistantTimestamp}`,
+          owner_id: ownerId, device_id: deviceId, source: "esp",
+          role: "assistant", content: textAll.trim(),
+          content_type: "text", timestamp: assistantTimestamp, session_id: sessionId,
+          llm_provider: cfg.llmVendor, llm_model: cfg.llmModel,
+          llm_tokens_in: llmTokensIn, llm_tokens_out: llmTokensOut,
+          tts_provider: cfg.ttsVendor, tts_input_units: ttsInputChars, tts_input_unit_type: "characters",
+          stt_provider: "soniox", stt_input_units: null, stt_input_unit_type: null,
+          duration_ms: Date.now() - requestAt,
+          character_id: null,
+          voice_id: voice,
+        });
+      }
     } catch (err) {
       const msg = (err && err.message) ? err.message : String(err);
       sendMeta(res, "error", { message: msg });
