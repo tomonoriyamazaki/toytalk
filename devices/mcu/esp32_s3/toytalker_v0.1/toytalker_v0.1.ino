@@ -497,12 +497,10 @@ void setupI2SRecord() {
   esp_err_t err = i2s_driver_install(I2S_NUM_0, &cfg, 0, NULL);
   if (err != ESP_OK) {
     Serial.printf("❌ i2s_driver_install failed: %d\n", err);
-    // エラー時はLED点灯
   }
   err = i2s_set_pin(I2S_NUM_0, &pins);
   if (err != ESP_OK) {
     Serial.printf("❌ i2s_set_pin failed: %d\n", err);
-    // エラー時はLED点灯
   }
   i2s_start(I2S_NUM_0);
 }
@@ -520,7 +518,7 @@ void setupI2SPlay() {
     .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
     .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB),
     .intr_alloc_flags = 0,
-    .dma_buf_count = 32,    // 内部RAM制約のため32に維持（32KB = 約0.34秒）
+    .dma_buf_count = 32,
     .dma_buf_len = 1024,
     .use_apll = true,
     .tx_desc_auto_clear = true,
@@ -537,7 +535,6 @@ void setupI2SPlay() {
   i2s_driver_install(I2S_NUM_1, &cfg, 0, NULL);
   i2s_set_pin(I2S_NUM_1, &pins);
   i2s_set_clk(I2S_NUM_1, SAMPLE_RATE_TTS, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
-  // アンプONはprocessPCM()内でデータ受信直前に行う
 }
 
 // ==== チャンク管理用グローバル変数 ====
@@ -740,28 +737,21 @@ void processPCM(WiFiClientSecure& client, uint32_t length) {
 #endif
 
   // ストリーミング再生用のバッファ（64KB）
-  const size_t STREAM_CHUNK_SIZE = 65536;  // 64KB = 約0.68秒分の音声
+  const size_t STREAM_CHUNK_SIZE = 65536;
   uint32_t remaining = length;
   uint32_t totalPlayed = 0;
 
   while (remaining > 0) {
-    // LED演出更新（再生中の点滅）
     updateLEDAnimation();
 
-    // 今回読むサイズ
     uint32_t chunkSize = (remaining > STREAM_CHUNK_SIZE) ? STREAM_CHUNK_SIZE : remaining;
 
-    // モノラルPCMバッファ確保（PSRAM優先、v1.1パターン）
-    uint8_t* pcmData = (uint8_t*)ps_malloc(chunkSize);  // PSRAM明示
+    uint8_t* pcmData = (uint8_t*)ps_malloc(chunkSize);
     if (!pcmData) {
-      pcmData = (uint8_t*)malloc(chunkSize);  // フォールバック
+      pcmData = (uint8_t*)malloc(chunkSize);
     }
-#if DEBUG_MEMORY
-    Serial.printf("[ALLOC] pcmData: %d bytes at %p\n", chunkSize, pcmData);
-#endif
     if (!pcmData) {
       Serial.printf("[PCM] malloc failed for chunk! Skipping remaining %d bytes\n", remaining);
-      // 残りを読み捨て
       uint8_t dummy[512];
       while (remaining > 0) {
         uint32_t toRead = (remaining > 512) ? 512 : remaining;
@@ -772,7 +762,6 @@ void processPCM(WiFiClientSecure& client, uint32_t length) {
       return;
     }
 
-    // チャンク読み込み
     size_t bytesRead = readBytesAcrossChunks(client, pcmData, chunkSize);
     if (bytesRead != chunkSize) {
       Serial.printf("[PCM] Read mismatch in chunk: expected=%d, got=%d\n", chunkSize, bytesRead);
@@ -780,24 +769,18 @@ void processPCM(WiFiClientSecure& client, uint32_t length) {
       break;
     }
 
-    // ステレオバッファ確保
     size_t samples = bytesRead / 2;
     size_t stereoBytes = samples * 4;
     int16_t* stereo = (int16_t*)malloc(stereoBytes);
-#if DEBUG_MEMORY
-    Serial.printf("[ALLOC] stereo: %d bytes at %p\n", stereoBytes, stereo);
-#endif
     if (!stereo) {
       Serial.println("[PCM] stereo malloc failed for chunk!");
       free(pcmData);
       break;
     }
 
-    // 変換
     monoToStereo((int16_t*)pcmData, stereo, samples);
     free(pcmData);
 
-    // 即座に再生
     size_t written = 0;
     i2s_write(I2S_NUM_1, (uint8_t*)stereo, stereoBytes, &written, portMAX_DELAY);
     free(stereo);
@@ -805,7 +788,6 @@ void processPCM(WiFiClientSecure& client, uint32_t length) {
     totalPlayed += written;
     remaining -= bytesRead;
 
-    // 進捗表示（デバッグ用）
     if (totalPlayed % (STREAM_CHUNK_SIZE * 4) == 0) {
       Serial.printf("[PCM] Streaming... played %d/%d bytes\n", totalPlayed, length * 2);
     }
