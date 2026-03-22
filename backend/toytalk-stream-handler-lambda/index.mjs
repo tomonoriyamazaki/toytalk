@@ -4,12 +4,21 @@
   import OpenAI from "openai";
   import { createHash } from "node:crypto";
   import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-  import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
+  import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 
   const ddbClient = new DynamoDBClient({ region: "ap-northeast-1" });
   const ddb = DynamoDBDocumentClient.from(ddbClient);
   const CHARACTERS_TABLE = "toytalker-characters";
   const VOICES_TABLE     = "toytalker-voices";
+  const CHAT_LOGS_TABLE  = "toytalker-chat-logs";
+
+  async function saveLog(item) {
+    try {
+      await ddb.send(new PutCommand({ TableName: CHAT_LOGS_TABLE, Item: item }));
+    } catch (e) {
+      console.error("[saveLog] error:", e);
+    }
+  }
 
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -310,7 +319,7 @@
         text,
         reference_id: referenceId,
         format: "mp3",
-        latency: "normal",
+        latency: "low",
       }),
     });
 
@@ -377,12 +386,19 @@
   export const handler = awslambda.streamifyResponse(async (event, res) => {
     res.setContentType("text/event-stream");
 
-    const body    = event.body ? JSON.parse(event.body) : {};
-    const messages= body.messages ?? [{ role:"user", content:"自己紹介して" }];
-    const rawModel = typeof body.model === "string" ? body.model : undefined;
-    let modelKey = normalizeModelKey(rawModel) ?? MODEL_DEFAULT;
-    let voice    = body.voice ?? VOICE_DEFAULT;
+    const body      = event.body ? JSON.parse(event.body) : {};
+    const messages  = body.messages ?? [{ role:"user", content:"自己紹介して" }];
+    const rawModel  = typeof body.model === "string" ? body.model : undefined;
+    let modelKey    = normalizeModelKey(rawModel) ?? MODEL_DEFAULT;
+    let voice       = body.voice ?? VOICE_DEFAULT;
     let personalityPrompt = null;
+
+    // ---- ログ用メタデータ ----
+    const sessionId  = typeof body.session_id === "string" ? body.session_id : "unknown";
+    const ownerId    = typeof body.owner_id   === "string" ? body.owner_id   : "user_123";
+    const deviceId   = typeof body.device_id  === "string" ? body.device_id  : "app";
+    const requestAt  = Date.now();
+    const userTimestamp = new Date(requestAt).toISOString();
 
     // character_id が来たら DynamoDB でキャラクター → ボイスを解決
     const characterId = typeof body.character_id === "string" ? body.character_id : null;
@@ -397,6 +413,18 @@
     }
 
     const cfg = MODEL_TABLE[modelKey] ?? MODEL_TABLE[MODEL_DEFAULT];
+
+    // ---- ユーザーメッセージ保存 ----
+    const lastUserMsg = messages[messages.length - 1];
+    if (lastUserMsg?.role === "user" && sessionId !== "unknown") {
+      saveLog({
+        "owner_id#device_id":   `owner_id#${ownerId}#device_id#${deviceId}`,
+        "session_id#timestamp": `session_id#${sessionId}#timestamp#${userTimestamp}`,
+        owner_id: ownerId, device_id: deviceId, source: "app",
+        role: "user", content: lastUserMsg.content,
+        content_type: "text", timestamp: userTimestamp, session_id: sessionId,
+      });
+    }
 
     function normalizeModelKey(k) {
       if (!k) return undefined;
@@ -435,10 +463,15 @@
         model: cfg.llmModel,
         temperature: 0.7,
         stream: true,
+        stream_options: { include_usage: true },
         messages: messagesWithSystem,
       });
       llmStream = (async function* () {
         for await (const chunk of llm) {
+          if (chunk.usage) {
+            llmTokensIn  = chunk.usage.prompt_tokens     ?? 0;
+            llmTokensOut = chunk.usage.completion_tokens ?? 0;
+          }
           const delta = chunk.choices?.[0]?.delta?.content ?? "";
           if (delta) yield delta;
         }
@@ -450,11 +483,13 @@
   }
 
     // ---- ストリーム状態 ----
-    let buf = "";                 // ★ここで1回だけ宣言
+    let buf = "";
     let textAll = "";
     let segSeq = 0;
     let lastSegHash = "";
     let firstTtsMarked = false;
+    let llmTokensIn = 0, llmTokensOut = 0;
+    let ttsInputChars = 0;
 
     // segment を送る唯一の経路
     async function emitSegment(text, { final=false } = {}) {
@@ -473,6 +508,8 @@
         send(res, "mark", { k: "tts_first_byte", t: Date.now() });
         firstTtsMarked = true;
       }
+
+      ttsInputChars += t.length;
 
       // 音声チャンク（textは載せない）
       try {
@@ -530,6 +567,25 @@
         await emitSegment(tail, { final: true });
       }
       send(res, "done", {});
+
+      // ---- アシスタントログ保存 ----
+      if (sessionId !== "unknown" && textAll.trim()) {
+        const assistantTimestamp = new Date().toISOString();
+        saveLog({
+          "owner_id#device_id":   `owner_id#${ownerId}#device_id#${deviceId}`,
+          "session_id#timestamp": `session_id#${sessionId}#timestamp#${assistantTimestamp}`,
+          owner_id: ownerId, device_id: deviceId, source: "app",
+          role: "assistant", content: textAll.trim(),
+          content_type: "text", timestamp: assistantTimestamp, session_id: sessionId,
+          llm_provider: cfg.llmVendor, llm_model: cfg.llmModel,
+          llm_tokens_in: llmTokensIn, llm_tokens_out: llmTokensOut,
+          tts_provider: cfg.ttsVendor, tts_input_units: ttsInputChars, tts_input_unit_type: "characters",
+          stt_provider: null, stt_input_units: null, stt_input_unit_type: null,
+          duration_ms: Date.now() - requestAt,
+          character_id: characterId ?? "default",
+          voice_id: voice,
+        });
+      }
     } catch (err) {
       const msg = (err && err.message) ? err.message : String(err);
       send(res, "error", { message: msg });

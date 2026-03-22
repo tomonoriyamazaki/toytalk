@@ -2,7 +2,7 @@
 // Handler: index.handler
 // Env: なし（DynamoDBはIAMロールで接続）
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, ScanCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, ScanCommand, DeleteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 
 const client = new DynamoDBClient({ region: "ap-northeast-1" });
 const ddb = DynamoDBDocumentClient.from(client);
@@ -11,6 +11,7 @@ const ddb = DynamoDBDocumentClient.from(client);
 const DEVICES_TABLE    = "toytalker-devices";
 const VOICES_TABLE     = "toytalker-voices";
 const CHARACTERS_TABLE = "toytalker-characters";
+const CHAT_LOGS_TABLE  = "toytalker-chat-logs";
 
 const response = (statusCode, body) => ({
   statusCode,
@@ -174,6 +175,60 @@ export const handler = async (event) => {
         },
       }));
       return response(200, { device_id, character_id, message: "Device updated" });
+    }
+
+    // ---- GET /logs/sessions ---- セッション一覧取得
+    if (method === "GET" && path === "/logs/sessions") {
+      const ownerId  = event.queryStringParameters?.owner_id  ?? "user_123";
+      const deviceId = event.queryStringParameters?.device_id ?? "app";
+      const pk = `owner_id#${ownerId}#device_id#${deviceId}`;
+      const result = await ddb.send(new QueryCommand({
+        TableName: CHAT_LOGS_TABLE,
+        KeyConditionExpression: "#pk = :pk",
+        ExpressionAttributeNames: { "#pk": "owner_id#device_id" },
+        ExpressionAttributeValues: { ":pk": pk },
+        ScanIndexForward: true, // 古い順→最初のユーザーメッセージをタイトルに使う
+      }));
+      // session_id ごとに最初のユーザーメッセージをタイトルとして取得し、最終活動時刻でソート
+      const sessionMap = new Map();
+      for (const item of (result.Items ?? [])) {
+        const sid = item.session_id;
+        if (!sessionMap.has(sid)) {
+          sessionMap.set(sid, {
+            session_id: sid,
+            first_message: item.role === "user" ? item.content : "",
+            timestamp: item.timestamp,
+            last_timestamp: item.timestamp,
+          });
+        } else {
+          const entry = sessionMap.get(sid);
+          if (!entry.first_message && item.role === "user") {
+            entry.first_message = item.content;
+          }
+          entry.last_timestamp = item.timestamp;
+        }
+      }
+      // 最終活動時刻が新しい順にソート
+      const sessions = Array.from(sessionMap.values())
+        .sort((a, b) => b.last_timestamp.localeCompare(a.last_timestamp));
+      return response(200, { sessions });
+    }
+
+    // ---- GET /logs/messages ---- セッション内メッセージ取得
+    if (method === "GET" && path === "/logs/messages") {
+      const ownerId   = event.queryStringParameters?.owner_id   ?? "user_123";
+      const deviceId  = event.queryStringParameters?.device_id  ?? "app";
+      const sessionId = event.queryStringParameters?.session_id;
+      if (!sessionId) return response(400, { error: "session_id is required" });
+      const pk = `owner_id#${ownerId}#device_id#${deviceId}`;
+      const result = await ddb.send(new QueryCommand({
+        TableName: CHAT_LOGS_TABLE,
+        KeyConditionExpression: "#pk = :pk AND begins_with(#sk, :sk_prefix)",
+        ExpressionAttributeNames: { "#pk": "owner_id#device_id", "#sk": "session_id#timestamp" },
+        ExpressionAttributeValues: { ":pk": pk, ":sk_prefix": `session_id#${sessionId}#` },
+        ScanIndexForward: true,
+      }));
+      return response(200, { messages: result.Items ?? [] });
     }
 
     return response(404, { error: "Not found" });
