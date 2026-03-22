@@ -213,7 +213,7 @@ export default function Settings() {
         </View>
         <ScrollView contentContainerStyle={s.wrap}>
           {[
-            { ver: "0.7.0", date: "20260309", desc: "キャラクターシステム追加" },
+            { ver: "0.7.0", date: "20260322", desc: "キャラクターシステム追加、会話ログ機能追加、UI刷新" },
             { ver: "0.6.0", date: "20260306", desc: "ボイス追加：ElevenLabs / Fish Audio（※デモ用）" },
             { ver: "0.5.6", date: "20260210", desc: "おもちゃにWIFI設定機能追加" },
             { ver: "0.5.5", date: "20251005", desc: "STT（音声認識）を選択可能にしてリアルタイム表示。スピードも改善" },
