@@ -132,12 +132,12 @@ export const handler = async (event) => {
         ConditionExpression: "attribute_not_exists(device_id)",
       })).catch(async (err) => {
         if (err.name === "ConditionalCheckFailedException") {
-          // 登録済みなら last_seen だけ更新
+          // 登録済みなら last_seen と owner_id を更新
           await ddb.send(new UpdateCommand({
             TableName: DEVICES_TABLE,
             Key: { device_id },
-            UpdateExpression: "SET last_seen = :t",
-            ExpressionAttributeValues: { ":t": now },
+            UpdateExpression: "SET last_seen = :t, owner_id = :o",
+            ExpressionAttributeValues: { ":t": now, ":o": owner_id },
           }));
         } else {
           throw err;

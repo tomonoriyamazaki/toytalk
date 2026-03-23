@@ -28,6 +28,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Menu, Provider } from "react-native-paper";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "@react-navigation/native";
+import { useOwnerId } from "../../hooks/useOwnerId";
 import AudioRecord from "react-native-audio-record";
 import Sound from "react-native-sound";
 
@@ -66,6 +67,7 @@ function base64ToArrayBuffer(b64: string): ArrayBuffer {
 }
 
 export default function Chat() {
+  const ownerId = useOwnerId();
   // 時間計測
   const [msg, setMsg] = useState("");
   const [log, setLog] = useState<string[]>([]);
@@ -185,7 +187,7 @@ export default function Chat() {
 
   const fetchSessions = async () => {
     try {
-      const res = await fetch(`${DEVICE_SETTING_URL}/logs/sessions?owner_id=user_123&device_id=app`);
+      const res = await fetch(`${DEVICE_SETTING_URL}/logs/sessions?owner_id=${encodeURIComponent(ownerId!)}&device_id=app`);
       const data = await res.json();
       setSessions(data.sessions ?? []);
     } catch {}
@@ -203,7 +205,7 @@ export default function Chat() {
   const loadSession = async (sid: string) => {
     closeDrawer();
     try {
-      const res = await fetch(`${DEVICE_SETTING_URL}/logs/messages?owner_id=user_123&device_id=app&session_id=${sid}`);
+      const res = await fetch(`${DEVICE_SETTING_URL}/logs/messages?owner_id=${encodeURIComponent(ownerId!)}&device_id=app&session_id=${sid}`);
       const data = await res.json();
       const messages: any[] = data.messages ?? [];
       const newLog: string[] = [];
@@ -1002,7 +1004,7 @@ export default function Chat() {
         character_id: selectedCharacterRef.current.character_id,
         messages: [...historyMessages, { role: "user", content: t }],
         session_id: sessionIdRef.current,
-        owner_id: "user_123",
+        owner_id: ownerId,
         device_id: "app",
         request_at: new Date().toISOString(),
       };
