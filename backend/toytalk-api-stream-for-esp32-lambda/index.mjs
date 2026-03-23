@@ -338,6 +338,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         provider: voiceRes.Item.provider,
         vendorId: voiceRes.Item.vendor_id,
         personalityPrompt,
+        ownerId: device.owner_id ?? null,
       };
     } catch (e) {
       console.error("[DynamoDB] resolveCharacterFromDynamo error:", e);
@@ -354,7 +355,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
 
     // ---- ログ用メタデータ ----
     const sessionId  = typeof body.session_id === "string" ? body.session_id : "unknown";
-    const ownerId    = typeof body.owner_id   === "string" ? body.owner_id   : deviceId ?? "unknown";
+    let   ownerId    = typeof body.owner_id   === "string" ? body.owner_id   : deviceId ?? "unknown";
     const requestAt  = Date.now();
     const userTimestamp = new Date(requestAt).toISOString();
 
@@ -380,7 +381,8 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         modelKey = normalizeModelKey(charConfig.provider) ?? modelKey;
         voice    = charConfig.vendorId ?? voice;
         personalityPrompt = charConfig.personalityPrompt;
-        console.log(`[DynamoDB] device=${deviceId}, provider=${charConfig.provider}, vendorId=${charConfig.vendorId}, hasPersonality=${!!personalityPrompt}`);
+        if (charConfig.ownerId) ownerId = charConfig.ownerId;
+        console.log(`[DynamoDB] device=${deviceId}, provider=${charConfig.provider}, vendorId=${charConfig.vendorId}, hasPersonality=${!!personalityPrompt}, ownerId=${ownerId}`);
       } else {
         console.log(`[DynamoDB] device=${deviceId} not found or no character set, using defaults`);
       }

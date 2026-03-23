@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useOwnerId } from "../../hooks/useOwnerId";
 import {
   SafeAreaView,
   Text,
@@ -60,6 +61,7 @@ type LogMessage = {
 };
 
 export default function Toy() {
+  const ownerId = useOwnerId();
   const [status, setStatus]                         = useState<ConnectionStatus>("disconnected");
   const [bleDevices, setBleDevices]                 = useState<Device[]>([]);
   const [connectedDevice, setConnectedDevice]       = useState<Device | null>(null);
@@ -204,7 +206,7 @@ export default function Toy() {
       const res = await fetch(`${DEVICE_SETTING_URL}/devices`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ device_id: mac }),
+        body: JSON.stringify({ device_id: mac, owner_id: ownerId }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
@@ -302,7 +304,7 @@ export default function Toy() {
     setSessionsLoading(true);
     setScreen("conversation-log");
     try {
-      const res = await fetch(`${DEVICE_SETTING_URL}/logs/sessions?owner_id=${encodeURIComponent(deviceId)}&device_id=${encodeURIComponent(deviceId)}`);
+      const res = await fetch(`${DEVICE_SETTING_URL}/logs/sessions?owner_id=${encodeURIComponent(ownerId!)}&device_id=${encodeURIComponent(deviceId)}`);
       const data = await res.json();
       setSessions(data.sessions ?? []);
     } catch (e: any) {
@@ -318,7 +320,7 @@ export default function Toy() {
     setSelectedSessionId(sessionId);
     setScreen("conversation-messages");
     try {
-      const res = await fetch(`${DEVICE_SETTING_URL}/logs/messages?owner_id=${encodeURIComponent(deviceId)}&device_id=${encodeURIComponent(deviceId)}&session_id=${encodeURIComponent(sessionId)}`);
+      const res = await fetch(`${DEVICE_SETTING_URL}/logs/messages?owner_id=${encodeURIComponent(ownerId!)}&device_id=${encodeURIComponent(deviceId)}&session_id=${encodeURIComponent(sessionId)}`);
       const data = await res.json();
       setLogMessages(data.messages ?? []);
     } catch (e: any) {
