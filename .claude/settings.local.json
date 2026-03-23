@@ -1,8 +1,29 @@
 {
   "permissions": {
+    "defaultMode": "acceptEdits",
     "allow": [
-      "Bash(cat:*)",
-      "Bash(ls:*)"
+      "Bash(git:*)",
+      "Bash(gh:*)",
+      "Bash(aws:*)",
+      "Bash(bash:*)",
+      "Bash(curl:*)",
+      "Bash(eas:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
+      "Bash(node:*)",
+      "Bash(python:*)",
+      "Bash(ffmpeg:*)",
+      "Bash(powershell -Command:*)",
+      "Bash(mkdir:*)",
+      "Bash(zip:*)",
+      "Bash(wc:*)",
+      "Bash(MSYS_NO_PATHCONV=1:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.expo.dev)",
+      "WebFetch(domain:docs.espressif.com)",
+      "WebFetch(domain:docs.fish.audio)",
+      "WebFetch(domain:elevenlabs.io)"
     ],
     "deny": [],
     "ask": []
