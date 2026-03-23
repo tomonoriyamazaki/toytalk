@@ -161,14 +161,15 @@ export default function Chat() {
 
   useFocusEffect(
     useCallback(() => {
+      if (!ownerId) return;
       (async () => {
         try {
-          const res = await fetch(`${DEVICE_SETTING_URL}/characters`);
+          const res = await fetch(`${DEVICE_SETTING_URL}/characters?owner_id=${encodeURIComponent(ownerId)}`);
           const data = await res.json();
           setCharacters(data.characters ?? []);
         } catch {}
       })();
-    }, [])
+    }, [ownerId])
   );
 
   // ドロワー操作

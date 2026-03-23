@@ -15,6 +15,7 @@ import {
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect, useRef, useState } from "react";
+import { useOwnerId } from "../../hooks/useOwnerId";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 
@@ -48,6 +49,7 @@ const PERSONALITY_TEMPLATES = [
 ];
 
 export default function Settings() {
+  const ownerId = useOwnerId();
   const [screen, setScreen] = useState<SettingsScreen>("main");
   const slideAnim = useRef(new Animated.Value(0)).current;
 
@@ -98,9 +100,10 @@ export default function Settings() {
 
   // ---- キャラクター一覧 ----
   const loadCharacters = async () => {
+    if (!ownerId) return;
     setCharsLoading(true);
     try {
-      const res = await fetch(`${DEVICE_SETTING_URL}/characters`);
+      const res = await fetch(`${DEVICE_SETTING_URL}/characters?owner_id=${encodeURIComponent(ownerId)}`);
       const data = await res.json();
       setCharacters(data.characters ?? []);
     } catch {
@@ -187,7 +190,7 @@ export default function Settings() {
         const res = await fetch(`${DEVICE_SETTING_URL}/characters`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: charName.trim(), description: charDesc.trim(), personality_prompt: charPrompt.trim(), voice_id: charVoiceId }),
+          body: JSON.stringify({ name: charName.trim(), description: charDesc.trim(), personality_prompt: charPrompt.trim(), voice_id: charVoiceId, owner_id: ownerId }),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
       }
