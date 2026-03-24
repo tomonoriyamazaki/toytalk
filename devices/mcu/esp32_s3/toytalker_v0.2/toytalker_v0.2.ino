@@ -923,9 +923,16 @@ void sendToLambdaAndPlay(const String& text) {
   if (bargeInRequested) {
     Serial.println("🔘 Barge-in: skipping buffer flush");
   } else {
+    // 無音データでDMAバッファをフラッシュ（決め打ちdelayの代わり）
+    Serial.println("🔊 Flushing DMA buffer with silence...");
+    const size_t dmaBytes = 32 * 1024 * 2 * 2; // dma_buf_count * dma_buf_len * 16bit * stereo
+    uint8_t* silence = (uint8_t*)calloc(1, dmaBytes);
+    if (silence) {
+      size_t written = 0;
+      i2s_write(I2S_NUM_1, silence, dmaBytes, &written, portMAX_DELAY);
+      free(silence);
+    }
     Serial.println("🔊 Playback complete");
-    delay(1500);
-    Serial.println("🔊 Buffer flushed");
   }
 
   // アンプOFF＋次回ソフトスタートのためフラグリセット
