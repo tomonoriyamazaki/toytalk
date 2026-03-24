@@ -87,6 +87,12 @@ int breathingValue = 0;
 bool breathingUp = true;
 bool blinkState = false;
 bool ampOn = false;  // アンプON状態管理（ソフトスタート用）
+volatile bool bargeInRequested = false;  // 再生中のbarge-in（ボタン割り込み）フラグ
+
+// Barge-in用ISR（ボタン押下の瞬間にフラグを立てる）
+void IRAM_ATTR onBargeInButton() {
+  bargeInRequested = true;
+}
 
 // ボタン状態
 int lastButtonReading = HIGH;
@@ -720,7 +726,8 @@ void processMetadata(WiFiClientSecure& client, uint32_t length) {
 }
 
 // ==== バイナリプロトコル: PCMデータ処理 (type=0x02) - ストリーミング版 ====
-void processPCM(WiFiClientSecure& client, uint32_t length) {
+// 戻り値: true=barge-in発生（再生中断）, false=正常完了
+bool processPCM(WiFiClientSecure& client, uint32_t length) {
   // アンプをPWMでゆっくりON（突入電流抑制）
   if (!ampOn) {
     ledcAttach(PIN_AMP_SD, 1000, 8);
@@ -747,6 +754,12 @@ void processPCM(WiFiClientSecure& client, uint32_t length) {
   while (remaining > 0) {
     updateLEDAnimation();
 
+    // === Barge-in チェック（ISRでフラグが立っていれば即中断） ===
+    if (bargeInRequested) {
+      Serial.println("🔘 Barge-in! Stopping playback");
+      return true;
+    }
+
     uint32_t chunkSize = (remaining > STREAM_CHUNK_SIZE) ? STREAM_CHUNK_SIZE : remaining;
 
     uint8_t* pcmData = (uint8_t*)ps_malloc(chunkSize);
@@ -762,7 +775,7 @@ void processPCM(WiFiClientSecure& client, uint32_t length) {
         if (read == 0) break;
         remaining -= read;
       }
-      return;
+      return false;
     }
 
     size_t bytesRead = readBytesAcrossChunks(client, pcmData, chunkSize);
@@ -797,6 +810,7 @@ void processPCM(WiFiClientSecure& client, uint32_t length) {
   }
 
   Serial.printf("[PCM] Streaming complete: %d bytes total\n", totalPlayed);
+  return false;
 }
 
 // ==== Lambda に送信 & SSE 受信 ====
@@ -891,7 +905,11 @@ void sendToLambdaAndPlay(const String& text) {
     if (type == 0x01) {
       processMetadata(client, length);
     } else if (type == 0x02) {
-      processPCM(client, length);
+      if (processPCM(client, length)) {
+        Serial.println("🔘 Barge-in: aborting stream");
+        client.stop();
+        break;
+      }
     } else {
       Serial.printf("[BINARY] Unknown type: 0x%02X, skip %d bytes\n", type, length);
       uint8_t* dummy = (uint8_t*)malloc(length);
@@ -902,19 +920,25 @@ void sendToLambdaAndPlay(const String& text) {
     }
   }
 
-  Serial.println("🔊 Playback complete");
+  if (bargeInRequested) {
+    Serial.println("🔘 Barge-in: skipping buffer flush");
+  } else {
+    Serial.println("🔊 Playback complete");
+    delay(1500);
+    Serial.println("🔊 Buffer flushed");
+  }
 
   // アンプOFF＋次回ソフトスタートのためフラグリセット
   digitalWrite(PIN_AMP_SD, LOW);
   ampOn = false;
 
-  delay(1500);
-  Serial.println("🔊 Buffer flushed");
-
+  // barge-in時でも会話履歴は残す（途中でも会話は継続中）
   addToHistory("user", text);
   if (responseText.length() > 0) {
     addToHistory("assistant", responseText);
   }
+
+  bargeInRequested = false;
 
   i2s_stop(I2S_NUM_1);
   i2s_driver_uninstall(I2S_NUM_1);
@@ -1147,8 +1171,9 @@ void setup() {
     Serial.printf("📱 Device MAC (from NVS): %s\n", deviceMacAddress.c_str());
   }
 
-  // ボタン初期化
+  // ボタン初期化 + barge-in用割り込み登録
   pinMode(PIN_BUTTON, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), onBargeInButton, FALLING);
 
   pinMode(PIN_AMP_SD, OUTPUT);
   digitalWrite(PIN_AMP_SD, LOW);
