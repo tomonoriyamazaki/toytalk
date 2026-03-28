@@ -46,6 +46,7 @@ type RegisteredDevice = {
   device_id: string;
   character_id: string | null;
   owner_id: string;
+  device_name: string;
 };
 
 type SessionItem = {
@@ -69,10 +70,10 @@ export default function Toy() {
   const [password, setPassword]                     = useState("");
   const [statusMessage, setStatusMessage]           = useState("");
   const [screen, setScreen]                         = useState<Screen>("home");
-  const [deviceId, setDeviceId]                     = useState<string | null>(null);
-  const [registeredDevice, setRegisteredDevice]     = useState<RegisteredDevice | null>(null);
-  const [characters, setCharacters]                 = useState<CharacterItem[]>([]);
-  const [charactersLoading, setCharactersLoading]   = useState(false);
+  const [deviceId, setDeviceId]                       = useState<string | null>(null);
+  const [registeredDevices, setRegisteredDevices]     = useState<RegisteredDevice[]>([]);
+  const [characters, setCharacters]                   = useState<CharacterItem[]>([]);
+  const [charactersLoading, setCharactersLoading]     = useState(false);
   const [updatingCharacter, setUpdatingCharacter]   = useState(false);
   const [sessions, setSessions]                     = useState<SessionItem[]>([]);
   const [sessionsLoading, setSessionsLoading]       = useState(false);
@@ -84,18 +85,97 @@ export default function Toy() {
     if (Platform.OS === "android") {
       requestAndroidPermissions();
     }
-    // AsyncStorageから登録済みデバイスを復元
-    AsyncStorage.getItem("registeredDevice").then((val) => {
-      if (val) {
-        const d = JSON.parse(val);
-        setRegisteredDevice(d);
-        setDeviceId(d.device_id);
+    // AsyncStorageから登録済みデバイスを復元（旧キーからのマイグレーション対応）
+    (async () => {
+      const newVal = await AsyncStorage.getItem("registeredDevices");
+      if (newVal) {
+        setRegisteredDevices(JSON.parse(newVal));
+      } else {
+        const oldVal = await AsyncStorage.getItem("registeredDevice");
+        if (oldVal) {
+          const d = JSON.parse(oldVal);
+          const migrated = [{ ...d, device_name: d.device_name ?? "" }];
+          setRegisteredDevices(migrated);
+          await AsyncStorage.setItem("registeredDevices", JSON.stringify(migrated));
+          await AsyncStorage.removeItem("registeredDevice");
+        }
       }
-    });
+    })();
     return () => {
       bleManager.stopDeviceScan();
     };
   }, []);
+
+  // サーバーからデバイス一覧を同期
+  useEffect(() => {
+    if (!ownerId) return;
+    (async () => {
+      try {
+        const res = await fetch(`${DEVICE_SETTING_URL}/devices?owner_id=${encodeURIComponent(ownerId)}`);
+        const data = await res.json();
+        if (data.devices?.length > 0) {
+          const devices = data.devices.map((d: any) => ({
+            device_id: d.device_id,
+            character_id: d.character_id,
+            owner_id: d.owner_id,
+            device_name: d.device_name ?? "",
+          }));
+          setRegisteredDevices(devices);
+          await AsyncStorage.setItem("registeredDevices", JSON.stringify(devices));
+        }
+      } catch {}
+    })();
+  }, [ownerId]);
+
+  // キャラクター一覧をプリフェッチ（名前表示用）
+  useEffect(() => {
+    if (!ownerId) return;
+    (async () => {
+      try {
+        const res = await fetch(`${DEVICE_SETTING_URL}/characters?owner_id=${encodeURIComponent(ownerId)}`);
+        const data = await res.json();
+        setCharacters(data.characters ?? []);
+      } catch {}
+    })();
+  }, [ownerId]);
+
+  const currentDevice = registeredDevices.find((d) => d.device_id === deviceId) ?? null;
+
+  const addOrUpdateDevice = async (device: RegisteredDevice) => {
+    setRegisteredDevices((prev) => {
+      const idx = prev.findIndex((d) => d.device_id === device.device_id);
+      const updated = idx >= 0
+        ? prev.map((d, i) => (i === idx ? { ...device, device_name: device.device_name || d.device_name } : d))
+        : [...prev, device];
+      AsyncStorage.setItem("registeredDevices", JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const removeDevice = async (targetDeviceId: string) => {
+    setRegisteredDevices((prev) => {
+      const updated = prev.filter((d) => d.device_id !== targetDeviceId);
+      AsyncStorage.setItem("registeredDevices", JSON.stringify(updated));
+      return updated;
+    });
+    setDeviceId(null);
+    setScreen("home");
+  };
+
+  const updateDeviceName = async (targetDeviceId: string, name: string) => {
+    setRegisteredDevices((prev) => {
+      const updated = prev.map((d) => (d.device_id === targetDeviceId ? { ...d, device_name: name } : d));
+      AsyncStorage.setItem("registeredDevices", JSON.stringify(updated));
+      return updated;
+    });
+    try {
+      await fetch(`${DEVICE_SETTING_URL}/devices/${encodeURIComponent(targetDeviceId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device_name: name }),
+      });
+    } catch {}
+  };
 
   const requestAndroidPermissions = async () => {
     if (Platform.OS === "android" && Platform.Version >= 31) {
@@ -213,8 +293,7 @@ export default function Toy() {
       // 登録後にデバイス情報を取得
       const deviceRes = await fetch(`${DEVICE_SETTING_URL}/devices/${encodeURIComponent(mac)}`);
       const deviceData = await deviceRes.json();
-      setRegisteredDevice(deviceData);
-      await AsyncStorage.setItem("registeredDevice", JSON.stringify(deviceData));
+      await addOrUpdateDevice({ ...deviceData, device_name: deviceData.device_name ?? "" });
       setStatusMessage("デバイス登録完了！");
     } catch (e: any) {
       setStatusMessage("デバイス登録エラー: " + e.message);
@@ -266,7 +345,7 @@ export default function Toy() {
     setCharactersLoading(true);
     setScreen("character-select");
     try {
-      const res = await fetch(`${DEVICE_SETTING_URL}/characters`);
+      const res = await fetch(`${DEVICE_SETTING_URL}/characters?owner_id=${encodeURIComponent(ownerId!)}`);
       const data = await res.json();
       setCharacters(data.characters ?? []);
     } catch (e: any) {
@@ -286,9 +365,9 @@ export default function Toy() {
         body: JSON.stringify({ character_id: characterId }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setRegisteredDevice((prev) => {
-        const updated = prev ? { ...prev, character_id: characterId } : prev;
-        if (updated) AsyncStorage.setItem("registeredDevice", JSON.stringify(updated));
+      setRegisteredDevices((prev) => {
+        const updated = prev.map((d) => (d.device_id === deviceId ? { ...d, character_id: characterId } : d));
+        AsyncStorage.setItem("registeredDevices", JSON.stringify(updated));
         return updated;
       });
       setScreen("device-settings");
@@ -330,10 +409,11 @@ export default function Toy() {
     }
   };
 
-  const currentCharacterLabel = () => {
-    if (!registeredDevice?.character_id || registeredDevice.character_id === "default") return "デフォルト";
-    const c = characters.find((c) => c.character_id === registeredDevice.character_id);
-    return c ? c.name : registeredDevice.character_id;
+  const currentCharacterLabel = (device?: RegisteredDevice | null) => {
+    const d = device ?? currentDevice;
+    if (!d?.character_id || d.character_id === "default") return "デフォルト";
+    const c = characters.find((c) => c.character_id === d.character_id);
+    return c ? c.name : d.character_id;
   };
 
   // ---- 会話メッセージ画面 ----
@@ -415,7 +495,7 @@ export default function Toy() {
 
   // ---- キャラクター選択画面 ----
   if (screen === "character-select") {
-    const currentId = registeredDevice?.character_id ?? DEFAULT_CHARACTER_ID;
+    const currentId = currentDevice?.character_id ?? DEFAULT_CHARACTER_ID;
     const systemChars = characters.filter((c) => c.owner_id === "system");
     const userChars   = characters.filter((c) => c.owner_id !== "system");
 
@@ -479,6 +559,26 @@ export default function Toy() {
 
   // ---- デバイス設定画面 ----
   if (screen === "device-settings") {
+    const deleteDevice = () => {
+      Alert.alert("デバイスを削除", "このデバイスの登録を解除しますか？", [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "削除",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await fetch(`${DEVICE_SETTING_URL}/devices/${encodeURIComponent(deviceId!)}`, {
+                method: "DELETE",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ owner_id: ownerId }),
+              });
+            } catch {}
+            await removeDevice(deviceId!);
+          },
+        },
+      ]);
+    };
+
     return (
       <SafeAreaView style={s.root}>
         <View style={s.header}>
@@ -487,7 +587,21 @@ export default function Toy() {
           </TouchableOpacity>
           <Text style={s.headerTitle}>デバイス設定</Text>
         </View>
-        <View style={s.wrap}>
+        <ScrollView contentContainerStyle={s.wrap}>
+          <TextInput
+            style={s.input}
+            value={currentDevice?.device_name ?? ""}
+            onChangeText={(text) => {
+              setRegisteredDevices((prev) =>
+                prev.map((d) => (d.device_id === deviceId ? { ...d, device_name: text } : d))
+              );
+            }}
+            onEndEditing={(e) => {
+              if (deviceId) updateDeviceName(deviceId, e.nativeEvent.text);
+            }}
+            placeholder={deviceId ?? "デバイス名を入力"}
+            autoCapitalize="none"
+          />
           <Text style={s.deviceIdText}>{deviceId}</Text>
           <TouchableOpacity style={s.settingRow} onPress={openCharacterSelect}>
             <View>
@@ -503,7 +617,10 @@ export default function Toy() {
             </View>
             <Text style={s.chevron}>›</Text>
           </TouchableOpacity>
-        </View>
+          <TouchableOpacity style={s.deleteButton} onPress={deleteDevice}>
+            <Text style={s.deleteButtonText}>デバイスを削除</Text>
+          </TouchableOpacity>
+        </ScrollView>
       </SafeAreaView>
     );
   }
@@ -630,18 +747,27 @@ export default function Toy() {
         )}
 
         {/* 登録済みデバイス（常に最下部に表示） */}
-        {registeredDevice && (
+        {registeredDevices.length > 0 && (
           <View style={s.section}>
             <Text style={s.subtitle}>登録済みデバイス</Text>
-            <TouchableOpacity style={s.deviceItem} onPress={openDeviceSettings}>
-              <View>
-                <Text style={s.deviceName}>{registeredDevice.device_id}</Text>
-                <Text style={s.deviceSub}>
-                  キャラクター: {registeredDevice.character_id ?? "未設定"}
-                </Text>
-              </View>
-              <Text style={s.chevron}>›</Text>
-            </TouchableOpacity>
+            {registeredDevices.map((device) => (
+              <TouchableOpacity
+                key={device.device_id}
+                style={s.deviceItem}
+                onPress={() => {
+                  setDeviceId(device.device_id);
+                  openDeviceSettings();
+                }}
+              >
+                <View>
+                  <Text style={s.deviceName}>{device.device_name || device.device_id}</Text>
+                  <Text style={s.deviceSub}>
+                    キャラクター: {currentCharacterLabel(device)}
+                  </Text>
+                </View>
+                <Text style={s.chevron}>›</Text>
+              </TouchableOpacity>
+            ))}
           </View>
         )}
       </ScrollView>
@@ -690,6 +816,9 @@ const s = StyleSheet.create({
   characterLabelSelected:{ color: "#007AFF", fontWeight: "600" },
   characterDesc:         { fontSize: 12, color: "#888", marginTop: 2 },
   sectionHeader:         { fontSize: 13, fontWeight: "700", color: "#555", marginTop: 12, marginBottom: 6, textTransform: "uppercase" },
+  // 削除ボタン
+  deleteButton:          { marginTop: 24, padding: 16, borderRadius: 12, borderWidth: 1, borderColor: "#ff3b30", alignItems: "center" as const },
+  deleteButtonText:      { color: "#ff3b30", fontSize: 16, fontWeight: "600" as const },
   // 会話ログ
   emptyText:             { fontSize: 14, color: "#999" },
   msgBubble:             { padding: 12, borderRadius: 12, maxWidth: "85%" },

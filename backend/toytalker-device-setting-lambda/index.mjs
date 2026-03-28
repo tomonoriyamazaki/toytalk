@@ -125,6 +125,7 @@ export const handler = async (event) => {
           device_id,
           owner_id,
           character_id: "default",
+          device_name: "",
           created_at: now,
           last_seen: now,
         },
@@ -147,6 +148,41 @@ export const handler = async (event) => {
       return response(200, { device_id, message: "Device registered" });
     }
 
+    // ---- GET /devices ---- デバイス一覧取得（owner_id でフィルタ）
+    if (method === "GET" && path === "/devices") {
+      const owner_id = event.queryStringParameters?.owner_id;
+      if (!owner_id) return response(400, { error: "owner_id is required" });
+
+      const result = await ddb.send(new ScanCommand({
+        TableName: DEVICES_TABLE,
+        FilterExpression: "owner_id = :o",
+        ExpressionAttributeValues: { ":o": owner_id },
+      }));
+      return response(200, { devices: result.Items ?? [] });
+    }
+
+    // ---- DELETE /devices/{device_id} ---- デバイス削除
+    if (method === "DELETE" && path.startsWith("/devices/")) {
+      const device_id = decodeURIComponent(path.split("/")[2]);
+      const body = JSON.parse(event.body ?? "{}");
+      const { owner_id } = body;
+
+      const existing = await ddb.send(new GetCommand({
+        TableName: DEVICES_TABLE,
+        Key: { device_id },
+      }));
+      if (!existing.Item) return response(404, { error: "Device not found" });
+      if (owner_id && existing.Item.owner_id !== owner_id) {
+        return response(403, { error: "Not authorized to delete this device" });
+      }
+
+      await ddb.send(new DeleteCommand({
+        TableName: DEVICES_TABLE,
+        Key: { device_id },
+      }));
+      return response(200, { message: "Device deleted" });
+    }
+
     // ---- GET /devices/{device_id} ---- デバイス取得
     if (method === "GET" && path.startsWith("/devices/")) {
       const device_id = decodeURIComponent(path.split("/")[2]);
@@ -158,23 +194,27 @@ export const handler = async (event) => {
       return response(200, result.Item);
     }
 
-    // ---- PUT /devices/{device_id} ---- キャラクター設定更新
+    // ---- PUT /devices/{device_id} ---- デバイス設定更新（character_id / device_name）
     if (method === "PUT" && path.startsWith("/devices/")) {
       const device_id = decodeURIComponent(path.split("/")[2]);
       const body      = JSON.parse(event.body ?? "{}");
-      const { character_id } = body;
-      if (!character_id) return response(400, { error: "character_id is required" });
+      const { character_id, device_name } = body;
+
+      const updates = ["last_seen = :t"];
+      const vals = { ":t": new Date().toISOString() };
+      if (character_id !== undefined) { updates.push("character_id = :c"); vals[":c"] = character_id; }
+      if (device_name  !== undefined) { updates.push("device_name = :n");  vals[":n"] = device_name; }
+      if (character_id === undefined && device_name === undefined) {
+        return response(400, { error: "character_id or device_name is required" });
+      }
 
       await ddb.send(new UpdateCommand({
         TableName: DEVICES_TABLE,
         Key: { device_id },
-        UpdateExpression: "SET character_id = :c, last_seen = :t",
-        ExpressionAttributeValues: {
-          ":c": character_id,
-          ":t": new Date().toISOString(),
-        },
+        UpdateExpression: "SET " + updates.join(", "),
+        ExpressionAttributeValues: vals,
       }));
-      return response(200, { device_id, character_id, message: "Device updated" });
+      return response(200, { device_id, message: "Device updated" });
     }
 
     // ---- GET /logs/sessions ---- セッション一覧取得
