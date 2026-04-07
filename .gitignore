@@ -25,3 +25,8 @@ bundle.js
 *.kicad_prl
 fp-info-cache
 *-backups/
+*.bak
+*.kicad_sch-bak
+*- コピー*
+*.ino.backup
+.theia/
