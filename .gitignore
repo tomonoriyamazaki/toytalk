@@ -18,6 +18,9 @@ bundle.js
 # macOS
 .DS_Store
 
+# Claude Code local settings
+.claude/settings.local.json
+
 # KiCad temporary files
 *_autosave-*
 ~*.kicad_*.lck

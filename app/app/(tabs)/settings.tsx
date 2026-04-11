@@ -216,7 +216,7 @@ export default function Settings() {
         </View>
         <ScrollView contentContainerStyle={s.wrap}>
           {[
-            { ver: "0.7.1", date: "20260328", desc: "複数デバイスの登録機能、他のユーザーの会話が見えてしまう問題を修正" },
+            { ver: "0.7.1", date: "20260328", desc: "複数デバイスの登録機能追加、他のユーザーの会話が見えてしまう問題を修正" },
             { ver: "0.7.0", date: "20260322", desc: "キャラクターシステム追加、会話ログ機能追加、UI刷新" },
             { ver: "0.6.0", date: "20260306", desc: "ボイス追加：ElevenLabs / Fish Audio（※デモ用）" },
             { ver: "0.5.6", date: "20260210", desc: "おもちゃにWIFI設定機能追加" },
