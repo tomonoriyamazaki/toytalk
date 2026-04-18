@@ -38,7 +38,7 @@ type VoiceItem = {
 };
 
 const DEVICE_SETTING_URL = "https://7k6nkpy3tf2drljy77pnouohjm0buoux.lambda-url.ap-northeast-1.on.aws";
-const PROVIDER_ORDER = ["OpenAI", "Google", "Gemini", "ElevenLabs", "FishAudio"];
+// プロバイダー一覧はvoicesテーブルから動的に取得
 
 const PERSONALITY_TEMPLATES = [
   { label: "海賊",   prompt: "あなたは明るく威勢の良い海賊です。「〜でさあ」「〜じゃな」など海賊らしい口調で話してください。" },
@@ -291,7 +291,8 @@ export default function Settings() {
     );
   }
 
-  const voiceSections = PROVIDER_ORDER
+  const providerOrder = [...new Set(voices.map((v) => v.provider))];
+  const voiceSections = providerOrder
     .map((provider) => ({ title: provider, data: voices.filter((v) => v.provider === provider) }))
     .filter((sec) => sec.data.length > 0);
 
