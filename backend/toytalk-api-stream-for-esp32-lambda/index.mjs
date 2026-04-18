@@ -1,6 +1,6 @@
   // Node.js 18+ / ESM（index.mjs）
   // Handler: index.handler
-  // Env: OPENAI_API_KEY, GOOGLE_API_KEY, ELEVENLABS_API_KEY, FISHAUDIO_API_KEY
+  // Env: OPENAI_API_KEY, GOOGLE_API_KEY, ELEVENLABS_API_KEY, FISHAUDIO_API_KEY, SAKURA_API_KEY
   import OpenAI from "openai";
   import { createHash } from "node:crypto";
   import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -87,6 +87,12 @@
       llmModel:  "gpt-4.1-mini",
       ttsVendor: "fishaudio",
       ttsModel:  "fishaudio",
+    },
+    Sakura: {
+      llmVendor: "openai",
+      llmModel:  "gpt-4.1-mini",
+      ttsVendor: "sakura",
+      ttsModel:  "sakura",
     },
   };
 
@@ -298,6 +304,39 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     return pcmBuffer;
   }
 
+  // Sakura (VOICEVOX) TTS → Buffer (raw PCM)
+  async function ttsBufferSakura(text, { model = "zundamon", style = "normal" } = {}) {
+    const key = process.env.SAKURA_API_KEY;
+    if (!key) throw new Error("SAKURA_API_KEY is not set");
+
+    const resp = await fetch("https://api.ai.sakura.ad.jp/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${key}`,
+        "Content-Type": "application/json",
+        "Accept": "audio/wav",
+      },
+      body: JSON.stringify({
+        model,
+        input: text,
+        voice: style,
+        response_format: "wav",
+      }),
+    });
+
+    if (!resp.ok) {
+      const errorText = await resp.text();
+      throw new Error(`Sakura TTS failed: ${resp.status} ${errorText}`);
+    }
+
+    const wavBuffer = Buffer.from(await resp.arrayBuffer());
+    // WAVヘッダ（44バイト）をスキップしてPCMデータを取得
+    const pcmBuffer = wavBuffer.slice(44);
+    console.log(`[TTS Sakura] WAV size: ${wavBuffer.length}, PCM size: ${pcmBuffer.length} bytes`);
+
+    return pcmBuffer;
+  }
+
   // DynamoDBからdevice_idに紐づくキャラクター＆ボイス設定を解決
   // 解決チェーン: device → character(voice_id + personality_prompt) → voice(provider + vendor_id)
   async function resolveCharacterFromDynamo(deviceId) {
@@ -367,6 +406,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       if (s.includes("gemini"))      return "Gemini";
       if (s.includes("elevenlabs"))  return "ElevenLabs";
       if (s.includes("fishaudio") || s.includes("fish")) return "FishAudio";
+      if (s.includes("sakura"))    return "Sakura";
       return undefined;
     }
 
@@ -500,6 +540,9 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         } else if (cfg.ttsVendor === "fishaudio") {
           const referenceId = voice === "default" ? "hMK7c1GPJmptCzI4bQIu" : voice;
           pcmBuffer = await ttsBufferFishAudio(t, { referenceId });
+        } else if (cfg.ttsVendor === "sakura") {
+          const modelName = voice === "default" ? "zundamon" : voice;
+          pcmBuffer = await ttsBufferSakura(t, { model: modelName });
         } else {
           throw new Error("Unknown ttsVendor");
         }
