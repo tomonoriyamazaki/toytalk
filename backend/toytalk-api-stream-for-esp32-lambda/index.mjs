@@ -12,6 +12,7 @@
   const VOICES_TABLE     = "toytalker-voices";
   const CHARACTERS_TABLE = "toytalker-characters";
   const CHAT_LOGS_TABLE  = "toytalker-chat-logs";
+  const LLMS_TABLE       = "toytalker-llms";
 
   async function saveLog(item) {
     try {
@@ -54,47 +55,20 @@
 
   const sha1  = (s)=>createHash("sha1").update(s).digest("hex");
 
-  // ---- 選択モデル定義（まずは OpenAI 固定運用）----
-  const MODEL_DEFAULT = "OpenAI";
-  /** 将来の拡張用にテーブル化しておく（今は OpenAI だけ使う） */
-  const MODEL_TABLE = {
-    OpenAI: {
-      llmVendor: "openai",
-      llmModel:  "gpt-4.1-mini",
-      ttsVendor: "openai",
-      ttsModel:  "gpt-4o-mini-tts-2025-03-20",
-    },
-    Google: {
-      llmVendor: "openai",
-      llmModel:  "gpt-4.1-mini",
-      ttsVendor: "google",
-      ttsModel:  "google-tts",
-    },
-    Gemini: {
-      llmVendor: "openai",
-      llmModel:  "gpt-4.1-mini",
-      ttsVendor: "gemini",
-      ttsModel:  "gemini-2.5-flash-preview-tts",
-    },
-    ElevenLabs: {
-      llmVendor: "openai",
-      llmModel:  "gpt-4.1-mini",
-      ttsVendor: "elevenlabs",
-      ttsModel:  "eleven_turbo_v2_5",
-    },
-    FishAudio: {
-      llmVendor: "openai",
-      llmModel:  "gpt-4.1-mini",
-      ttsVendor: "fishaudio",
-      ttsModel:  "fishaudio",
-    },
-    Sakura: {
-      llmVendor: "openai",
-      llmModel:  "gpt-4.1-mini",
-      ttsVendor: "sakura",
-      ttsModel:  "sakura",
-    },
+  // ---- TTS設定（プロバイダーごと）----
+  const TTS_DEFAULT = "OpenAI";
+  const TTS_TABLE = {
+    OpenAI:     { ttsVendor: "openai",     ttsModel: "gpt-4o-mini-tts-2025-03-20" },
+    Google:     { ttsVendor: "google",     ttsModel: "google-tts" },
+    Gemini:     { ttsVendor: "gemini",     ttsModel: "gemini-2.5-flash-preview-tts" },
+    ElevenLabs: { ttsVendor: "elevenlabs", ttsModel: "eleven_turbo_v2_5" },
+    FishAudio:  { ttsVendor: "fishaudio",  ttsModel: "fishaudio" },
+    Sakura:     { ttsVendor: "sakura",     ttsModel: "sakura" },
   };
+
+  // ---- LLMデフォルト（llm_id未設定時のフォールバック）----
+  const LLM_DEFAULT_PROVIDER = "openai";
+  const LLM_DEFAULT_MODEL    = "gpt-4.1-mini";
 
 
 
@@ -350,8 +324,8 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
 
       let voiceId = null;
       let personalityPrompt = null;
+      let llmId = null;
 
-      // character_id があればキャラクターテーブルを参照
       if (device.character_id && device.character_id !== "default") {
         const charRes = await ddb.send(new GetCommand({
           TableName: CHARACTERS_TABLE,
@@ -360,10 +334,10 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         if (charRes.Item) {
           voiceId = charRes.Item.voice_id ?? null;
           personalityPrompt = charRes.Item.personality_prompt || null;
+          llmId = charRes.Item.llm_id ?? null;
         }
       }
 
-      // character_id が未設定またはキャラに voice_id がなければ device.voice_id にフォールバック（後方互換）
       if (!voiceId) voiceId = device.voice_id ?? null;
       if (!voiceId) return null;
 
@@ -373,11 +347,27 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       }));
       if (!voiceRes.Item) return null;
 
+      // LLM設定を解決（llm_id未設定ならデフォルト）
+      let llmProvider = LLM_DEFAULT_PROVIDER;
+      let llmModelId  = LLM_DEFAULT_MODEL;
+      if (llmId) {
+        const llmRes = await ddb.send(new GetCommand({
+          TableName: LLMS_TABLE,
+          Key: { llm_id: llmId },
+        }));
+        if (llmRes.Item) {
+          llmProvider = llmRes.Item.provider;
+          llmModelId  = llmRes.Item.model_id;
+        }
+      }
+
       return {
         provider: voiceRes.Item.provider,
         vendorId: voiceRes.Item.vendor_id,
         personalityPrompt,
         ownerId: device.owner_id ?? null,
+        llmProvider,
+        llmModelId,
       };
     } catch (e) {
       console.error("[DynamoDB] resolveCharacterFromDynamo error:", e);
@@ -411,29 +401,32 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     }
 
     // device_idがあればDynamoDBからキャラクター＆ボイス設定を取得、なければbodyの値を使う
-    let modelKey = normalizeModelKey(body.model) ?? MODEL_DEFAULT;
+    let ttsKey = normalizeModelKey(body.model) ?? TTS_DEFAULT;
     let voice    = body.voice ?? VOICE_DEFAULT;
     let personalityPrompt = null;
+    let llmProvider = LLM_DEFAULT_PROVIDER;
+    let llmModelId  = LLM_DEFAULT_MODEL;
 
     if (deviceId) {
       const charConfig = await resolveCharacterFromDynamo(deviceId);
       if (charConfig) {
-        modelKey = normalizeModelKey(charConfig.provider) ?? modelKey;
+        ttsKey = normalizeModelKey(charConfig.provider) ?? ttsKey;
         voice    = charConfig.vendorId ?? voice;
         personalityPrompt = charConfig.personalityPrompt;
+        llmProvider = charConfig.llmProvider;
+        llmModelId  = charConfig.llmModelId;
         if (charConfig.ownerId) ownerId = charConfig.ownerId;
-        console.log(`[DynamoDB] device=${deviceId}, provider=${charConfig.provider}, vendorId=${charConfig.vendorId}, hasPersonality=${!!personalityPrompt}, ownerId=${ownerId}`);
+        console.log(`[DynamoDB] device=${deviceId}, tts=${charConfig.provider}, voice=${charConfig.vendorId}, llm=${llmProvider}/${llmModelId}, hasPersonality=${!!personalityPrompt}, ownerId=${ownerId}`);
       } else {
         console.log(`[DynamoDB] device=${deviceId} not found or no character set, using defaults`);
       }
     }
 
-    const cfg = MODEL_TABLE[modelKey] ?? MODEL_TABLE[MODEL_DEFAULT];
+    const cfg = TTS_TABLE[ttsKey] ?? TTS_TABLE[TTS_DEFAULT];
 
-
-    // クライアント側の計測・デバッグ用に「採用モデル」を通知
-    sendMeta(res, "mark", { k: "model", v: modelKey });
-    sendMeta(res, "mark", { k: "llm_vendor", v: cfg.llmVendor });
+    sendMeta(res, "mark", { k: "model", v: ttsKey });
+    sendMeta(res, "mark", { k: "llm_vendor", v: llmProvider });
+    sendMeta(res, "mark", { k: "llm_model", v: llmModelId });
     sendMeta(res, "mark", { k: "tts_vendor", v: cfg.ttsVendor });
 
     // サーバ基準時刻（クライアントがREQ_TTFBやLLM/TTSとの相対を取れる）
@@ -459,23 +452,34 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     }
 
     // システムプロンプトを追加（キャラクターの個性 + 共通指示）
-    const basePrompt = "あなたは子供向けの友好的な音声アシスタントです。簡潔に答えて、自然に会話を続けてください。漢字は最小限にして、ひらがな多めで答えてください。";
+    const now = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", year: "numeric", month: "long", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit" });
+    const basePrompt = `あなたは子供向けの友好的な音声アシスタントです。簡潔に答えて、自然に会話を続けてください。漢字は最小限にして、ひらがな多めで答えてください。単語の間に半角スペースを入れないでください。現在の日時は${now}です。日時を聞かれたら年は省略して簡潔に答えてください。相手が話した言語で返答してください。`;
     const systemPrompt = {
       role: "system",
       content: personalityPrompt ? `${personalityPrompt}\n\n${basePrompt}` : basePrompt,
     };
     const messagesWithSystem = [systemPrompt, ...messages];
 
-    let llmStream;
-    if (cfg.llmVendor === "openai") {
-      const llm = await openai.chat.completions.create({
-        model: cfg.llmModel,
-        temperature: 0.7,
-        stream: true,
-        stream_options: { include_usage: true },
-        messages: messagesWithSystem,
-      });
-      llmStream = (async function* () {
+    // ---- ストリーム状態 ----
+    let buf = "";
+    let textAll = "";
+    let segSeq = 0;
+    let lastSegHash = "";
+    let firstTtsMarked = false;
+    let ttsChain = Promise.resolve();
+    let llmTokensIn = 0, llmTokensOut = 0;
+    let ttsInputChars = 0;
+
+    // ---- LLM ストリーム生成 ----
+    function streamLLMOpenAI(msgs, model) {
+      return (async function* () {
+        const llm = await openai.chat.completions.create({
+          model,
+          temperature: 0.7,
+          stream: true,
+          stream_options: { include_usage: true },
+          messages: msgs,
+        });
         for await (const chunk of llm) {
           if (chunk.usage) {
             llmTokensIn  = chunk.usage.prompt_tokens     ?? 0;
@@ -485,26 +489,138 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
           if (delta) yield delta;
         }
       })();
-    } else {
-    // もし将来 Gemini LLM に切り替えるならここで実装
-    const fallback = "（LLM ルート未実装です）";
-    llmStream = (async function* () { yield fallback; })();
-  }
+    }
 
-    // ---- ストリーム状態 ----
-    let buf = "";                 // ★ここで1回だけ宣言
-    let textAll = "";
-    let segSeq = 0;
-    let lastSegHash = "";
-    let firstTtsMarked = false;
-    let ttsChain = Promise.resolve();
-    let llmTokensIn = 0, llmTokensOut = 0;
-    let ttsInputChars = 0;
+    function streamLLMGemini(msgs, model) {
+      const systemMsg = msgs.find(m => m.role === "system");
+      const chatMsgs = msgs.filter(m => m.role !== "system");
+      const contents = chatMsgs.map(m => ({
+        role: m.role === "assistant" ? "model" : m.role,
+        parts: [{ text: m.content }],
+      }));
+      const body = { contents };
+      if (systemMsg) {
+        body.systemInstruction = { parts: [{ text: systemMsg.content }] };
+      }
+      body.generationConfig = { temperature: 0.7 };
+
+      const key = process.env.GOOGLE_API_KEY;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${key}`;
+
+      return (async function* () {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          throw new Error(`Gemini API error: ${resp.status} ${errText}`);
+        }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop();
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const data = line.slice(6).trim();
+            if (data === "[DONE]") return;
+            try {
+              const parsed = JSON.parse(data);
+              const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+              if (parsed.usageMetadata) {
+                llmTokensIn  = parsed.usageMetadata.promptTokenCount ?? 0;
+                llmTokensOut = parsed.usageMetadata.candidatesTokenCount ?? 0;
+              }
+              if (text) yield text;
+            } catch {}
+          }
+        }
+      })();
+    }
+
+    function streamLLMAnthropic(msgs, model) {
+      const systemMsg = msgs.find(m => m.role === "system");
+      const chatMsgs = msgs.filter(m => m.role !== "system");
+
+      const body = {
+        model,
+        max_tokens: 1024,
+        stream: true,
+        temperature: 0.7,
+        messages: chatMsgs,
+      };
+      if (systemMsg) {
+        body.system = systemMsg.content;
+      }
+
+      const key = process.env.ANTHROPIC_API_KEY;
+
+      return (async function* () {
+        const resp = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          throw new Error(`Anthropic API error: ${resp.status} ${errText}`);
+        }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop();
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const data = line.slice(6).trim();
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.type === "content_block_delta") {
+                const text = parsed.delta?.text ?? "";
+                if (text) yield text;
+              } else if (parsed.type === "message_delta" && parsed.usage) {
+                llmTokensOut = parsed.usage.output_tokens ?? 0;
+              } else if (parsed.type === "message_start" && parsed.message?.usage) {
+                llmTokensIn = parsed.message.usage.input_tokens ?? 0;
+              } else if (parsed.type === "message_stop") {
+                return;
+              }
+            } catch {}
+          }
+        }
+      })();
+    }
+
+    let llmStream;
+    if (llmProvider === "openai") {
+      llmStream = streamLLMOpenAI(messagesWithSystem, llmModelId);
+    } else if (llmProvider === "google") {
+      llmStream = streamLLMGemini(messagesWithSystem, llmModelId);
+    } else if (llmProvider === "anthropic") {
+      llmStream = streamLLMAnthropic(messagesWithSystem, llmModelId);
+    } else {
+      const fallback = "（LLM ルート未実装です）";
+      llmStream = (async function* () { yield fallback; })();
+    }
 
 
     // segment を送る唯一の経路
     async function emitSegment(text, { final=false } = {}) {
-      const t = String(text ?? "").trim();
+      const t = String(text ?? "").trim().replace(/(?<=[\u3000-\u9fff])\s+(?=[\u3000-\u9fff])/g, "");
       if (!t) return;
       const h = sha1(t);
       if (h === lastSegHash) return;     // 同一文は再送しない
@@ -563,7 +679,14 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         textAll += delta;
         buf     += delta;
         if (DEBUG) sendMeta(res, "llm_token", { token: delta });
-        if (endsWithSentence(buf) || buf.trim().length >= SEG_MAX_CHARS) {
+        // buf内に文末があれば即分割してTTSに送る
+        let match;
+        while ((match = buf.match(/^(.*?[。！？!?])\s*/s))) {
+          const segText = match[1].trim();
+          buf = buf.slice(match[0].length);
+          if (segText) await emitSegment(segText);
+        }
+        if (buf.trim().length >= SEG_MAX_CHARS) {
           const segText = buf.trim();
           buf = "";
           await emitSegment(segText);
@@ -586,7 +709,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
           owner_id: ownerId, device_id: deviceId, source: "esp",
           role: "assistant", content: textAll.trim(),
           content_type: "text", timestamp: assistantTimestamp, session_id: sessionId,
-          llm_provider: cfg.llmVendor, llm_model: cfg.llmModel,
+          llm_provider: llmProvider, llm_model: llmModelId,
           llm_tokens_in: llmTokensIn, llm_tokens_out: llmTokensOut,
           tts_provider: cfg.ttsVendor, tts_input_units: ttsInputChars, tts_input_unit_type: "characters",
           stt_provider: "soniox", stt_input_units: null, stt_input_unit_type: null,

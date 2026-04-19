@@ -12,6 +12,7 @@ const DEVICES_TABLE    = "toytalker-devices";
 const VOICES_TABLE     = "toytalker-voices";
 const CHARACTERS_TABLE = "toytalker-characters";
 const CHAT_LOGS_TABLE  = "toytalker-chat-logs";
+const LLMS_TABLE       = "toytalker-llms";
 
 const response = (statusCode, body) => ({
   statusCode,
@@ -26,6 +27,12 @@ export const handler = async (event) => {
   console.log(`[Request] ${method} ${path}`);
 
   try {
+
+    // ---- GET /llms ---- LLM一覧取得
+    if (method === "GET" && path === "/llms") {
+      const result = await ddb.send(new ScanCommand({ TableName: LLMS_TABLE }));
+      return response(200, { llms: result.Items ?? [] });
+    }
 
     // ---- GET /voices ---- ボイス一覧取得
     if (method === "GET" && path === "/voices") {
@@ -50,7 +57,7 @@ export const handler = async (event) => {
     // ---- POST /characters ---- キャラクター作成
     if (method === "POST" && path === "/characters") {
       const body = JSON.parse(event.body ?? "{}");
-      const { name, description = "", personality_prompt = "", voice_id = "elevenlabs_sameno", owner_id = "user_123" } = body;
+      const { name, description = "", personality_prompt = "", voice_id = "elevenlabs_sameno", llm_id = "openai_gpt41mini", owner_id = "user_123" } = body;
       if (!name) return response(400, { error: "name is required" });
 
       const character_id = `${owner_id}_${Date.now()}`;
@@ -63,6 +70,7 @@ export const handler = async (event) => {
           description,
           personality_prompt,
           voice_id,
+          llm_id,
           created_at: new Date().toISOString(),
         },
       }));
@@ -83,6 +91,7 @@ export const handler = async (event) => {
       if (description       !== undefined) { updates.push("#ds = :d");  names["#ds"] = "description"; vals[":d"] = description; }
       if (personality_prompt !== undefined) { updates.push("personality_prompt = :p");                 vals[":p"] = personality_prompt; }
       if (voice_id          !== undefined) { updates.push("voice_id = :v");                            vals[":v"] = voice_id; }
+      if (body.llm_id       !== undefined) { updates.push("llm_id = :l");                              vals[":l"] = body.llm_id; }
       if (updates.length === 0) return response(400, { error: "No fields to update" });
 
       await ddb.send(new UpdateCommand({

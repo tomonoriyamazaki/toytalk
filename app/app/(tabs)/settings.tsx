@@ -19,7 +19,7 @@ import { useOwnerId } from "../../hooks/useOwnerId";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 
-type SettingsScreen = "main" | "stt-select" | "character-list" | "character-edit" | "voice-select" | "version";
+type SettingsScreen = "main" | "stt-select" | "character-list" | "character-edit" | "voice-select" | "llm-select" | "version";
 
 type CharacterItem = {
   character_id: string;
@@ -27,6 +27,7 @@ type CharacterItem = {
   description: string;
   owner_id: string;
   voice_id: string;
+  llm_id?: string;
   personality_prompt?: string;
 };
 
@@ -35,6 +36,13 @@ type VoiceItem = {
   label: string;
   provider: string;
   vendor_id: string;
+};
+
+type LlmItem = {
+  llm_id: string;
+  label: string;
+  provider: string;
+  model_id: string;
 };
 
 const DEVICE_SETTING_URL = "https://7k6nkpy3tf2drljy77pnouohjm0buoux.lambda-url.ap-northeast-1.on.aws";
@@ -78,12 +86,17 @@ export default function Settings() {
   const [charDesc, setCharDesc] = useState("");
   const [charPrompt, setCharPrompt] = useState("");
   const [charVoiceId, setCharVoiceId] = useState("elevenlabs_sameno");
+  const [charLlmId, setCharLlmId] = useState("openai_gpt41mini");
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   // ボイス一覧
   const [voices, setVoices] = useState<VoiceItem[]>([]);
   const [voicesLoading, setVoicesLoading] = useState(false);
+
+  // LLM一覧
+  const [llms, setLlms] = useState<LlmItem[]>([]);
+  const [llmsLoading, setLlmsLoading] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -126,6 +139,19 @@ export default function Settings() {
     }
   };
 
+  const loadLlms = async () => {
+    setLlmsLoading(true);
+    try {
+      const res = await fetch(`${DEVICE_SETTING_URL}/llms`);
+      const data = await res.json();
+      setLlms(data.llms ?? []);
+    } catch {
+      Alert.alert("エラー", "LLM一覧の取得に失敗しました");
+    } finally {
+      setLlmsLoading(false);
+    }
+  };
+
   const openCharacterList = () => {
     navigateTo("character-list");
     loadCharacters();
@@ -137,9 +163,11 @@ export default function Settings() {
     setCharDesc(character?.description ?? "");
     setCharPrompt(character?.personality_prompt ?? "");
     setCharVoiceId(character?.voice_id ?? "elevenlabs_sameno");
+    setCharLlmId(character?.llm_id ?? "openai_gpt41mini");
     setSelectedTemplate(null);
     navigateTo("character-edit");
     loadVoices();
+    loadLlms();
   };
 
   const deleteCharacter = async (characterId: string) => {
@@ -182,7 +210,7 @@ export default function Settings() {
         const res = await fetch(`${DEVICE_SETTING_URL}/characters/${encodeURIComponent(editingCharacter.character_id)}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: charName.trim(), description: charDesc.trim(), personality_prompt: charPrompt.trim(), voice_id: charVoiceId }),
+          body: JSON.stringify({ name: charName.trim(), description: charDesc.trim(), personality_prompt: charPrompt.trim(), voice_id: charVoiceId, llm_id: charLlmId }),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
       } else {
@@ -190,7 +218,7 @@ export default function Settings() {
         const res = await fetch(`${DEVICE_SETTING_URL}/characters`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: charName.trim(), description: charDesc.trim(), personality_prompt: charPrompt.trim(), voice_id: charVoiceId, owner_id: ownerId }),
+          body: JSON.stringify({ name: charName.trim(), description: charDesc.trim(), personality_prompt: charPrompt.trim(), voice_id: charVoiceId, llm_id: charLlmId, owner_id: ownerId }),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
       }
@@ -209,8 +237,8 @@ export default function Settings() {
       <SafeAreaView style={s.root}>
         <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
         <View style={s.header}>
-          <TouchableOpacity onPress={() => navigateTo("main", "back")}>
-            <Text style={s.back}>← 戻る</Text>
+          <TouchableOpacity onPress={() => navigateTo("main", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+            <Text style={s.back}>←</Text>
           </TouchableOpacity>
           <Text style={s.headerTitle}>バージョン情報</Text>
         </View>
@@ -261,8 +289,8 @@ export default function Settings() {
       <SafeAreaView style={s.root}>
         <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
         <View style={s.header}>
-          <TouchableOpacity onPress={() => navigateTo("main", "back")}>
-            <Text style={s.back}>← 戻る</Text>
+          <TouchableOpacity onPress={() => navigateTo("main", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+            <Text style={s.back}>←</Text>
           </TouchableOpacity>
           <Text style={s.headerTitle}>音声認識</Text>
         </View>
@@ -301,14 +329,59 @@ export default function Settings() {
     return v ? `${v.label} (${v.provider})` : charVoiceId;
   };
 
-  // ---- ボイス選択画面 ----
+  const currentLlmLabel = () => {
+    const l = llms.find((l) => l.llm_id === charLlmId);
+    return l ? l.label : charLlmId;
+  };
+
+  // ---- LLM選択画面 ----
+  if (screen === "llm-select") {
+    return (
+      <SafeAreaView style={s.root}>
+        <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
+          <View style={s.header}>
+            <TouchableOpacity onPress={() => navigateTo("character-edit", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+              <Text style={s.back}>←</Text>
+            </TouchableOpacity>
+            <Text style={s.headerTitle}>LLM選択</Text>
+          </View>
+          <ScrollView contentContainerStyle={{ padding: 16, gap: 8 }}>
+            {llmsLoading ? (
+              <ActivityIndicator size="large" color="#007AFF" style={{ marginTop: 24 }} />
+            ) : (
+              [...new Set(llms.map((l) => l.provider))].map((provider) => (
+                <View key={provider}>
+                  <Text style={s.listSectionHeader}>{provider}</Text>
+                  {llms.filter((l) => l.provider === provider).map((l) => {
+                    const selected = l.llm_id === charLlmId;
+                    return (
+                      <TouchableOpacity
+                        key={l.llm_id}
+                        style={[s.voiceRow, selected && s.voiceRowSelected]}
+                        onPress={() => { setCharLlmId(l.llm_id); navigateTo("character-edit", "back"); }}
+                      >
+                        <View style={[s.radio, selected && s.radioSelected]} />
+                        <Text style={[s.voiceLabel, selected && s.voiceLabelSelected]}>{l.label}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              ))
+            )}
+          </ScrollView>
+        </Animated.View>
+      </SafeAreaView>
+    );
+  }
+
+  // ---- ボイス��択画面 ----
   if (screen === "voice-select") {
     return (
       <SafeAreaView style={s.root}>
         <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
           <View style={s.header}>
-            <TouchableOpacity onPress={() => navigateTo("character-edit", "back")}>
-              <Text style={s.back}>← 戻る</Text>
+            <TouchableOpacity onPress={() => navigateTo("character-edit", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+              <Text style={s.back}>←</Text>
             </TouchableOpacity>
             <Text style={s.headerTitle}>ボイス選択</Text>
           </View>
@@ -345,8 +418,8 @@ export default function Settings() {
         <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
         <View style={s.header}>
-          <TouchableOpacity onPress={() => navigateTo("character-list", "back")}>
-            <Text style={s.back}>← 戻る</Text>
+          <TouchableOpacity onPress={() => navigateTo("character-list", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+            <Text style={s.back}>←</Text>
           </TouchableOpacity>
           <Text style={s.headerTitle}>{editingCharacter ? "キャラクター編集" : "キャラクター作成"}</Text>
         </View>
@@ -388,10 +461,20 @@ export default function Settings() {
             <Text style={s.chevron}>›</Text>
           </TouchableOpacity>
 
+          <Text style={[s.sectionTitle, { marginTop: 16 }]}>LLM</Text>
+          <TouchableOpacity style={s.settingRow} onPress={() => navigateTo("llm-select")}>
+            <Text style={s.settingRowText}>{llmsLoading ? "読み込み中..." : currentLlmLabel()}</Text>
+            <Text style={s.chevron}>›</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={[s.button, saving && s.buttonDisabled, { marginTop: 32 }]} onPress={saveCharacter} disabled={saving}>
+            {saving ? <ActivityIndicator color="#fff" /> : <Text style={s.buttonText}>{editingCharacter ? "保存する" : "作成する"}</Text>}
+          </TouchableOpacity>
+
           {/* 削除ボタン（カスタムキャラの編集時のみ） */}
           {editingCharacter && editingCharacter.owner_id !== "system" && (
             <TouchableOpacity
-              style={[s.buttonDanger, { marginTop: 32 }, deletingId === editingCharacter.character_id && s.buttonDisabled]}
+              style={[s.buttonDanger, { marginTop: 12 }, deletingId === editingCharacter.character_id && s.buttonDisabled]}
               onPress={() => deleteCharacter(editingCharacter.character_id)}
               disabled={deletingId === editingCharacter.character_id}
             >
@@ -400,10 +483,6 @@ export default function Settings() {
                 : <Text style={s.buttonText}>削除する</Text>}
             </TouchableOpacity>
           )}
-
-          <TouchableOpacity style={[s.button, saving && s.buttonDisabled, { marginTop: 12 }]} onPress={saveCharacter} disabled={saving}>
-            {saving ? <ActivityIndicator color="#fff" /> : <Text style={s.buttonText}>{editingCharacter ? "保存する" : "作成する"}</Text>}
-          </TouchableOpacity>
         </ScrollView>
 
         </KeyboardAvoidingView>
@@ -421,8 +500,8 @@ export default function Settings() {
       <SafeAreaView style={s.root}>
         <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
         <View style={s.header}>
-          <TouchableOpacity onPress={() => navigateTo("main", "back")}>
-            <Text style={s.back}>← 戻る</Text>
+          <TouchableOpacity onPress={() => navigateTo("main", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+            <Text style={s.back}>←</Text>
           </TouchableOpacity>
           <Text style={s.headerTitle}>キャラクター管理</Text>
         </View>
