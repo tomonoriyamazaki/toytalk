@@ -543,13 +543,75 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       })();
     }
 
+    function streamLLMAnthropic(msgs, model) {
+      const systemMsg = msgs.find(m => m.role === "system");
+      const chatMsgs = msgs.filter(m => m.role !== "system");
+
+      const body = {
+        model,
+        max_tokens: 1024,
+        stream: true,
+        temperature: 0.7,
+        messages: chatMsgs,
+      };
+      if (systemMsg) {
+        body.system = systemMsg.content;
+      }
+
+      const key = process.env.ANTHROPIC_API_KEY;
+
+      return (async function* () {
+        const resp = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          throw new Error(`Anthropic API error: ${resp.status} ${errText}`);
+        }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop();
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const data = line.slice(6).trim();
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.type === "content_block_delta") {
+                const text = parsed.delta?.text ?? "";
+                if (text) yield text;
+              } else if (parsed.type === "message_delta" && parsed.usage) {
+                llmTokensOut = parsed.usage.output_tokens ?? 0;
+              } else if (parsed.type === "message_start" && parsed.message?.usage) {
+                llmTokensIn = parsed.message.usage.input_tokens ?? 0;
+              } else if (parsed.type === "message_stop") {
+                return;
+              }
+            } catch {}
+          }
+        }
+      })();
+    }
+
     let llmStream;
     if (llmProvider === "openai") {
       llmStream = streamLLMOpenAI(messagesWithSystem, llmModelId);
     } else if (llmProvider === "google") {
       llmStream = streamLLMGemini(messagesWithSystem, llmModelId);
+    } else if (llmProvider === "anthropic") {
+      llmStream = streamLLMAnthropic(messagesWithSystem, llmModelId);
     } else {
-      // Anthropic は後で追加
       const fallback = "（LLM ルート未実装です）";
       llmStream = (async function* () { yield fallback; })();
     }
