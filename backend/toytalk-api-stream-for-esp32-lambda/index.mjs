@@ -620,7 +620,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
 
     // segment を送る唯一の経路
     async function emitSegment(text, { final=false } = {}) {
-      const t = String(text ?? "").trim();
+      const t = String(text ?? "").trim().replace(/(?<=[\u3000-\u9fff])\s+(?=[\u3000-\u9fff])/g, "");
       if (!t) return;
       const h = sha1(t);
       if (h === lastSegHash) return;     // 同一文は再送しない
@@ -679,7 +679,14 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         textAll += delta;
         buf     += delta;
         if (DEBUG) sendMeta(res, "llm_token", { token: delta });
-        if (endsWithSentence(buf) || buf.trim().length >= SEG_MAX_CHARS) {
+        // buf内に文末があれば即分割してTTSに送る
+        let match;
+        while ((match = buf.match(/^(.*?[。！？!?])\s*/s))) {
+          const segText = match[1].trim();
+          buf = buf.slice(match[0].length);
+          if (segText) await emitSegment(segText);
+        }
+        if (buf.trim().length >= SEG_MAX_CHARS) {
           const segText = buf.trim();
           buf = "";
           await emitSegment(segText);
