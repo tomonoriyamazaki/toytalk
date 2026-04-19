@@ -12,6 +12,7 @@
   const VOICES_TABLE     = "toytalker-voices";
   const CHARACTERS_TABLE = "toytalker-characters";
   const CHAT_LOGS_TABLE  = "toytalker-chat-logs";
+  const LLMS_TABLE       = "toytalker-llms";
 
   async function saveLog(item) {
     try {
@@ -54,47 +55,20 @@
 
   const sha1  = (s)=>createHash("sha1").update(s).digest("hex");
 
-  // ---- 選択モデル定義（まずは OpenAI 固定運用）----
-  const MODEL_DEFAULT = "OpenAI";
-  /** 将来の拡張用にテーブル化しておく（今は OpenAI だけ使う） */
-  const MODEL_TABLE = {
-    OpenAI: {
-      llmVendor: "openai",
-      llmModel:  "gpt-4.1-mini",
-      ttsVendor: "openai",
-      ttsModel:  "gpt-4o-mini-tts-2025-03-20",
-    },
-    Google: {
-      llmVendor: "openai",
-      llmModel:  "gpt-4.1-mini",
-      ttsVendor: "google",
-      ttsModel:  "google-tts",
-    },
-    Gemini: {
-      llmVendor: "openai",
-      llmModel:  "gpt-4.1-mini",
-      ttsVendor: "gemini",
-      ttsModel:  "gemini-2.5-flash-preview-tts",
-    },
-    ElevenLabs: {
-      llmVendor: "openai",
-      llmModel:  "gpt-4.1-mini",
-      ttsVendor: "elevenlabs",
-      ttsModel:  "eleven_turbo_v2_5",
-    },
-    FishAudio: {
-      llmVendor: "openai",
-      llmModel:  "gpt-4.1-mini",
-      ttsVendor: "fishaudio",
-      ttsModel:  "fishaudio",
-    },
-    Sakura: {
-      llmVendor: "openai",
-      llmModel:  "gpt-4.1-mini",
-      ttsVendor: "sakura",
-      ttsModel:  "sakura",
-    },
+  // ---- TTS設定（プロバイダーごと）----
+  const TTS_DEFAULT = "OpenAI";
+  const TTS_TABLE = {
+    OpenAI:     { ttsVendor: "openai",     ttsModel: "gpt-4o-mini-tts-2025-03-20" },
+    Google:     { ttsVendor: "google",     ttsModel: "google-tts" },
+    Gemini:     { ttsVendor: "gemini",     ttsModel: "gemini-2.5-flash-preview-tts" },
+    ElevenLabs: { ttsVendor: "elevenlabs", ttsModel: "eleven_turbo_v2_5" },
+    FishAudio:  { ttsVendor: "fishaudio",  ttsModel: "fishaudio" },
+    Sakura:     { ttsVendor: "sakura",     ttsModel: "sakura" },
   };
+
+  // ---- LLMデフォルト（llm_id未設定時のフォールバック）----
+  const LLM_DEFAULT_PROVIDER = "openai";
+  const LLM_DEFAULT_MODEL    = "gpt-4.1-mini";
 
 
 
@@ -350,8 +324,8 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
 
       let voiceId = null;
       let personalityPrompt = null;
+      let llmId = null;
 
-      // character_id があればキャラクターテーブルを参照
       if (device.character_id && device.character_id !== "default") {
         const charRes = await ddb.send(new GetCommand({
           TableName: CHARACTERS_TABLE,
@@ -360,10 +334,10 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         if (charRes.Item) {
           voiceId = charRes.Item.voice_id ?? null;
           personalityPrompt = charRes.Item.personality_prompt || null;
+          llmId = charRes.Item.llm_id ?? null;
         }
       }
 
-      // character_id が未設定またはキャラに voice_id がなければ device.voice_id にフォールバック（後方互換）
       if (!voiceId) voiceId = device.voice_id ?? null;
       if (!voiceId) return null;
 
@@ -373,11 +347,27 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       }));
       if (!voiceRes.Item) return null;
 
+      // LLM設定を解決（llm_id未設定ならデフォルト）
+      let llmProvider = LLM_DEFAULT_PROVIDER;
+      let llmModelId  = LLM_DEFAULT_MODEL;
+      if (llmId) {
+        const llmRes = await ddb.send(new GetCommand({
+          TableName: LLMS_TABLE,
+          Key: { llm_id: llmId },
+        }));
+        if (llmRes.Item) {
+          llmProvider = llmRes.Item.provider;
+          llmModelId  = llmRes.Item.model_id;
+        }
+      }
+
       return {
         provider: voiceRes.Item.provider,
         vendorId: voiceRes.Item.vendor_id,
         personalityPrompt,
         ownerId: device.owner_id ?? null,
+        llmProvider,
+        llmModelId,
       };
     } catch (e) {
       console.error("[DynamoDB] resolveCharacterFromDynamo error:", e);
@@ -411,29 +401,32 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     }
 
     // device_idがあればDynamoDBからキャラクター＆ボイス設定を取得、なければbodyの値を使う
-    let modelKey = normalizeModelKey(body.model) ?? MODEL_DEFAULT;
+    let ttsKey = normalizeModelKey(body.model) ?? TTS_DEFAULT;
     let voice    = body.voice ?? VOICE_DEFAULT;
     let personalityPrompt = null;
+    let llmProvider = LLM_DEFAULT_PROVIDER;
+    let llmModelId  = LLM_DEFAULT_MODEL;
 
     if (deviceId) {
       const charConfig = await resolveCharacterFromDynamo(deviceId);
       if (charConfig) {
-        modelKey = normalizeModelKey(charConfig.provider) ?? modelKey;
+        ttsKey = normalizeModelKey(charConfig.provider) ?? ttsKey;
         voice    = charConfig.vendorId ?? voice;
         personalityPrompt = charConfig.personalityPrompt;
+        llmProvider = charConfig.llmProvider;
+        llmModelId  = charConfig.llmModelId;
         if (charConfig.ownerId) ownerId = charConfig.ownerId;
-        console.log(`[DynamoDB] device=${deviceId}, provider=${charConfig.provider}, vendorId=${charConfig.vendorId}, hasPersonality=${!!personalityPrompt}, ownerId=${ownerId}`);
+        console.log(`[DynamoDB] device=${deviceId}, tts=${charConfig.provider}, voice=${charConfig.vendorId}, llm=${llmProvider}/${llmModelId}, hasPersonality=${!!personalityPrompt}, ownerId=${ownerId}`);
       } else {
         console.log(`[DynamoDB] device=${deviceId} not found or no character set, using defaults`);
       }
     }
 
-    const cfg = MODEL_TABLE[modelKey] ?? MODEL_TABLE[MODEL_DEFAULT];
+    const cfg = TTS_TABLE[ttsKey] ?? TTS_TABLE[TTS_DEFAULT];
 
-
-    // クライアント側の計測・デバッグ用に「採用モデル」を通知
-    sendMeta(res, "mark", { k: "model", v: modelKey });
-    sendMeta(res, "mark", { k: "llm_vendor", v: cfg.llmVendor });
+    sendMeta(res, "mark", { k: "model", v: ttsKey });
+    sendMeta(res, "mark", { k: "llm_vendor", v: llmProvider });
+    sendMeta(res, "mark", { k: "llm_model", v: llmModelId });
     sendMeta(res, "mark", { k: "tts_vendor", v: cfg.ttsVendor });
 
     // サーバ基準時刻（クライアントがREQ_TTFBやLLM/TTSとの相対を取れる）
@@ -466,16 +459,26 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     };
     const messagesWithSystem = [systemPrompt, ...messages];
 
-    let llmStream;
-    if (cfg.llmVendor === "openai") {
-      const llm = await openai.chat.completions.create({
-        model: cfg.llmModel,
-        temperature: 0.7,
-        stream: true,
-        stream_options: { include_usage: true },
-        messages: messagesWithSystem,
-      });
-      llmStream = (async function* () {
+    // ---- ストリーム状態 ----
+    let buf = "";
+    let textAll = "";
+    let segSeq = 0;
+    let lastSegHash = "";
+    let firstTtsMarked = false;
+    let ttsChain = Promise.resolve();
+    let llmTokensIn = 0, llmTokensOut = 0;
+    let ttsInputChars = 0;
+
+    // ---- LLM ストリーム生成 ----
+    function streamLLMOpenAI(msgs, model) {
+      return (async function* () {
+        const llm = await openai.chat.completions.create({
+          model,
+          temperature: 0.7,
+          stream: true,
+          stream_options: { include_usage: true },
+          messages: msgs,
+        });
         for await (const chunk of llm) {
           if (chunk.usage) {
             llmTokensIn  = chunk.usage.prompt_tokens     ?? 0;
@@ -485,21 +488,16 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
           if (delta) yield delta;
         }
       })();
-    } else {
-    // もし将来 Gemini LLM に切り替えるならここで実装
-    const fallback = "（LLM ルート未実装です）";
-    llmStream = (async function* () { yield fallback; })();
-  }
+    }
 
-    // ---- ストリーム状態 ----
-    let buf = "";                 // ★ここで1回だけ宣言
-    let textAll = "";
-    let segSeq = 0;
-    let lastSegHash = "";
-    let firstTtsMarked = false;
-    let ttsChain = Promise.resolve();
-    let llmTokensIn = 0, llmTokensOut = 0;
-    let ttsInputChars = 0;
+    let llmStream;
+    if (llmProvider === "openai") {
+      llmStream = streamLLMOpenAI(messagesWithSystem, llmModelId);
+    } else {
+      // Gemini / Anthropic は後で追加
+      const fallback = "（LLM ルート未実装です）";
+      llmStream = (async function* () { yield fallback; })();
+    }
 
 
     // segment を送る唯一の経路
@@ -586,7 +584,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
           owner_id: ownerId, device_id: deviceId, source: "esp",
           role: "assistant", content: textAll.trim(),
           content_type: "text", timestamp: assistantTimestamp, session_id: sessionId,
-          llm_provider: cfg.llmVendor, llm_model: cfg.llmModel,
+          llm_provider: llmProvider, llm_model: llmModelId,
           llm_tokens_in: llmTokensIn, llm_tokens_out: llmTokensOut,
           tts_provider: cfg.ttsVendor, tts_input_units: ttsInputChars, tts_input_unit_type: "characters",
           stt_provider: "soniox", stt_input_units: null, stt_input_unit_type: null,
