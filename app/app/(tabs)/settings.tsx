@@ -237,8 +237,8 @@ export default function Settings() {
       <SafeAreaView style={s.root}>
         <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
         <View style={s.header}>
-          <TouchableOpacity onPress={() => navigateTo("main", "back")}>
-            <Text style={s.back}>← 戻る</Text>
+          <TouchableOpacity onPress={() => navigateTo("main", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+            <Text style={s.back}>←</Text>
           </TouchableOpacity>
           <Text style={s.headerTitle}>バージョン情報</Text>
         </View>
@@ -289,8 +289,8 @@ export default function Settings() {
       <SafeAreaView style={s.root}>
         <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
         <View style={s.header}>
-          <TouchableOpacity onPress={() => navigateTo("main", "back")}>
-            <Text style={s.back}>← 戻る</Text>
+          <TouchableOpacity onPress={() => navigateTo("main", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+            <Text style={s.back}>←</Text>
           </TouchableOpacity>
           <Text style={s.headerTitle}>音声認識</Text>
         </View>
@@ -340,8 +340,8 @@ export default function Settings() {
       <SafeAreaView style={s.root}>
         <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
           <View style={s.header}>
-            <TouchableOpacity onPress={() => navigateTo("character-edit", "back")}>
-              <Text style={s.back}>← ��る</Text>
+            <TouchableOpacity onPress={() => navigateTo("character-edit", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+              <Text style={s.back}>←</Text>
             </TouchableOpacity>
             <Text style={s.headerTitle}>LLM選択</Text>
           </View>
@@ -380,8 +380,8 @@ export default function Settings() {
       <SafeAreaView style={s.root}>
         <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
           <View style={s.header}>
-            <TouchableOpacity onPress={() => navigateTo("character-edit", "back")}>
-              <Text style={s.back}>← 戻る</Text>
+            <TouchableOpacity onPress={() => navigateTo("character-edit", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+              <Text style={s.back}>←</Text>
             </TouchableOpacity>
             <Text style={s.headerTitle}>ボイス選択</Text>
           </View>
@@ -418,8 +418,8 @@ export default function Settings() {
         <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
         <View style={s.header}>
-          <TouchableOpacity onPress={() => navigateTo("character-list", "back")}>
-            <Text style={s.back}>← 戻る</Text>
+          <TouchableOpacity onPress={() => navigateTo("character-list", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+            <Text style={s.back}>←</Text>
           </TouchableOpacity>
           <Text style={s.headerTitle}>{editingCharacter ? "キャラクター編集" : "キャラクター作成"}</Text>
         </View>
@@ -500,8 +500,8 @@ export default function Settings() {
       <SafeAreaView style={s.root}>
         <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
         <View style={s.header}>
-          <TouchableOpacity onPress={() => navigateTo("main", "back")}>
-            <Text style={s.back}>← 戻る</Text>
+          <TouchableOpacity onPress={() => navigateTo("main", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+            <Text style={s.back}>←</Text>
           </TouchableOpacity>
           <Text style={s.headerTitle}>キャラクター管理</Text>
         </View>
