@@ -452,7 +452,8 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     }
 
     // システムプロンプトを追加（キャラクターの個性 + 共通指示）
-    const basePrompt = "あなたは子供向けの友好的な音声アシスタントです。簡潔に答えて、自然に会話を続けてください。漢字は最小限にして、ひらがな多めで答えてください。";
+    const now = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", year: "numeric", month: "long", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit" });
+    const basePrompt = `あなたは子供向けの友好的な音声アシスタントです。簡潔に答えて、自然に会話を続けてください。漢字は最小限にして、ひらがな多めで答えてください。単語の間に半角スペースを入れないでください。現在の日時は${now}です。日時を聞かれたら年は省略して簡潔に答えてください。`;
     const systemPrompt = {
       role: "system",
       content: personalityPrompt ? `${personalityPrompt}\n\n${basePrompt}` : basePrompt,
