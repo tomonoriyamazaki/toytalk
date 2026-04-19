@@ -467,10 +467,14 @@ export default function Settings() {
             <Text style={s.chevron}>›</Text>
           </TouchableOpacity>
 
+          <TouchableOpacity style={[s.button, saving && s.buttonDisabled, { marginTop: 32 }]} onPress={saveCharacter} disabled={saving}>
+            {saving ? <ActivityIndicator color="#fff" /> : <Text style={s.buttonText}>{editingCharacter ? "保存する" : "作成する"}</Text>}
+          </TouchableOpacity>
+
           {/* 削除ボタン（カスタムキャラの編集時のみ） */}
           {editingCharacter && editingCharacter.owner_id !== "system" && (
             <TouchableOpacity
-              style={[s.buttonDanger, { marginTop: 32 }, deletingId === editingCharacter.character_id && s.buttonDisabled]}
+              style={[s.buttonDanger, { marginTop: 12 }, deletingId === editingCharacter.character_id && s.buttonDisabled]}
               onPress={() => deleteCharacter(editingCharacter.character_id)}
               disabled={deletingId === editingCharacter.character_id}
             >
@@ -479,10 +483,6 @@ export default function Settings() {
                 : <Text style={s.buttonText}>削除する</Text>}
             </TouchableOpacity>
           )}
-
-          <TouchableOpacity style={[s.button, saving && s.buttonDisabled, { marginTop: 12 }]} onPress={saveCharacter} disabled={saving}>
-            {saving ? <ActivityIndicator color="#fff" /> : <Text style={s.buttonText}>{editingCharacter ? "保存する" : "作成する"}</Text>}
-          </TouchableOpacity>
         </ScrollView>
 
         </KeyboardAvoidingView>
