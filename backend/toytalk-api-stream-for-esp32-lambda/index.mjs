@@ -490,11 +490,66 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       })();
     }
 
+    function streamLLMGemini(msgs, model) {
+      const systemMsg = msgs.find(m => m.role === "system");
+      const chatMsgs = msgs.filter(m => m.role !== "system");
+      const contents = chatMsgs.map(m => ({
+        role: m.role === "assistant" ? "model" : m.role,
+        parts: [{ text: m.content }],
+      }));
+      const body = { contents };
+      if (systemMsg) {
+        body.systemInstruction = { parts: [{ text: systemMsg.content }] };
+      }
+      body.generationConfig = { temperature: 0.7 };
+
+      const key = process.env.GOOGLE_API_KEY;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${key}`;
+
+      return (async function* () {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          throw new Error(`Gemini API error: ${resp.status} ${errText}`);
+        }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop();
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const data = line.slice(6).trim();
+            if (data === "[DONE]") return;
+            try {
+              const parsed = JSON.parse(data);
+              const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+              if (parsed.usageMetadata) {
+                llmTokensIn  = parsed.usageMetadata.promptTokenCount ?? 0;
+                llmTokensOut = parsed.usageMetadata.candidatesTokenCount ?? 0;
+              }
+              if (text) yield text;
+            } catch {}
+          }
+        }
+      })();
+    }
+
     let llmStream;
     if (llmProvider === "openai") {
       llmStream = streamLLMOpenAI(messagesWithSystem, llmModelId);
+    } else if (llmProvider === "google") {
+      llmStream = streamLLMGemini(messagesWithSystem, llmModelId);
     } else {
-      // Gemini / Anthropic は後で追加
+      // Anthropic は後で追加
       const fallback = "（LLM ルート未実装です）";
       llmStream = (async function* () { yield fallback; })();
     }
