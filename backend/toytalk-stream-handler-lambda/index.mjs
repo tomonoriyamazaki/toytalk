@@ -4,20 +4,140 @@
   import OpenAI from "openai";
   import { createHash } from "node:crypto";
   import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-  import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+  import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 
   const ddbClient = new DynamoDBClient({ region: "ap-northeast-1" });
   const ddb = DynamoDBDocumentClient.from(ddbClient);
-  const CHARACTERS_TABLE = "toytalker-characters";
-  const VOICES_TABLE     = "toytalker-voices";
-  const CHAT_LOGS_TABLE  = "toytalker-chat-logs";
-  const LLMS_TABLE       = "toytalker-llms";
+  const CHARACTERS_TABLE    = "toytalker-characters";
+  const VOICES_TABLE        = "toytalker-voices";
+  const CHAT_LOGS_TABLE     = "toytalker-chat-logs";
+  const LLMS_TABLE          = "toytalker-llms";
+  const USAGE_TABLE         = "toytalker-usage";
+  const UNIT_PRICES_TABLE   = "toytalker-api-unit-prices";
+  const EXCHANGE_RATES_TABLE = "toytalker-exchange-rates";
 
   async function saveLog(item) {
     try {
       await ddb.send(new PutCommand({ TableName: CHAT_LOGS_TABLE, Item: item }));
     } catch (e) {
       console.error("[saveLog] error:", e);
+    }
+  }
+
+  // ---- 単価・マージン・為替レートのキャッシュ ----
+  let cachedPrices = null;   // { "openai#llm": {...}, "openai#tts": {...}, ... }
+  let cachedMargin = null;   // number
+  let cachedRates = {};      // { "2026-04#JPY": 150, ... }
+  let cacheLoadedAt = 0;
+  const CACHE_TTL_MS = 3600_000; // 1時間
+
+  async function loadPricingCache() {
+    if (cachedPrices && (Date.now() - cacheLoadedAt) < CACHE_TTL_MS) return;
+    try {
+      const result = await ddb.send(new ScanCommand({
+        TableName: UNIT_PRICES_TABLE,
+        FilterExpression: "version = :v",
+        ExpressionAttributeValues: { ":v": "current" },
+      }));
+      const prices = {};
+      for (const item of (result.Items ?? [])) {
+        const pk = item["provider#api_type"];
+        if (pk === "service#margin") {
+          cachedMargin = Number(item.margin) || 1.5;
+        } else {
+          prices[pk] = item;
+        }
+      }
+      cachedPrices = prices;
+      cacheLoadedAt = Date.now();
+      console.log(`[Pricing] cached ${Object.keys(prices).length} prices, margin=${cachedMargin}`);
+    } catch (e) {
+      console.error("[Pricing] cache load error:", e);
+    }
+  }
+
+  async function getExchangeRate(month, currency = "JPY") {
+    const cacheKey = `${month}#${currency}`;
+    if (cachedRates[cacheKey]) return cachedRates[cacheKey];
+    try {
+      const result = await ddb.send(new GetCommand({
+        TableName: EXCHANGE_RATES_TABLE,
+        Key: { month, currency },
+      }));
+      const rate = Number(result.Item?.rate) || 150;
+      cachedRates[cacheKey] = rate;
+      return rate;
+    } catch (e) {
+      console.error("[ExchangeRate] error:", e);
+      return 150;
+    }
+  }
+
+  function calcCostJpy({ providerApiType, tokensIn, tokensOut, characters, utf8Bytes, mora, pcmBytes, userMessageChars, usdJpyRate }) {
+    const price = cachedPrices?.[providerApiType];
+    if (!price) return null;
+    const margin = cachedMargin || 1.5;
+
+    // Sakura: 円建て直接
+    if (price.currency === "JPY") {
+      const inputCost = (mora ?? 0) * Number(price.unit_price_input);
+      return { costJpy: inputCost * margin, usdJpyRate: null, unitPriceUsd: null, margin };
+    }
+
+    const inputUnit = price.input_unit_type;
+    const outputUnit = price.output_unit_type;
+    let costUsd = 0;
+
+    if (inputUnit === "tokens") {
+      costUsd += (tokensIn ?? 0) * Number(price.unit_price_input);
+      if (outputUnit === "tokens") {
+        costUsd += (tokensOut ?? 0) * Number(price.unit_price_output);
+      } else if (outputUnit === "audio_tokens") {
+        costUsd += (tokensOut ?? 0) * Number(price.unit_price_output);
+      }
+    } else if (inputUnit === "characters") {
+      costUsd += (characters ?? 0) * Number(price.unit_price_input);
+      if (outputUnit === "audio_tokens" && pcmBytes) {
+        // OpenAI TTS: PCMバイト数から音声秒数→音声トークン数を概算
+        const durationSec = pcmBytes / (24000 * 2);
+        const audioTokens = Math.round((durationSec / 60) * 800);
+        costUsd += audioTokens * Number(price.unit_price_output);
+      }
+    } else if (inputUnit === "utf8_bytes") {
+      costUsd += (utf8Bytes ?? 0) * Number(price.unit_price_input);
+    } else if (inputUnit === "audio_tokens") {
+      // STT: 確定文の文字数から概算
+      const chars = userMessageChars ?? 0;
+      const textTokens = Math.round(chars * 0.3);
+      const speechSec = chars / 6;
+      const audioTokens = Math.round(speechSec * (30000 / 3600));
+      costUsd += audioTokens * Number(price.unit_price_input);
+      costUsd += textTokens * Number(price.unit_price_output);
+    }
+
+    const costJpy = costUsd * usdJpyRate * margin;
+    return { costJpy, usdJpyRate, unitPriceUsd: Number(price.unit_price_input), margin };
+  }
+
+  async function addUsage({ ownerId, deviceId, date, apiType, provider, model, costJpy, tokensIn, tokensOut, ttsCharacters, sttCharacters, usdJpyRate, unitPriceUsd, margin }) {
+    if (!costJpy || costJpy <= 0) return;
+    const sk = `${date}#${deviceId}#${apiType}`;
+    try {
+      const addParts = ["cost_jpy :cost", "requests :one"];
+      const vals = { ":cost": costJpy, ":one": 1, ":p": provider, ":m": model, ":r": usdJpyRate ?? 0, ":u": unitPriceUsd ?? 0, ":mg": margin };
+      if (tokensIn)      { addParts.push("tokens_in :tin");       vals[":tin"]  = tokensIn; }
+      if (tokensOut)     { addParts.push("tokens_out :tout");     vals[":tout"] = tokensOut; }
+      if (ttsCharacters) { addParts.push("tts_characters :ttsc"); vals[":ttsc"] = ttsCharacters; }
+      if (sttCharacters) { addParts.push("stt_characters :sttc"); vals[":sttc"] = sttCharacters; }
+
+      await ddb.send(new UpdateCommand({
+        TableName: USAGE_TABLE,
+        Key: { owner_id: ownerId, "date#device_id#api_type": sk },
+        UpdateExpression: `ADD ${addParts.join(", ")} SET provider = :p, model = :m, usd_jpy_rate = :r, unit_price_usd = :u, margin = :mg`,
+        ExpressionAttributeValues: vals,
+      }));
+    } catch (e) {
+      console.error("[addUsage] error:", e);
     }
   }
 
@@ -205,11 +325,10 @@
     return { model: cfg.ttsModel, voiceName };
   }
 
-  // Gemini Speech Generation → base64(WAV)（APIキーは GOOGLE_API_KEY を共用）
+  // Gemini Speech Generation → { b64, audioTokens } （APIキーは GOOGLE_API_KEY を共用）
   async function ttsToBase64Gemini(text, { model = "gemini-2.5-flash-preview-tts", voiceName = "Kore" } = {}) {
     const key = process.env.GOOGLE_API_KEY;
     if (!key) throw new Error("GOOGLE_API_KEY is not set");
-    // Gemini TTSはテキスト生成を防ぐため、明示的に読み上げ指示を付ける
     const ttsPrompt = `Read the following text aloud: ${text}`;
 
     const maxRetries = 2;
@@ -233,10 +352,9 @@
       if (!resp.ok) throw new Error(json?.error?.message || "Gemini TTS failed");
       const b64Pcm = json?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || "";
       if (b64Pcm) {
-        // 24kHz/mono PCM16 → 既存の WAV ラッパで包む
-        return pcm16ToWavBase64(b64Pcm, 24000, 1);
+        const audioTokens = json?.usageMetadata?.candidatesTokenCount ?? 0;
+        return { b64: pcm16ToWavBase64(b64Pcm, 24000, 1), audioTokens };
       }
-      // empty audio の場合はリトライ
       console.log(`[Gemini TTS] empty audio, retry ${attempt + 1}/${maxRetries + 1}`);
     }
     throw new Error("Gemini TTS: empty audio after retries");
@@ -416,6 +534,9 @@
     const requestAt  = Date.now();
     const userTimestamp = new Date(requestAt).toISOString();
 
+    // 単価キャッシュを先にロード（await不要、バックグラウンドで）
+    loadPricingCache();
+
     const characterId = typeof body.character_id === "string" ? body.character_id : null;
     if (characterId && characterId !== "default") {
       const charConfig = await resolveCharacterFromDynamo(characterId);
@@ -483,6 +604,8 @@
     let firstTtsMarked = false;
     let llmTokensIn = 0, llmTokensOut = 0;
     let ttsInputChars = 0;
+    let ttsPcmBytes = 0;
+    let geminiTtsAudioTokens = 0;
 
     // ---- LLM ストリーム生成 ----
     function streamLLMOpenAI(msgs, model) {
@@ -656,6 +779,8 @@
         let b64, fmt;
         if (cfg.ttsVendor === "openai") {
           b64 = await ttsToBase64OpenAI(t, voice, cfg.ttsModel);
+          // PCMバイト数を概算（WAV base64からヘッダ44バイト分を除く）
+          ttsPcmBytes += Math.round(b64.length * 3 / 4) - 44;
           fmt = "wav";
         } else if (cfg.ttsVendor === "google") {
           const g = resolveGoogleTtsFromBody(body);
@@ -666,7 +791,9 @@
         } else if (cfg.ttsVendor === "gemini") {
           const g = resolveGeminiTtsFromBody(body, cfg);
           if (voice) g.voiceName = voice;
-          b64 = await ttsToBase64Gemini(t, g);
+          const result = await ttsToBase64Gemini(t, g);
+          b64 = result.b64;
+          geminiTtsAudioTokens += result.audioTokens;
           fmt = "wav";
         } else if (cfg.ttsVendor === "elevenlabs") {
           const e = resolveElevenLabsTtsFromBody(body, cfg);
@@ -735,6 +862,48 @@
           character_id: characterId ?? "default",
           voice_id: voice,
         });
+
+        // ---- usage書き込み ----
+        await loadPricingCache();
+        const date = assistantTimestamp.slice(0, 10); // "2026-04-19"
+        const month = assistantTimestamp.slice(0, 7);  // "2026-04"
+        const usdJpyRate = await getExchangeRate(month);
+
+        // LLM usage
+        const llmPriceKey = `${llmProvider}#llm`;
+        const llmCost = calcCostJpy({ providerApiType: llmPriceKey, tokensIn: llmTokensIn, tokensOut: llmTokensOut, usdJpyRate });
+        if (llmCost) {
+          addUsage({ ownerId, deviceId, date, apiType: "llm", provider: llmProvider, model: llmModelId, costJpy: llmCost.costJpy, tokensIn: llmTokensIn, tokensOut: llmTokensOut, usdJpyRate: llmCost.usdJpyRate, unitPriceUsd: llmCost.unitPriceUsd, margin: llmCost.margin });
+        }
+
+        // TTS usage
+        const ttsPriceKey = `${cfg.ttsVendor}#tts`;
+        let ttsCostResult;
+        if (cfg.ttsVendor === "gemini") {
+          ttsCostResult = calcCostJpy({ providerApiType: ttsPriceKey, tokensIn: ttsInputChars, tokensOut: geminiTtsAudioTokens, usdJpyRate });
+        } else if (cfg.ttsVendor === "openai") {
+          ttsCostResult = calcCostJpy({ providerApiType: ttsPriceKey, characters: ttsInputChars, pcmBytes: ttsPcmBytes, usdJpyRate });
+        } else if (cfg.ttsVendor === "fishaudio") {
+          const utf8Bytes = Buffer.byteLength(textAll.trim(), "utf8");
+          ttsCostResult = calcCostJpy({ providerApiType: ttsPriceKey, utf8Bytes, usdJpyRate });
+        } else if (cfg.ttsVendor === "sakura") {
+          const mora = ttsInputChars;
+          ttsCostResult = calcCostJpy({ providerApiType: ttsPriceKey, mora, usdJpyRate });
+        } else {
+          ttsCostResult = calcCostJpy({ providerApiType: ttsPriceKey, characters: ttsInputChars, usdJpyRate });
+        }
+        if (ttsCostResult) {
+          addUsage({ ownerId, deviceId, date, apiType: "tts", provider: cfg.ttsVendor, model: cfg.ttsModel, costJpy: ttsCostResult.costJpy, ttsCharacters: ttsInputChars, usdJpyRate: ttsCostResult.usdJpyRate, unitPriceUsd: ttsCostResult.unitPriceUsd, margin: ttsCostResult.margin });
+        }
+
+        // STT usage (確定文の文字数から概算)
+        const userMsgChars = lastUserMsg?.content?.length ?? 0;
+        if (userMsgChars > 0) {
+          const sttCost = calcCostJpy({ providerApiType: "soniox#stt", userMessageChars: userMsgChars, usdJpyRate });
+          if (sttCost) {
+            addUsage({ ownerId, deviceId, date, apiType: "stt", provider: "soniox", model: "soniox", costJpy: sttCost.costJpy, sttCharacters: userMsgChars, usdJpyRate: sttCost.usdJpyRate, unitPriceUsd: sttCost.unitPriceUsd, margin: sttCost.margin });
+          }
+        }
       }
     } catch (err) {
       const msg = (err && err.message) ? err.message : String(err);

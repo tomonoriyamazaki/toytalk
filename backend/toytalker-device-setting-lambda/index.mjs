@@ -8,11 +8,13 @@ const client = new DynamoDBClient({ region: "ap-northeast-1" });
 const ddb = DynamoDBDocumentClient.from(client);
 
 // ---- テーブル定義 ----
-const DEVICES_TABLE    = "toytalker-devices";
-const VOICES_TABLE     = "toytalker-voices";
-const CHARACTERS_TABLE = "toytalker-characters";
-const CHAT_LOGS_TABLE  = "toytalker-chat-logs";
-const LLMS_TABLE       = "toytalker-llms";
+const DEVICES_TABLE        = "toytalker-devices";
+const VOICES_TABLE         = "toytalker-voices";
+const CHARACTERS_TABLE     = "toytalker-characters";
+const CHAT_LOGS_TABLE      = "toytalker-chat-logs";
+const LLMS_TABLE           = "toytalker-llms";
+const USAGE_TABLE          = "toytalker-usage";
+const EXCHANGE_RATES_TABLE = "toytalker-exchange-rates";
 
 const response = (statusCode, body) => ({
   statusCode,
@@ -278,6 +280,74 @@ export const handler = async (event) => {
         ScanIndexForward: true,
       }));
       return response(200, { messages: result.Items ?? [] });
+    }
+
+    // ---- GET /usage ---- 月次利用状況取得
+    if (method === "GET" && path === "/usage") {
+      const ownerId = event.queryStringParameters?.owner_id ?? "user_123";
+      const month   = event.queryStringParameters?.month ?? new Date().toISOString().slice(0, 7);
+
+      // usageテーブルから該当月のレコードを取得
+      const result = await ddb.send(new QueryCommand({
+        TableName: USAGE_TABLE,
+        KeyConditionExpression: "owner_id = :oid AND begins_with(#sk, :monthPrefix)",
+        ExpressionAttributeNames: { "#sk": "date#device_id#api_type" },
+        ExpressionAttributeValues: { ":oid": ownerId, ":monthPrefix": month },
+      }));
+
+      const items = result.Items ?? [];
+
+      // 集計
+      let totalCost = 0;
+      const byApiType = {};   // { llm: { total: 0, daily: [...] }, tts: {...}, stt: {...} }
+      const byDevice = {};    // { device_abc: { total: 0, llm: 0, tts: 0, stt: 0 }, ... }
+
+      for (const item of items) {
+        const sk = item["date#device_id#api_type"] ?? "";
+        const parts = sk.split("#");
+        const date = parts[0] ?? "";
+        const deviceId = parts[1] ?? "";
+        const apiType = parts[2] ?? "";
+        const cost = Number(item.cost_jpy) || 0;
+
+        totalCost += cost;
+
+        // API種別ごと
+        if (!byApiType[apiType]) byApiType[apiType] = { total: 0, daily: [] };
+        byApiType[apiType].total += cost;
+        byApiType[apiType].daily.push({
+          date, device_id: deviceId, cost,
+          provider: item.provider, model: item.model,
+          tokens_in: item.tokens_in, tokens_out: item.tokens_out,
+          tts_characters: item.tts_characters, stt_characters: item.stt_characters,
+          requests: item.requests,
+        });
+
+        // デバイスごと
+        if (!byDevice[deviceId]) byDevice[deviceId] = { total: 0 };
+        byDevice[deviceId].total += cost;
+        byDevice[deviceId][apiType] = (byDevice[deviceId][apiType] ?? 0) + cost;
+      }
+
+      // 為替レート
+      let exchangeRate = null;
+      try {
+        const rateResult = await ddb.send(new GetCommand({
+          TableName: EXCHANGE_RATES_TABLE,
+          Key: { month, currency: "JPY" },
+        }));
+        exchangeRate = rateResult.Item ?? null;
+      } catch (e) {
+        console.error("[ExchangeRate] error:", e);
+      }
+
+      return response(200, {
+        month,
+        total_cost: Math.round(totalCost * 1000) / 1000,
+        by_api_type: byApiType,
+        by_device: byDevice,
+        exchange_rate: exchangeRate,
+      });
     }
 
     return response(404, { error: "Not found" });
