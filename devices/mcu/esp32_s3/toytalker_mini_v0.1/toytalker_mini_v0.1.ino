@@ -113,6 +113,7 @@ volatile bool wifiGotIP = false;
 // ==== Soniox STT 状態 ====
 WebSocketsClient ws;
 String partialText = "";
+String sonioxFinalBuf = "";
 String lastFinalText = "";
 unsigned long lastPartialMs = 0;
 const unsigned long END_SILENCE_MS = 800;
@@ -980,27 +981,35 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
     case WStype_TEXT: {
       String msg = (char*)payload;
       if (msg.indexOf("\"tokens\"") >= 0) {
-        String newText = "";
+        String nonFinalCurrent = "";
         bool foundEndToken = false;
-        int pos = 0;
-        while ((pos = msg.indexOf("\"text\":\"", pos)) >= 0) {
-          pos += 8;
-          int end = msg.indexOf("\"", pos);
-          if (end < 0) break;
-          String token = msg.substring(pos, end);
+        int searchPos = msg.indexOf("\"tokens\"");
+        while (true) {
+          int textPos = msg.indexOf("\"text\":\"", searchPos);
+          if (textPos < 0) break;
+          textPos += 8;
+          int textEnd = msg.indexOf("\"", textPos);
+          if (textEnd < 0) break;
+          String token = msg.substring(textPos, textEnd);
+
+          int objEnd = msg.indexOf("}", textEnd);
+          if (objEnd < 0) objEnd = msg.length();
+          String objSlice = msg.substring(textEnd, objEnd);
+          bool isFinal = objSlice.indexOf("\"is_final\":true") >= 0;
+
           if (token == "\\u003cend\\u003e") {
-            foundEndToken = true;  // <end>トークン検出
+            foundEndToken = true;
+          } else if (isFinal) {
+            sonioxFinalBuf += token;
           } else {
-            newText += token;
+            nonFinalCurrent += token;
           }
+          searchPos = textEnd + 1;
         }
 
-        if (newText.length() > 0) {
-          if (newText.startsWith(partialText)) {
-            partialText = newText;
-          } else {
-            partialText = newText;
-          }
+        String fullText = sonioxFinalBuf + nonFinalCurrent;
+        if (fullText.length() > 0) {
+          partialText = fullText;
           lastPartialMs = millis();
           armed = true;
           Serial.println("📝 " + partialText);
@@ -1044,6 +1053,7 @@ void startSTTRecording() {
   ws.enableHeartbeat(15000, 3000, 2);
 
   partialText = "";
+  sonioxFinalBuf = "";
   lastFinalText = "";
   armed = false;
   endpointDetected = false;
@@ -1334,6 +1344,7 @@ void loop() {
     endpointDetected = false;
     armed = false;
     partialText = "";
+    sonioxFinalBuf = "";
   }
   // 無音検出 → 確定文出力（フォールバック）
   else if (armed && partialText.length() > 0 && (millis() - lastPartialMs) >= END_SILENCE_MS) {
@@ -1345,5 +1356,6 @@ void loop() {
     }
     armed = false;
     partialText = "";
+    sonioxFinalBuf = "";
   }
 }

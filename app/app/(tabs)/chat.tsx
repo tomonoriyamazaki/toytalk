@@ -569,22 +569,21 @@ export default function Chat() {
         for (const t of tokens) {
           const txt = t.text ?? "";
           if (!txt) continue;
-          // ★ is_final関係なく、常にpartialとして扱う
-          // "<end>" はSTT終了シグナルなので破棄
           if (txt.trim() === "<end>") {
-            // ★ Sonioxのエンド通知。即座に自分でクローズ
             if (DEBUG) setLog(L => [...L, "Soniox: <end> detected, closing WS"]);
             try { ws.close(); } catch {}
             continue;
           }
-          nonFinalCurrent += txt;
+          if (t.is_final) {
+            sonioxFinalBufRef.current += txt;
+          } else {
+            nonFinalCurrent += txt;
+          }
         }
-        if (nonFinalCurrent.trim()) {
-          sonioxNonFinalBufRef.current = nonFinalCurrent;
-          setPartial(nonFinalCurrent);
-        } else {
-          // 空chunkなら破棄せず、最後のpartialを保持したままにする
-          if (DEBUG) setLog(L => [...L, "Soniox: skip empty nonFinal"]);
+        sonioxNonFinalBufRef.current = nonFinalCurrent;
+        const fullText = sonioxFinalBufRef.current + nonFinalCurrent;
+        if (fullText.trim()) {
+          setPartial(fullText);
         }
       } catch (e: any) {
         setLog(L => [...L, `Soniox parse err: ${e?.message ?? e}`]);
@@ -615,13 +614,12 @@ export default function Chat() {
       sonioxListeningRef.current = false;
       setIsListening(false);
 
-      const partialOnly = sonioxNonFinalBufRef.current.trim();
-      if (partialOnly) {
-        //会話履歴に表示
-        setLog(L => [...L, JSON.stringify({ type: "user", text: partialOnly })]);
+      const fullText = (sonioxFinalBufRef.current + sonioxNonFinalBufRef.current).trim();
+      if (fullText) {
+        setLog(L => [...L, JSON.stringify({ type: "user", text: fullText })]);
         setPartial("");
-        if (DEBUG) setLog(L => [...L, `🚀 Send partial-only (fast): ${partialOnly}`]);
-        send(partialOnly);
+        if (DEBUG) setLog(L => [...L, `🚀 Send (final+partial): ${fullText}`]);
+        send(fullText);
       }
     };
   };
@@ -924,6 +922,7 @@ export default function Chat() {
               }
             }
             if (final) {
+              historyRef.current.push({ role: "user", text: t, ts: Date.now() });
               const whole = curAssistantRef.current.trim();
               if (whole) {
                 historyRef.current.push({ role: "assistant", text: whole, ts: Date.now() });
@@ -999,11 +998,14 @@ export default function Chat() {
       }
 
       const recentTurns = historyRef.current.slice(-HISTORY_TURNS_TO_SEND);
-      const historyMessages = recentTurns.map((t) => ({ role: t.role, content: t.text }));
+      const historyMessages = [
+        ...recentTurns.map((t) => ({ role: t.role, content: t.text })),
+        { role: "user", content: t },
+      ];
 
       const payload = {
         character_id: selectedCharacterRef.current.character_id,
-        messages: [...historyMessages, { role: "user", content: t }],
+        messages: historyMessages,
         session_id: sessionIdRef.current,
         owner_id: ownerId,
         device_id: "app",
