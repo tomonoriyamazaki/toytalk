@@ -553,7 +553,7 @@ export default function Settings() {
                     dailyMap[d.date].cost += d.cost;
                     dailyMap[d.date].requests += d.requests ?? 0;
                   }
-                  const dailySorted = Object.entries(dailyMap).sort((a, b) => b[0].localeCompare(a[0]));
+                  const dailySorted = Object.entries(dailyMap).sort((a, b) => a[0].localeCompare(b[0]));
 
                   return (
                     <TouchableOpacity

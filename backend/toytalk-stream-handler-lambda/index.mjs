@@ -845,38 +845,23 @@
       }
       send(res, "done", {});
 
-      // ---- アシスタントログ保存 ----
+      // ---- コスト計算 + usage書き込み + ログ保存 ----
       if (sessionId !== "unknown" && textAll.trim()) {
         const assistantTimestamp = new Date().toISOString();
-        saveLog({
-          "owner_id#device_id":   `owner_id#${ownerId}#device_id#${deviceId}`,
-          "session_id#timestamp": `session_id#${sessionId}#timestamp#${assistantTimestamp}`,
-          owner_id: ownerId, device_id: deviceId, source: "app",
-          role: "assistant", content: textAll.trim(),
-          content_type: "text", timestamp: assistantTimestamp, session_id: sessionId,
-          llm_provider: llmProvider, llm_model: llmModelId,
-          llm_tokens_in: llmTokensIn, llm_tokens_out: llmTokensOut,
-          tts_provider: cfg.ttsVendor, tts_input_units: ttsInputChars, tts_input_unit_type: "characters",
-          stt_provider: null, stt_input_units: null, stt_input_unit_type: null,
-          duration_ms: Date.now() - requestAt,
-          character_id: characterId ?? "default",
-          voice_id: voice,
-        });
 
-        // ---- usage書き込み ----
         await loadPricingCache();
-        const date = assistantTimestamp.slice(0, 10); // "2026-04-19"
-        const month = assistantTimestamp.slice(0, 7);  // "2026-04"
+        const date = assistantTimestamp.slice(0, 10);
+        const month = assistantTimestamp.slice(0, 7);
         const usdJpyRate = await getExchangeRate(month);
 
-        // LLM usage
+        // LLM
         const llmPriceKey = `${llmProvider}#llm`;
         const llmCost = calcCostJpy({ providerApiType: llmPriceKey, tokensIn: llmTokensIn, tokensOut: llmTokensOut, usdJpyRate });
         if (llmCost) {
           addUsage({ ownerId, deviceId, date, apiType: "llm", provider: llmProvider, model: llmModelId, costJpy: llmCost.costJpy, tokensIn: llmTokensIn, tokensOut: llmTokensOut, usdJpyRate: llmCost.usdJpyRate, unitPriceUsd: llmCost.unitPriceUsd, margin: llmCost.margin });
         }
 
-        // TTS usage
+        // TTS
         const ttsPriceKey = `${cfg.ttsVendor}#tts`;
         let ttsCostResult;
         if (cfg.ttsVendor === "gemini") {
@@ -896,14 +881,35 @@
           addUsage({ ownerId, deviceId, date, apiType: "tts", provider: cfg.ttsVendor, model: cfg.ttsModel, costJpy: ttsCostResult.costJpy, ttsCharacters: ttsInputChars, usdJpyRate: ttsCostResult.usdJpyRate, unitPriceUsd: ttsCostResult.unitPriceUsd, margin: ttsCostResult.margin });
         }
 
-        // STT usage (確定文の文字数から概算)
+        // STT (確定文の文字数から概算)
         const userMsgChars = lastUserMsg?.content?.length ?? 0;
+        let sttCost = null;
         if (userMsgChars > 0) {
-          const sttCost = calcCostJpy({ providerApiType: "soniox#stt", userMessageChars: userMsgChars, usdJpyRate });
+          sttCost = calcCostJpy({ providerApiType: "soniox#stt", userMessageChars: userMsgChars, usdJpyRate });
           if (sttCost) {
             addUsage({ ownerId, deviceId, date, apiType: "stt", provider: "soniox", model: "soniox", costJpy: sttCost.costJpy, sttCharacters: userMsgChars, usdJpyRate: sttCost.usdJpyRate, unitPriceUsd: sttCost.unitPriceUsd, margin: sttCost.margin });
           }
         }
+
+        // ログ保存（計算済みコスト付き）
+        saveLog({
+          "owner_id#device_id":   `owner_id#${ownerId}#device_id#${deviceId}`,
+          "session_id#timestamp": `session_id#${sessionId}#timestamp#${assistantTimestamp}`,
+          owner_id: ownerId, device_id: deviceId, source: "app",
+          role: "assistant", content: textAll.trim(),
+          content_type: "text", timestamp: assistantTimestamp, session_id: sessionId,
+          llm_provider: llmProvider, llm_model: llmModelId,
+          llm_tokens_in: llmTokensIn, llm_tokens_out: llmTokensOut,
+          tts_provider: cfg.ttsVendor, tts_input_units: ttsInputChars, tts_input_unit_type: "characters",
+          stt_provider: null, stt_input_units: null, stt_input_unit_type: null,
+          duration_ms: Date.now() - requestAt,
+          character_id: characterId ?? "default",
+          voice_id: voice,
+          cost_stt: sttCost?.costJpy ?? 0,
+          cost_llm: llmCost?.costJpy ?? 0,
+          cost_tts: ttsCostResult?.costJpy ?? 0,
+          cost_total: (sttCost?.costJpy ?? 0) + (llmCost?.costJpy ?? 0) + (ttsCostResult?.costJpy ?? 0),
+        });
       }
     } catch (err) {
       const msg = (err && err.message) ? err.message : String(err);

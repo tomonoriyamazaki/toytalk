@@ -463,24 +463,31 @@ export const handler = async (event) => {
         usdJpyRate = Number(rateResult.Item?.rate) || 150;
       } catch (e) {}
 
-      // user→assistantペアで組み立て
+      // user→assistantペアで組み立て（chat-logに保存済みのコストを使用）
       const conversations = [];
       let lastUserContent = null;
       for (const item of dayItems) {
         if (item.role === "user") {
           lastUserContent = item.content;
         } else if (item.role === "assistant") {
-          const costs = calcCostFromLog(item, lastUserContent, usdJpyRate);
+          const hasCost = item.cost_total != null;
+          let stt, llm, tts, total;
+          if (hasCost) {
+            stt = { cost: item.cost_stt ?? 0, characters: lastUserContent?.length ?? 0 };
+            llm = { cost: item.cost_llm ?? 0, tokens_in: item.llm_tokens_in, tokens_out: item.llm_tokens_out, provider: item.llm_provider, model: item.llm_model };
+            tts = { cost: item.cost_tts ?? 0, characters: item.tts_input_units, provider: item.tts_provider, model: item.tts_provider };
+            total = item.cost_total;
+          } else {
+            const costs = calcCostFromLog(item, lastUserContent, usdJpyRate);
+            stt = costs.stt; llm = costs.llm; tts = costs.tts; total = costs.total;
+          }
           conversations.push({
             timestamp: item.timestamp,
             session_id: item.session_id,
             user_message: lastUserContent,
             assistant_message: item.content,
             character_id: item.character_id ?? "default",
-            stt: costs.stt,
-            llm: costs.llm,
-            tts: costs.tts,
-            total: costs.total,
+            stt, llm, tts, total,
           });
           lastUserContent = null;
         }
