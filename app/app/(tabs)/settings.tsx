@@ -204,8 +204,7 @@ export default function Settings() {
     setUsageDetailData(null);
     setUsageDetailLoading(true);
     navigateTo("usage-detail");
-    // 全デバイス分を取得するため、device_idを省略して"app"をデフォルトで取得
-    // TODO: 複数デバイス対応
+    if (characters.length === 0) loadCharacters();
     fetch(`${DEVICE_SETTING_URL}/usage/detail?owner_id=${encodeURIComponent(ownerId)}&date=${date}&device_id=app`)
       .then(r => r.json())
       .then(data => setUsageDetailData(data))
@@ -387,9 +386,17 @@ export default function Settings() {
                 {/* 会話ごとの詳細 */}
                 {convos.map((c: any, i: number) => {
                   const time = c.timestamp?.slice(11, 19) ?? "";
+                  const charName = characters.find(ch => ch.character_id === c.character_id)?.name ?? c.character_id ?? "";
+                  const devLabel = usageDetailData?.device_id === "app" ? "アプリ" : (usageDetailData?.device_id ?? "");
                   return (
                     <View key={i} style={s.detailCard}>
-                      <Text style={s.detailTime}>{time}</Text>
+                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                        <Text style={s.detailTime}>{time}</Text>
+                        <View style={{ flexDirection: "row", gap: 8 }}>
+                          {charName ? <Text style={s.detailMeta}>{charName}</Text> : null}
+                          {devLabel ? <Text style={s.detailMeta}>{devLabel}</Text> : null}
+                        </View>
+                      </View>
                       {c.user_message && (
                         <Text style={s.detailUserMsg} numberOfLines={2}>{c.user_message}</Text>
                       )}
@@ -525,7 +532,7 @@ export default function Settings() {
                               <View style={[s.dailyBarFill, { flex: cost / maxCost }]} />
                               <View style={{ flex: 1 - cost / maxCost }} />
                             </View>
-                            <Text style={s.dailyBarCost}>{formatCost(cost)}</Text>
+                            <Text style={s.dailyBarCost}>{formatCost(cost)} 円</Text>
                             <Text style={s.chevronSmall}>›</Text>
                           </TouchableOpacity>
                         ))}
@@ -1034,10 +1041,11 @@ const s = StyleSheet.create({
   dailyBarDate:            { fontSize: 12, color: "#666", width: 32, textAlign: "right", marginRight: 8 },
   dailyBarTrack:           { flex: 1, flexDirection: "row", height: 14, borderRadius: 7, backgroundColor: "#f0f0f0", overflow: "hidden" },
   dailyBarFill:            { backgroundColor: "#007AFF", borderRadius: 7 },
-  dailyBarCost:            { fontSize: 12, color: "#333", width: 50, textAlign: "right", marginLeft: 6 },
+  dailyBarCost:            { fontSize: 12, color: "#007AFF", width: 58, textAlign: "right", marginLeft: 6 },
   // 利用状況詳細
   detailCard:              { backgroundColor: "#f9f9f9", padding: 14, borderRadius: 10, borderWidth: 1, borderColor: "#e0e0e0" },
   detailTime:              { fontSize: 14, fontWeight: "700", color: "#333" },
+  detailMeta:              { fontSize: 11, color: "#999", backgroundColor: "#f0f0f0", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, overflow: "hidden" },
   detailUserMsg:           { fontSize: 13, color: "#666", marginTop: 4, fontStyle: "italic" },
   detailCostList:          { marginTop: 8, gap: 4 },
   detailCostRow:           { flexDirection: "row", alignItems: "center" },

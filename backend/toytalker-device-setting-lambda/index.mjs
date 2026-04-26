@@ -476,6 +476,7 @@ export const handler = async (event) => {
             session_id: item.session_id,
             user_message: lastUserContent,
             assistant_message: item.content,
+            character_id: item.character_id ?? "default",
             stt: costs.stt,
             llm: costs.llm,
             tts: costs.tts,
