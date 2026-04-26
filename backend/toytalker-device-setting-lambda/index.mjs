@@ -15,6 +15,88 @@ const CHAT_LOGS_TABLE      = "toytalker-chat-logs";
 const LLMS_TABLE           = "toytalker-llms";
 const USAGE_TABLE          = "toytalker-usage";
 const EXCHANGE_RATES_TABLE = "toytalker-exchange-rates";
+const UNIT_PRICES_TABLE    = "toytalker-api-unit-prices";
+
+// ---- 単価キャッシュ（コスト計算用） ----
+let cachedPrices = null;
+let cachedMargin = 1.5;
+let cacheLoadedAt = 0;
+
+async function loadPricingCache() {
+  if (cachedPrices && (Date.now() - cacheLoadedAt) < 3600_000) return;
+  try {
+    const result = await ddb.send(new ScanCommand({
+      TableName: UNIT_PRICES_TABLE,
+      FilterExpression: "version = :v",
+      ExpressionAttributeValues: { ":v": "current" },
+    }));
+    const prices = {};
+    for (const item of (result.Items ?? [])) {
+      const pk = item["provider#api_type"];
+      if (pk === "service#margin") {
+        cachedMargin = Number(item.margin) || 1.5;
+      } else {
+        prices[pk] = item;
+      }
+    }
+    cachedPrices = prices;
+    cacheLoadedAt = Date.now();
+  } catch (e) {
+    console.error("[Pricing] cache load error:", e);
+  }
+}
+
+function calcCostFromLog(assistantItem, userContent, usdJpyRate) {
+  const margin = cachedMargin;
+  const result = { stt: null, llm: null, tts: null, total: 0 };
+
+  // LLM
+  const llmKey = `${assistantItem.llm_provider}#llm`;
+  const llmPrice = cachedPrices?.[llmKey];
+  if (llmPrice && (assistantItem.llm_tokens_in || assistantItem.llm_tokens_out)) {
+    const tokIn = Number(assistantItem.llm_tokens_in) || 0;
+    const tokOut = Number(assistantItem.llm_tokens_out) || 0;
+    let costUsd = tokIn * Number(llmPrice.unit_price_input) + tokOut * Number(llmPrice.unit_price_output);
+    const costJpy = costUsd * usdJpyRate * margin;
+    result.llm = { cost: Math.round(costJpy * 1000) / 1000, tokens_in: tokIn, tokens_out: tokOut, provider: assistantItem.llm_provider, model: assistantItem.llm_model };
+    result.total += costJpy;
+  }
+
+  // TTS
+  const ttsVendor = assistantItem.tts_provider;
+  const ttsKey = `${ttsVendor}#tts`;
+  const ttsPrice = cachedPrices?.[ttsKey];
+  if (ttsPrice) {
+    const chars = Number(assistantItem.tts_input_units) || 0;
+    let costJpy = 0;
+    if (ttsPrice.currency === "JPY") {
+      costJpy = chars * Number(ttsPrice.unit_price_input) * margin;
+    } else if (ttsPrice.input_unit_type === "utf8_bytes") {
+      const utf8Bytes = chars * 3;
+      costJpy = utf8Bytes * Number(ttsPrice.unit_price_input) * usdJpyRate * margin;
+    } else {
+      costJpy = chars * Number(ttsPrice.unit_price_input) * usdJpyRate * margin;
+    }
+    result.tts = { cost: Math.round(costJpy * 1000) / 1000, characters: chars, provider: ttsVendor, model: assistantItem.tts_provider };
+    result.total += costJpy;
+  }
+
+  // STT (確定文の文字数から概算)
+  const userChars = userContent?.length ?? 0;
+  const sttPrice = cachedPrices?.["soniox#stt"];
+  if (sttPrice && userChars > 0) {
+    const textTokens = Math.round(userChars * 0.3);
+    const speechSec = userChars / 6;
+    const audioTokens = Math.round(speechSec * (30000 / 3600));
+    const costUsd = audioTokens * Number(sttPrice.unit_price_input) + textTokens * Number(sttPrice.unit_price_output);
+    const costJpy = costUsd * usdJpyRate * margin;
+    result.stt = { cost: Math.round(costJpy * 1000) / 1000, characters: userChars };
+    result.total += costJpy;
+  }
+
+  result.total = Math.round(result.total * 1000) / 1000;
+  return result;
+}
 
 const response = (statusCode, body) => ({
   statusCode,
@@ -348,6 +430,62 @@ export const handler = async (event) => {
         by_device: byDevice,
         exchange_rate: exchangeRate,
       });
+    }
+
+    // ---- GET /usage/detail ---- 日次詳細（会話ごとのコスト）
+    if (method === "GET" && path === "/usage/detail") {
+      const ownerId  = event.queryStringParameters?.owner_id  ?? "user_123";
+      const deviceId = event.queryStringParameters?.device_id ?? "app";
+      const date     = event.queryStringParameters?.date;
+      if (!date) return response(400, { error: "date is required" });
+
+      const pk = `owner_id#${ownerId}#device_id#${deviceId}`;
+      const result = await ddb.send(new QueryCommand({
+        TableName: CHAT_LOGS_TABLE,
+        KeyConditionExpression: "#pk = :pk",
+        ExpressionAttributeNames: { "#pk": "owner_id#device_id" },
+        ExpressionAttributeValues: { ":pk": pk },
+        ScanIndexForward: true,
+      }));
+
+      // 該当日のログだけフィルタ
+      const dayItems = (result.Items ?? []).filter(item => item.timestamp?.startsWith(date));
+
+      // 単価キャッシュとレート取得
+      await loadPricingCache();
+      const month = date.slice(0, 7);
+      let usdJpyRate = 150;
+      try {
+        const rateResult = await ddb.send(new GetCommand({
+          TableName: EXCHANGE_RATES_TABLE,
+          Key: { month, currency: "JPY" },
+        }));
+        usdJpyRate = Number(rateResult.Item?.rate) || 150;
+      } catch (e) {}
+
+      // user→assistantペアで組み立て
+      const conversations = [];
+      let lastUserContent = null;
+      for (const item of dayItems) {
+        if (item.role === "user") {
+          lastUserContent = item.content;
+        } else if (item.role === "assistant") {
+          const costs = calcCostFromLog(item, lastUserContent, usdJpyRate);
+          conversations.push({
+            timestamp: item.timestamp,
+            session_id: item.session_id,
+            user_message: lastUserContent,
+            assistant_message: item.content,
+            stt: costs.stt,
+            llm: costs.llm,
+            tts: costs.tts,
+            total: costs.total,
+          });
+          lastUserContent = null;
+        }
+      }
+
+      return response(200, { date, device_id: deviceId, conversations });
     }
 
     return response(404, { error: "Not found" });
