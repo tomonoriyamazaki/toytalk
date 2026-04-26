@@ -19,7 +19,7 @@ import { useOwnerId } from "../../hooks/useOwnerId";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 
-type SettingsScreen = "main" | "stt-select" | "character-list" | "character-edit" | "voice-select" | "llm-select" | "version";
+type SettingsScreen = "main" | "stt-select" | "character-list" | "character-edit" | "voice-select" | "llm-select" | "version" | "usage";
 
 type CharacterItem = {
   character_id: string;
@@ -98,12 +98,66 @@ export default function Settings() {
   const [llms, setLlms] = useState<LlmItem[]>([]);
   const [llmsLoading, setLlmsLoading] = useState(false);
 
+  // 利用状況
+  const [usageData, setUsageData] = useState<any>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageMonth, setUsageMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [expandedApi, setExpandedApi] = useState<string | null>(null);
+  const [expandedDevice, setExpandedDevice] = useState<string | null>(null);
+
   useEffect(() => {
     (async () => {
       const saved = await AsyncStorage.getItem("sttMode");
       if (saved === "local" || saved === "soniox") setSttMode(saved);
     })();
   }, []);
+
+  const loadUsage = async (month: string) => {
+    if (!ownerId) return;
+    setUsageLoading(true);
+    try {
+      const res = await fetch(`${DEVICE_SETTING_URL}/usage?owner_id=${encodeURIComponent(ownerId)}&month=${month}`);
+      const data = await res.json();
+      setUsageData(data);
+    } catch (e) {
+      console.error("[Usage] error:", e);
+    } finally {
+      setUsageLoading(false);
+    }
+  };
+
+  const openUsage = () => {
+    const month = new Date().toISOString().slice(0, 7);
+    setUsageMonth(month);
+    setExpandedApi(null);
+    setExpandedDevice(null);
+    loadUsage(month);
+    navigateTo("usage");
+  };
+
+  const changeMonth = (delta: number) => {
+    const [y, m] = usageMonth.split("-").map(Number);
+    const d = new Date(y, m - 1 + delta, 1);
+    const next = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    setUsageMonth(next);
+    setExpandedApi(null);
+    setExpandedDevice(null);
+    loadUsage(next);
+  };
+
+  const formatCost = (v: number) => {
+    if (v >= 1) return `${Math.round(v * 10) / 10}`;
+    if (v >= 0.01) return v.toFixed(2);
+    if (v > 0) return v.toFixed(3);
+    return "0";
+  };
+
+  const formatMonthLabel = (month: string) => {
+    const [y, m] = month.split("-");
+    return `${y}年${parseInt(m)}月`;
+  };
+
+  const API_LABELS: Record<string, string> = { llm: "LLM（言語モデル）", tts: "TTS（音声合成）", stt: "STT（音声認識）" };
 
   const handleSttChange = async (value: "local" | "soniox") => {
     setSttMode(value);
@@ -230,6 +284,135 @@ export default function Settings() {
       setSaving(false);
     }
   };
+
+  // ---- 利用状況画面 ----
+  if (screen === "usage") {
+    const byApi = usageData?.by_api_type ?? {};
+    const byDevice = usageData?.by_device ?? {};
+    const rate = usageData?.exchange_rate;
+
+    return (
+      <SafeAreaView style={s.root}>
+        <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
+          <View style={s.header}>
+            <TouchableOpacity onPress={() => navigateTo("main", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+              <Text style={s.back}>←</Text>
+            </TouchableOpacity>
+            <Text style={s.headerTitle}>利用状況</Text>
+          </View>
+          <ScrollView contentContainerStyle={s.wrap}>
+            {/* 月選択 */}
+            <View style={s.usageMonthRow}>
+              <TouchableOpacity onPress={() => changeMonth(-1)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Text style={s.usageMonthArrow}>←</Text>
+              </TouchableOpacity>
+              <Text style={s.usageMonthText}>{formatMonthLabel(usageMonth)}</Text>
+              <TouchableOpacity onPress={() => changeMonth(1)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Text style={s.usageMonthArrow}>→</Text>
+              </TouchableOpacity>
+            </View>
+
+            {usageLoading ? (
+              <ActivityIndicator style={{ marginTop: 32 }} />
+            ) : (
+              <>
+                {/* 合計 */}
+                <View style={s.usageTotalCard}>
+                  <Text style={s.usageTotalLabel}>今月の合計</Text>
+                  <Text style={s.usageTotalAmount}>{formatCost(usageData?.total_cost ?? 0)} 円</Text>
+                </View>
+
+                {/* API種別カード */}
+                {["stt", "llm", "tts"].map((apiType) => {
+                  const data = byApi[apiType];
+                  if (!data) return null;
+                  const isExpanded = expandedApi === apiType;
+                  const dailyMap: Record<string, { cost: number; requests: number }> = {};
+                  for (const d of data.daily ?? []) {
+                    if (!dailyMap[d.date]) dailyMap[d.date] = { cost: 0, requests: 0 };
+                    dailyMap[d.date].cost += d.cost;
+                    dailyMap[d.date].requests += d.requests ?? 0;
+                  }
+                  const dailySorted = Object.entries(dailyMap).sort((a, b) => b[0].localeCompare(a[0]));
+
+                  return (
+                    <TouchableOpacity
+                      key={apiType}
+                      style={s.usageApiCard}
+                      onPress={() => setExpandedApi(isExpanded ? null : apiType)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={s.usageApiHeader}>
+                        <Text style={s.usageApiLabel}>{API_LABELS[apiType] ?? apiType.toUpperCase()}</Text>
+                        <Text style={s.usageApiCost}>{formatCost(data.total)} 円</Text>
+                      </View>
+                      {isExpanded && dailySorted.length > 0 && (
+                        <View style={s.usageDailyList}>
+                          {dailySorted.map(([date, info]) => (
+                            <View key={date} style={s.usageDailyRow}>
+                              <Text style={s.usageDailyDate}>{date.slice(5)}</Text>
+                              <Text style={s.usageDailyRequests}>{info.requests}回</Text>
+                              <Text style={s.usageDailyCost}>{formatCost(info.cost)} 円</Text>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+
+                {/* デバイス別 */}
+                {Object.keys(byDevice).length > 0 && (
+                  <>
+                    <Text style={[s.sectionTitle, { marginTop: 16 }]}>デバイス別</Text>
+                    {Object.entries(byDevice).map(([deviceId, info]: [string, any]) => {
+                      const isExpanded = expandedDevice === deviceId;
+                      return (
+                        <TouchableOpacity
+                          key={deviceId}
+                          style={s.usageApiCard}
+                          onPress={() => setExpandedDevice(isExpanded ? null : deviceId)}
+                          activeOpacity={0.7}
+                        >
+                          <View style={s.usageApiHeader}>
+                            <Text style={s.usageApiLabel}>{deviceId === "app" ? "アプリ" : deviceId}</Text>
+                            <Text style={s.usageApiCost}>{formatCost(info.total)} 円</Text>
+                          </View>
+                          {isExpanded && (
+                            <View style={s.usageDailyList}>
+                              {["stt", "llm", "tts"].map((t) =>
+                                info[t] ? (
+                                  <View key={t} style={s.usageDailyRow}>
+                                    <Text style={s.usageDailyDate}>{API_LABELS[t] ?? t}</Text>
+                                    <Text style={s.usageDailyCost}>{formatCost(info[t])} 円</Text>
+                                  </View>
+                                ) : null
+                              )}
+                            </View>
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </>
+                )}
+
+                {/* 為替レート */}
+                {rate && (
+                  <Text style={s.usageRateText}>
+                    適用レート: 1 USD = {rate.rate} 円（{rate.fetched_at?.slice(0, 10)}）
+                  </Text>
+                )}
+
+                {usageData?.total_cost === 0 && (
+                  <Text style={s.emptyText}>この月の利用データはありません</Text>
+                )}
+              </>
+            )}
+          </ScrollView>
+        </Animated.View>
+      </SafeAreaView>
+    );
+  }
 
   // ---- バージョン情報画面 ----
   if (screen === "version") {
@@ -578,7 +761,7 @@ export default function Settings() {
             <Text style={s.chevron}>›</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={s.navRow} onPress={() => {}}>
+          <TouchableOpacity style={s.navRow} onPress={openUsage}>
             <Text style={s.navText}>利用状況</Text>
             <Text style={s.chevron}>›</Text>
           </TouchableOpacity>
@@ -650,4 +833,21 @@ const s = StyleSheet.create({
   buttonDanger:            { backgroundColor: "#ff3b30", padding: 16, borderRadius: 12, alignItems: "center" },
   buttonDisabled:          { backgroundColor: "#999" },
   buttonText:              { color: "#fff", fontSize: 16, fontWeight: "600" },
+  // 利用状況
+  usageMonthRow:           { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 24, paddingVertical: 8 },
+  usageMonthArrow:         { fontSize: 18, color: "#007AFF", fontWeight: "600", paddingHorizontal: 8 },
+  usageMonthText:          { fontSize: 18, fontWeight: "700", color: "#333" },
+  usageTotalCard:          { backgroundColor: "#f0f7ff", padding: 20, borderRadius: 12, alignItems: "center", borderWidth: 1, borderColor: "#007AFF" },
+  usageTotalLabel:         { fontSize: 14, color: "#666" },
+  usageTotalAmount:        { fontSize: 32, fontWeight: "800", color: "#007AFF", marginTop: 4 },
+  usageApiCard:            { backgroundColor: "#f9f9f9", padding: 14, borderRadius: 10, borderWidth: 1, borderColor: "#e0e0e0" },
+  usageApiHeader:          { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  usageApiLabel:           { fontSize: 15, fontWeight: "600", color: "#333" },
+  usageApiCost:            { fontSize: 15, fontWeight: "700", color: "#007AFF" },
+  usageDailyList:          { marginTop: 10, borderTopWidth: 1, borderTopColor: "#e0e0e0", paddingTop: 8 },
+  usageDailyRow:           { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 4 },
+  usageDailyDate:          { fontSize: 13, color: "#666", flex: 1 },
+  usageDailyRequests:      { fontSize: 13, color: "#999", marginRight: 12 },
+  usageDailyCost:          { fontSize: 13, fontWeight: "600", color: "#333" },
+  usageRateText:           { fontSize: 12, color: "#999", textAlign: "center", marginTop: 16 },
 });
