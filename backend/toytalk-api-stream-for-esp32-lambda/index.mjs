@@ -4,7 +4,7 @@
   import OpenAI from "openai";
   import { createHash } from "node:crypto";
   import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-  import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+  import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 
   const ddbClient = new DynamoDBClient({ region: "ap-northeast-1" });
   const ddb = DynamoDBDocumentClient.from(ddbClient);
@@ -13,12 +13,121 @@
   const CHARACTERS_TABLE = "toytalker-characters";
   const CHAT_LOGS_TABLE  = "toytalker-chat-logs";
   const LLMS_TABLE       = "toytalker-llms";
+  const USAGE_TABLE         = "toytalker-usage";
+  const UNIT_PRICES_TABLE   = "toytalker-api-unit-prices";
+  const EXCHANGE_RATES_TABLE = "toytalker-exchange-rates";
 
   async function saveLog(item) {
     try {
       await ddb.send(new PutCommand({ TableName: CHAT_LOGS_TABLE, Item: item }));
     } catch (e) {
       console.error("[saveLog] error:", e);
+    }
+  }
+
+  // ---- 単価・マージン・為替レートのキャッシュ ----
+  let cachedPrices = null;
+  let cachedMargin = null;
+  let cachedRates = {};
+  let cacheLoadedAt = 0;
+  const CACHE_TTL_MS = 3600_000;
+
+  async function loadPricingCache() {
+    if (cachedPrices && (Date.now() - cacheLoadedAt) < CACHE_TTL_MS) return;
+    try {
+      const result = await ddb.send(new ScanCommand({
+        TableName: UNIT_PRICES_TABLE,
+        FilterExpression: "version = :v",
+        ExpressionAttributeValues: { ":v": "current" },
+      }));
+      const prices = {};
+      for (const item of (result.Items ?? [])) {
+        const pk = item["provider#api_type"];
+        if (pk === "service#margin") {
+          cachedMargin = Number(item.margin) || 1.5;
+        } else {
+          prices[pk] = item;
+        }
+      }
+      cachedPrices = prices;
+      cacheLoadedAt = Date.now();
+    } catch (e) {
+      console.error("[Pricing] cache load error:", e);
+    }
+  }
+
+  async function getExchangeRate(month, currency = "JPY") {
+    const cacheKey = `${month}#${currency}`;
+    if (cachedRates[cacheKey]) return cachedRates[cacheKey];
+    try {
+      const result = await ddb.send(new GetCommand({
+        TableName: EXCHANGE_RATES_TABLE,
+        Key: { month, currency },
+      }));
+      const rate = Number(result.Item?.rate) || 150;
+      cachedRates[cacheKey] = rate;
+      return rate;
+    } catch (e) {
+      console.error("[ExchangeRate] error:", e);
+      return 150;
+    }
+  }
+
+  function calcCostJpy({ providerApiType, tokensIn, tokensOut, characters, utf8Bytes, mora, pcmBytes, userMessageChars, usdJpyRate }) {
+    const price = cachedPrices?.[providerApiType];
+    if (!price) return null;
+    const margin = cachedMargin || 1.5;
+    if (price.currency === "JPY") {
+      const inputCost = (mora ?? 0) * Number(price.unit_price_input);
+      return { costJpy: inputCost * margin, usdJpyRate: null, unitPriceUsd: null, margin };
+    }
+    const inputUnit = price.input_unit_type;
+    const outputUnit = price.output_unit_type;
+    let costUsd = 0;
+    if (inputUnit === "tokens") {
+      costUsd += (tokensIn ?? 0) * Number(price.unit_price_input);
+      if (outputUnit === "tokens" || outputUnit === "audio_tokens") {
+        costUsd += (tokensOut ?? 0) * Number(price.unit_price_output);
+      }
+    } else if (inputUnit === "characters") {
+      costUsd += (characters ?? 0) * Number(price.unit_price_input);
+      if (outputUnit === "audio_tokens" && pcmBytes) {
+        const durationSec = pcmBytes / (24000 * 2);
+        const audioTokens = Math.round((durationSec / 60) * 800);
+        costUsd += audioTokens * Number(price.unit_price_output);
+      }
+    } else if (inputUnit === "utf8_bytes") {
+      costUsd += (utf8Bytes ?? 0) * Number(price.unit_price_input);
+    } else if (inputUnit === "audio_tokens") {
+      const chars = userMessageChars ?? 0;
+      const textTokens = Math.round(chars * 0.3);
+      const speechSec = chars / 6;
+      const audioTokens = Math.round(speechSec * (30000 / 3600));
+      costUsd += audioTokens * Number(price.unit_price_input);
+      costUsd += textTokens * Number(price.unit_price_output);
+    }
+    const costJpy = costUsd * usdJpyRate * margin;
+    return { costJpy, usdJpyRate, unitPriceUsd: Number(price.unit_price_input), margin };
+  }
+
+  async function addUsage({ ownerId, deviceId, date, apiType, provider, model, costJpy, tokensIn, tokensOut, ttsCharacters, sttCharacters, usdJpyRate, unitPriceUsd, margin }) {
+    if (!costJpy || costJpy <= 0) return;
+    const sk = `${date}#${deviceId}#${apiType}`;
+    try {
+      const addParts = ["cost_jpy :cost", "requests :one"];
+      const vals = { ":cost": costJpy, ":one": 1, ":p": provider, ":m": model, ":r": usdJpyRate ?? 0, ":u": unitPriceUsd ?? 0, ":mg": margin };
+      if (tokensIn)      { addParts.push("tokens_in :tin");       vals[":tin"]  = tokensIn; }
+      if (tokensOut)     { addParts.push("tokens_out :tout");     vals[":tout"] = tokensOut; }
+      if (ttsCharacters) { addParts.push("tts_characters :ttsc"); vals[":ttsc"] = ttsCharacters; }
+      if (sttCharacters) { addParts.push("stt_characters :sttc"); vals[":sttc"] = sttCharacters; }
+      await ddb.send(new UpdateCommand({
+        TableName: USAGE_TABLE,
+        Key: { owner_id: ownerId, "date#device_id#api_type": sk },
+        UpdateExpression: `ADD ${addParts.join(", ")} SET provider = :p, model = :m, usd_jpy_rate = :r, unit_price_usd = :u, margin = :mg`,
+        ExpressionAttributeValues: vals,
+      }));
+    } catch (e) {
+      console.error("[addUsage] error:", e);
     }
   }
 
@@ -366,6 +475,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         vendorId: voiceRes.Item.vendor_id,
         personalityPrompt,
         ownerId: device.owner_id ?? null,
+        characterId: device.character_id ?? "default",
         llmProvider,
         llmModelId,
       };
@@ -406,6 +516,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     let personalityPrompt = null;
     let llmProvider = LLM_DEFAULT_PROVIDER;
     let llmModelId  = LLM_DEFAULT_MODEL;
+    let characterId = "default";
 
     if (deviceId) {
       const charConfig = await resolveCharacterFromDynamo(deviceId);
@@ -415,6 +526,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         personalityPrompt = charConfig.personalityPrompt;
         llmProvider = charConfig.llmProvider;
         llmModelId  = charConfig.llmModelId;
+        characterId = charConfig.characterId ?? "default";
         if (charConfig.ownerId) ownerId = charConfig.ownerId;
         console.log(`[DynamoDB] device=${deviceId}, tts=${charConfig.provider}, voice=${charConfig.vendorId}, llm=${llmProvider}/${llmModelId}, hasPersonality=${!!personalityPrompt}, ownerId=${ownerId}`);
       } else {
@@ -700,9 +812,47 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       }
       sendMeta(res, "done", {});
 
-      // ---- アシスタントログ保存 ----
+      // ---- コスト計算 + usage書き込み + ログ保存 ----
       if (sessionId !== "unknown" && textAll.trim()) {
         const assistantTimestamp = new Date().toISOString();
+
+        await loadPricingCache();
+        const date = assistantTimestamp.slice(0, 10);
+        const month = assistantTimestamp.slice(0, 7);
+        const usdJpyRate = await getExchangeRate(month);
+
+        // LLM
+        const llmPriceKey = `${llmProvider}#llm`;
+        const llmCost = calcCostJpy({ providerApiType: llmPriceKey, tokensIn: llmTokensIn, tokensOut: llmTokensOut, usdJpyRate });
+        if (llmCost) {
+          addUsage({ ownerId, deviceId, date, apiType: "llm", provider: llmProvider, model: llmModelId, costJpy: llmCost.costJpy, tokensIn: llmTokensIn, tokensOut: llmTokensOut, usdJpyRate: llmCost.usdJpyRate, unitPriceUsd: llmCost.unitPriceUsd, margin: llmCost.margin });
+        }
+
+        // TTS
+        const ttsPriceKey = `${cfg.ttsVendor}#tts`;
+        let ttsCostResult;
+        if (cfg.ttsVendor === "sakura") {
+          ttsCostResult = calcCostJpy({ providerApiType: ttsPriceKey, mora: ttsInputChars, usdJpyRate });
+        } else if (cfg.ttsVendor === "fishaudio") {
+          const utf8Bytes = Buffer.byteLength(textAll.trim(), "utf8");
+          ttsCostResult = calcCostJpy({ providerApiType: ttsPriceKey, utf8Bytes, usdJpyRate });
+        } else {
+          ttsCostResult = calcCostJpy({ providerApiType: ttsPriceKey, characters: ttsInputChars, usdJpyRate });
+        }
+        if (ttsCostResult) {
+          addUsage({ ownerId, deviceId, date, apiType: "tts", provider: cfg.ttsVendor, model: cfg.ttsModel, costJpy: ttsCostResult.costJpy, ttsCharacters: ttsInputChars, usdJpyRate: ttsCostResult.usdJpyRate, unitPriceUsd: ttsCostResult.unitPriceUsd, margin: ttsCostResult.margin });
+        }
+
+        // STT (確定文の文字数から概算)
+        const userMsgChars = lastUserMsg?.content?.length ?? 0;
+        let sttCost = null;
+        if (userMsgChars > 0) {
+          sttCost = calcCostJpy({ providerApiType: "soniox#stt", userMessageChars: userMsgChars, usdJpyRate });
+          if (sttCost) {
+            addUsage({ ownerId, deviceId, date, apiType: "stt", provider: "soniox", model: "soniox", costJpy: sttCost.costJpy, sttCharacters: userMsgChars, usdJpyRate: sttCost.usdJpyRate, unitPriceUsd: sttCost.unitPriceUsd, margin: sttCost.margin });
+          }
+        }
+
         saveLog({
           "owner_id#device_id":   `owner_id#${ownerId}#device_id#${deviceId}`,
           "session_id#timestamp": `session_id#${sessionId}#timestamp#${assistantTimestamp}`,
@@ -714,8 +864,12 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
           tts_provider: cfg.ttsVendor, tts_input_units: ttsInputChars, tts_input_unit_type: "characters",
           stt_provider: "soniox", stt_input_units: null, stt_input_unit_type: null,
           duration_ms: Date.now() - requestAt,
-          character_id: null,
+          character_id: characterId,
           voice_id: voice,
+          cost_stt: sttCost?.costJpy ?? 0,
+          cost_llm: llmCost?.costJpy ?? 0,
+          cost_tts: ttsCostResult?.costJpy ?? 0,
+          cost_total: (sttCost?.costJpy ?? 0) + (llmCost?.costJpy ?? 0) + (ttsCostResult?.costJpy ?? 0),
         });
       }
     } catch (err) {
