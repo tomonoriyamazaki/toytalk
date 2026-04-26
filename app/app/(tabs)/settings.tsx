@@ -387,7 +387,7 @@ export default function Settings() {
                 {convos.map((c: any, i: number) => {
                   const time = c.timestamp ? new Date(c.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
                   const charName = characters.find(ch => ch.character_id === c.character_id)?.name ?? c.character_id ?? "";
-                  const devLabel = c.device_id === "app" ? "アプリ" : (c.device_id ?? "");
+                  const devLabel = c.device_name || (c.device_id === "app" ? "アプリ" : (c.device_id ?? ""));
                   return (
                     <View key={i} style={s.detailCard}>
                       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
@@ -489,7 +489,7 @@ export default function Settings() {
                           activeOpacity={0.7}
                         >
                           <View style={s.usageApiHeader}>
-                            <Text style={s.usageApiLabel}>{deviceId === "app" ? "アプリ" : deviceId}</Text>
+                            <Text style={s.usageApiLabel}>{info.device_name || (deviceId === "app" ? "アプリ" : deviceId)}</Text>
                             <Text style={s.usageApiCost}>{formatCost(info.total)} 円</Text>
                           </View>
                           {isExpanded && (

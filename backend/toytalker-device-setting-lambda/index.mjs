@@ -411,6 +411,16 @@ export const handler = async (event) => {
         byDevice[deviceId][apiType] = (byDevice[deviceId][apiType] ?? 0) + cost;
       }
 
+      // デバイス名を解決
+      const deviceIds = Object.keys(byDevice).filter(id => id && id !== "app");
+      for (const did of deviceIds) {
+        try {
+          const devResult = await ddb.send(new GetCommand({ TableName: DEVICES_TABLE, Key: { device_id: did } }));
+          byDevice[did].device_name = devResult.Item?.device_name || null;
+        } catch (e) {}
+      }
+      if (byDevice["app"]) byDevice["app"].device_name = "アプリ";
+
       // 為替レート
       let exchangeRate = null;
       try {
@@ -454,6 +464,15 @@ export const handler = async (event) => {
           if (parts[1]) devSet.add(parts[1]);
         }
         deviceIds = devSet.size > 0 ? [...devSet] : ["app"];
+      }
+
+      // デバイス名を解決
+      const deviceNameMap = { app: "アプリ" };
+      for (const did of deviceIds.filter(d => d !== "app")) {
+        try {
+          const devResult = await ddb.send(new GetCommand({ TableName: DEVICES_TABLE, Key: { device_id: did } }));
+          deviceNameMap[did] = devResult.Item?.device_name || did;
+        } catch (e) { deviceNameMap[did] = did; }
       }
 
       const allItems = [];
@@ -507,6 +526,7 @@ export const handler = async (event) => {
             timestamp: item.timestamp,
             session_id: item.session_id,
             device_id: item._device_id ?? item.device_id ?? deviceId,
+            device_name: deviceNameMap[item._device_id ?? item.device_id ?? deviceId] ?? null,
             user_message: lastUserContent,
             assistant_message: item.content,
             character_id: item.character_id ?? "default",
