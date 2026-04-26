@@ -435,21 +435,43 @@ export const handler = async (event) => {
     // ---- GET /usage/detail ---- 日次詳細（会話ごとのコスト）
     if (method === "GET" && path === "/usage/detail") {
       const ownerId  = event.queryStringParameters?.owner_id  ?? "user_123";
-      const deviceId = event.queryStringParameters?.device_id ?? "app";
+      const deviceId = event.queryStringParameters?.device_id;
       const date     = event.queryStringParameters?.date;
       if (!date) return response(400, { error: "date is required" });
 
-      const pk = `owner_id#${ownerId}#device_id#${deviceId}`;
-      const result = await ddb.send(new QueryCommand({
-        TableName: CHAT_LOGS_TABLE,
-        KeyConditionExpression: "#pk = :pk",
-        ExpressionAttributeNames: { "#pk": "owner_id#device_id" },
-        ExpressionAttributeValues: { ":pk": pk },
-        ScanIndexForward: true,
-      }));
+      // device_id指定あり→そのデバイスのみ、省略→全デバイス
+      let deviceIds = deviceId ? [deviceId] : [];
+      if (!deviceId) {
+        const usageResult = await ddb.send(new QueryCommand({
+          TableName: USAGE_TABLE,
+          KeyConditionExpression: "owner_id = :oid AND begins_with(#sk, :datePrefix)",
+          ExpressionAttributeNames: { "#sk": "date#device_id#api_type" },
+          ExpressionAttributeValues: { ":oid": ownerId, ":datePrefix": date },
+        }));
+        const devSet = new Set();
+        for (const item of (usageResult.Items ?? [])) {
+          const parts = (item["date#device_id#api_type"] ?? "").split("#");
+          if (parts[1]) devSet.add(parts[1]);
+        }
+        deviceIds = devSet.size > 0 ? [...devSet] : ["app"];
+      }
 
-      // 該当日のログだけフィルタ
-      const dayItems = (result.Items ?? []).filter(item => item.timestamp?.startsWith(date));
+      const allItems = [];
+      for (const did of deviceIds) {
+        const pk = `owner_id#${ownerId}#device_id#${did}`;
+        const result = await ddb.send(new QueryCommand({
+          TableName: CHAT_LOGS_TABLE,
+          KeyConditionExpression: "#pk = :pk",
+          ExpressionAttributeNames: { "#pk": "owner_id#device_id" },
+          ExpressionAttributeValues: { ":pk": pk },
+          ScanIndexForward: true,
+        }));
+        for (const item of (result.Items ?? [])) {
+          if (item.timestamp?.startsWith(date)) allItems.push({ ...item, _device_id: did });
+        }
+      }
+      allItems.sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""));
+      const dayItems = allItems;
 
       // 単価キャッシュとレート取得
       await loadPricingCache();
@@ -484,6 +506,7 @@ export const handler = async (event) => {
           conversations.push({
             timestamp: item.timestamp,
             session_id: item.session_id,
+            device_id: item._device_id ?? item.device_id ?? deviceId,
             user_message: lastUserContent,
             assistant_message: item.content,
             character_id: item.character_id ?? "default",
@@ -493,7 +516,7 @@ export const handler = async (event) => {
         }
       }
 
-      return response(200, { date, device_id: deviceId, conversations });
+      return response(200, { date, conversations });
     }
 
     return response(404, { error: "Not found" });

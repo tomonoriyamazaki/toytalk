@@ -205,7 +205,7 @@ export default function Settings() {
     setUsageDetailLoading(true);
     navigateTo("usage-detail");
     if (characters.length === 0) loadCharacters();
-    fetch(`${DEVICE_SETTING_URL}/usage/detail?owner_id=${encodeURIComponent(ownerId)}&date=${date}&device_id=app`)
+    fetch(`${DEVICE_SETTING_URL}/usage/detail?owner_id=${encodeURIComponent(ownerId)}&date=${date}`)
       .then(r => r.json())
       .then(data => setUsageDetailData(data))
       .catch(e => console.error("[UsageDetail] error:", e))
@@ -385,9 +385,9 @@ export default function Settings() {
 
                 {/* 会話ごとの詳細 */}
                 {convos.map((c: any, i: number) => {
-                  const time = c.timestamp?.slice(11, 19) ?? "";
+                  const time = c.timestamp ? new Date(c.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
                   const charName = characters.find(ch => ch.character_id === c.character_id)?.name ?? c.character_id ?? "";
-                  const devLabel = usageDetailData?.device_id === "app" ? "アプリ" : (usageDetailData?.device_id ?? "");
+                  const devLabel = c.device_id === "app" ? "アプリ" : (c.device_id ?? "");
                   return (
                     <View key={i} style={s.detailCard}>
                       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
