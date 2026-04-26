@@ -503,6 +503,37 @@ export default function Settings() {
                   </>
                 )}
 
+                {/* 日別グラフ */}
+                {(() => {
+                  const dailyTotals: Record<string, number> = {};
+                  for (const apiType of ["stt", "llm", "tts"]) {
+                    for (const d of byApi[apiType]?.daily ?? []) {
+                      dailyTotals[d.date] = (dailyTotals[d.date] ?? 0) + (d.cost ?? 0);
+                    }
+                  }
+                  const days = Object.entries(dailyTotals).sort((a, b) => a[0].localeCompare(b[0]));
+                  if (days.length === 0) return null;
+                  const maxCost = Math.max(...days.map(([, c]) => c), 0.001);
+                  return (
+                    <>
+                      <Text style={[s.sectionTitle, { marginTop: 16 }]}>日別</Text>
+                      <View style={s.usageApiCard}>
+                        {days.map(([date, cost]) => (
+                          <TouchableOpacity key={date} style={s.dailyBarRow} onPress={() => openUsageDetail(date)} activeOpacity={0.7}>
+                            <Text style={s.dailyBarDate}>{date.slice(8)}日</Text>
+                            <View style={s.dailyBarTrack}>
+                              <View style={[s.dailyBarFill, { flex: cost / maxCost }]} />
+                              <View style={{ flex: 1 - cost / maxCost }} />
+                            </View>
+                            <Text style={s.dailyBarCost}>{formatCost(cost)}</Text>
+                            <Text style={s.chevronSmall}>›</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </>
+                  );
+                })()}
+
                 {/* API種別カード */}
                 <Text style={[s.sectionTitle, { marginTop: 16 }]}>API種別</Text>
                 {["stt", "llm", "tts"].map((apiType) => {
@@ -531,12 +562,11 @@ export default function Settings() {
                       {isExpanded && dailySorted.length > 0 && (
                         <View style={s.usageDailyList}>
                           {dailySorted.map(([date, info]) => (
-                            <TouchableOpacity key={date} style={s.usageDailyRow} onPress={() => openUsageDetail(date)}>
-                              <Text style={s.usageDailyDateLink}>{date.slice(5)}</Text>
+                            <View key={date} style={s.usageDailyRow}>
+                              <Text style={s.usageDailyDate}>{date.slice(5)}</Text>
                               <Text style={s.usageDailyRequests}>{info.requests}回</Text>
                               <Text style={s.usageDailyCost}>{formatCost(info.cost)} 円</Text>
-                              <Text style={s.chevronSmall}>›</Text>
-                            </TouchableOpacity>
+                            </View>
                           ))}
                         </View>
                       )}
@@ -1000,6 +1030,11 @@ const s = StyleSheet.create({
   usageRateText:           { fontSize: 12, color: "#999", textAlign: "center", marginTop: 16 },
   usageDailyDateLink:      { fontSize: 13, color: "#007AFF", flex: 1 },
   chevronSmall:            { fontSize: 14, color: "#999", marginLeft: 4 },
+  dailyBarRow:             { flexDirection: "row", alignItems: "center", paddingVertical: 5 },
+  dailyBarDate:            { fontSize: 12, color: "#666", width: 32, textAlign: "right", marginRight: 8 },
+  dailyBarTrack:           { flex: 1, flexDirection: "row", height: 14, borderRadius: 7, backgroundColor: "#f0f0f0", overflow: "hidden" },
+  dailyBarFill:            { backgroundColor: "#007AFF", borderRadius: 7 },
+  dailyBarCost:            { fontSize: 12, color: "#333", width: 50, textAlign: "right", marginLeft: 6 },
   // 利用状況詳細
   detailCard:              { backgroundColor: "#f9f9f9", padding: 14, borderRadius: 10, borderWidth: 1, borderColor: "#e0e0e0" },
   detailTime:              { fontSize: 14, fontWeight: "700", color: "#333" },
