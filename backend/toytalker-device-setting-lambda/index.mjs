@@ -8,11 +8,95 @@ const client = new DynamoDBClient({ region: "ap-northeast-1" });
 const ddb = DynamoDBDocumentClient.from(client);
 
 // ---- テーブル定義 ----
-const DEVICES_TABLE    = "toytalker-devices";
-const VOICES_TABLE     = "toytalker-voices";
-const CHARACTERS_TABLE = "toytalker-characters";
-const CHAT_LOGS_TABLE  = "toytalker-chat-logs";
-const LLMS_TABLE       = "toytalker-llms";
+const DEVICES_TABLE        = "toytalker-devices";
+const VOICES_TABLE         = "toytalker-voices";
+const CHARACTERS_TABLE     = "toytalker-characters";
+const CHAT_LOGS_TABLE      = "toytalker-chat-logs";
+const LLMS_TABLE           = "toytalker-llms";
+const USAGE_TABLE          = "toytalker-usage";
+const EXCHANGE_RATES_TABLE = "toytalker-exchange-rates";
+const UNIT_PRICES_TABLE    = "toytalker-api-unit-prices";
+
+// ---- 単価キャッシュ（コスト計算用） ----
+let cachedPrices = null;
+let cachedMargin = 1.5;
+let cacheLoadedAt = 0;
+
+async function loadPricingCache() {
+  if (cachedPrices && (Date.now() - cacheLoadedAt) < 3600_000) return;
+  try {
+    const result = await ddb.send(new ScanCommand({
+      TableName: UNIT_PRICES_TABLE,
+      FilterExpression: "version = :v",
+      ExpressionAttributeValues: { ":v": "current" },
+    }));
+    const prices = {};
+    for (const item of (result.Items ?? [])) {
+      const pk = item["provider#api_type"];
+      if (pk === "service#margin") {
+        cachedMargin = Number(item.margin) || 1.5;
+      } else {
+        prices[pk] = item;
+      }
+    }
+    cachedPrices = prices;
+    cacheLoadedAt = Date.now();
+  } catch (e) {
+    console.error("[Pricing] cache load error:", e);
+  }
+}
+
+function calcCostFromLog(assistantItem, userContent, usdJpyRate) {
+  const margin = cachedMargin;
+  const result = { stt: null, llm: null, tts: null, total: 0 };
+
+  // LLM
+  const llmKey = `${assistantItem.llm_provider}#llm`;
+  const llmPrice = cachedPrices?.[llmKey];
+  if (llmPrice && (assistantItem.llm_tokens_in || assistantItem.llm_tokens_out)) {
+    const tokIn = Number(assistantItem.llm_tokens_in) || 0;
+    const tokOut = Number(assistantItem.llm_tokens_out) || 0;
+    let costUsd = tokIn * Number(llmPrice.unit_price_input) + tokOut * Number(llmPrice.unit_price_output);
+    const costJpy = costUsd * usdJpyRate * margin;
+    result.llm = { cost: Math.round(costJpy * 1000) / 1000, tokens_in: tokIn, tokens_out: tokOut, provider: assistantItem.llm_provider, model: assistantItem.llm_model };
+    result.total += costJpy;
+  }
+
+  // TTS
+  const ttsVendor = assistantItem.tts_provider;
+  const ttsKey = `${ttsVendor}#tts`;
+  const ttsPrice = cachedPrices?.[ttsKey];
+  if (ttsPrice) {
+    const chars = Number(assistantItem.tts_input_units) || 0;
+    let costJpy = 0;
+    if (ttsPrice.currency === "JPY") {
+      costJpy = chars * Number(ttsPrice.unit_price_input) * margin;
+    } else if (ttsPrice.input_unit_type === "utf8_bytes") {
+      const utf8Bytes = chars * 3;
+      costJpy = utf8Bytes * Number(ttsPrice.unit_price_input) * usdJpyRate * margin;
+    } else {
+      costJpy = chars * Number(ttsPrice.unit_price_input) * usdJpyRate * margin;
+    }
+    result.tts = { cost: Math.round(costJpy * 1000) / 1000, characters: chars, provider: ttsVendor, model: assistantItem.tts_provider };
+    result.total += costJpy;
+  }
+
+  // STT (確定文の文字数から概算)
+  const userChars = userContent?.length ?? 0;
+  const sttPrice = cachedPrices?.["soniox#stt"];
+  if (sttPrice && userChars > 0) {
+    const textTokens = Math.round(userChars * 0.3);
+    const speechSec = userChars / 6;
+    const audioTokens = Math.round(speechSec * (30000 / 3600));
+    const costUsd = audioTokens * Number(sttPrice.unit_price_input) + textTokens * Number(sttPrice.unit_price_output);
+    const costJpy = costUsd * usdJpyRate * margin;
+    result.stt = { cost: Math.round(costJpy * 1000) / 1000, characters: userChars };
+    result.total += costJpy;
+  }
+
+  result.total = Math.round(result.total * 1000) / 1000;
+  return result;
+}
 
 const response = (statusCode, body) => ({
   statusCode,
@@ -278,6 +362,161 @@ export const handler = async (event) => {
         ScanIndexForward: true,
       }));
       return response(200, { messages: result.Items ?? [] });
+    }
+
+    // ---- GET /usage ---- 月次利用状況取得
+    if (method === "GET" && path === "/usage") {
+      const ownerId = event.queryStringParameters?.owner_id ?? "user_123";
+      const month   = event.queryStringParameters?.month ?? new Date().toISOString().slice(0, 7);
+
+      // usageテーブルから該当月のレコードを取得
+      const result = await ddb.send(new QueryCommand({
+        TableName: USAGE_TABLE,
+        KeyConditionExpression: "owner_id = :oid AND begins_with(#sk, :monthPrefix)",
+        ExpressionAttributeNames: { "#sk": "date#device_id#api_type" },
+        ExpressionAttributeValues: { ":oid": ownerId, ":monthPrefix": month },
+      }));
+
+      const items = result.Items ?? [];
+
+      // 集計
+      let totalCost = 0;
+      const byApiType = {};   // { llm: { total: 0, daily: [...] }, tts: {...}, stt: {...} }
+      const byDevice = {};    // { device_abc: { total: 0, llm: 0, tts: 0, stt: 0 }, ... }
+
+      for (const item of items) {
+        const sk = item["date#device_id#api_type"] ?? "";
+        const parts = sk.split("#");
+        const date = parts[0] ?? "";
+        const deviceId = parts[1] ?? "";
+        const apiType = parts[2] ?? "";
+        const cost = Number(item.cost_jpy) || 0;
+
+        totalCost += cost;
+
+        // API種別ごと
+        if (!byApiType[apiType]) byApiType[apiType] = { total: 0, daily: [] };
+        byApiType[apiType].total += cost;
+        byApiType[apiType].daily.push({
+          date, device_id: deviceId, cost,
+          provider: item.provider, model: item.model,
+          tokens_in: item.tokens_in, tokens_out: item.tokens_out,
+          tts_characters: item.tts_characters, stt_characters: item.stt_characters,
+          requests: item.requests,
+        });
+
+        // デバイスごと
+        if (!byDevice[deviceId]) byDevice[deviceId] = { total: 0 };
+        byDevice[deviceId].total += cost;
+        byDevice[deviceId][apiType] = (byDevice[deviceId][apiType] ?? 0) + cost;
+      }
+
+      // 為替レート
+      let exchangeRate = null;
+      try {
+        const rateResult = await ddb.send(new GetCommand({
+          TableName: EXCHANGE_RATES_TABLE,
+          Key: { month, currency: "JPY" },
+        }));
+        exchangeRate = rateResult.Item ?? null;
+      } catch (e) {
+        console.error("[ExchangeRate] error:", e);
+      }
+
+      return response(200, {
+        month,
+        total_cost: Math.round(totalCost * 1000) / 1000,
+        by_api_type: byApiType,
+        by_device: byDevice,
+        exchange_rate: exchangeRate,
+      });
+    }
+
+    // ---- GET /usage/detail ---- 日次詳細（会話ごとのコスト）
+    if (method === "GET" && path === "/usage/detail") {
+      const ownerId  = event.queryStringParameters?.owner_id  ?? "user_123";
+      const deviceId = event.queryStringParameters?.device_id;
+      const date     = event.queryStringParameters?.date;
+      if (!date) return response(400, { error: "date is required" });
+
+      // device_id指定あり→そのデバイスのみ、省略→全デバイス
+      let deviceIds = deviceId ? [deviceId] : [];
+      if (!deviceId) {
+        const usageResult = await ddb.send(new QueryCommand({
+          TableName: USAGE_TABLE,
+          KeyConditionExpression: "owner_id = :oid AND begins_with(#sk, :datePrefix)",
+          ExpressionAttributeNames: { "#sk": "date#device_id#api_type" },
+          ExpressionAttributeValues: { ":oid": ownerId, ":datePrefix": date },
+        }));
+        const devSet = new Set();
+        for (const item of (usageResult.Items ?? [])) {
+          const parts = (item["date#device_id#api_type"] ?? "").split("#");
+          if (parts[1]) devSet.add(parts[1]);
+        }
+        deviceIds = devSet.size > 0 ? [...devSet] : ["app"];
+      }
+
+      const allItems = [];
+      for (const did of deviceIds) {
+        const pk = `owner_id#${ownerId}#device_id#${did}`;
+        const result = await ddb.send(new QueryCommand({
+          TableName: CHAT_LOGS_TABLE,
+          KeyConditionExpression: "#pk = :pk",
+          ExpressionAttributeNames: { "#pk": "owner_id#device_id" },
+          ExpressionAttributeValues: { ":pk": pk },
+          ScanIndexForward: true,
+        }));
+        for (const item of (result.Items ?? [])) {
+          if (item.timestamp?.startsWith(date)) allItems.push({ ...item, _device_id: did });
+        }
+      }
+      allItems.sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""));
+      const dayItems = allItems;
+
+      // 単価キャッシュとレート取得
+      await loadPricingCache();
+      const month = date.slice(0, 7);
+      let usdJpyRate = 150;
+      try {
+        const rateResult = await ddb.send(new GetCommand({
+          TableName: EXCHANGE_RATES_TABLE,
+          Key: { month, currency: "JPY" },
+        }));
+        usdJpyRate = Number(rateResult.Item?.rate) || 150;
+      } catch (e) {}
+
+      // user→assistantペアで組み立て（chat-logに保存済みのコストを使用）
+      const conversations = [];
+      let lastUserContent = null;
+      for (const item of dayItems) {
+        if (item.role === "user") {
+          lastUserContent = item.content;
+        } else if (item.role === "assistant") {
+          const hasCost = item.cost_total != null;
+          let stt, llm, tts, total;
+          if (hasCost) {
+            stt = { cost: item.cost_stt ?? 0, characters: lastUserContent?.length ?? 0 };
+            llm = { cost: item.cost_llm ?? 0, tokens_in: item.llm_tokens_in, tokens_out: item.llm_tokens_out, provider: item.llm_provider, model: item.llm_model };
+            tts = { cost: item.cost_tts ?? 0, characters: item.tts_input_units, provider: item.tts_provider, model: item.tts_provider };
+            total = item.cost_total;
+          } else {
+            const costs = calcCostFromLog(item, lastUserContent, usdJpyRate);
+            stt = costs.stt; llm = costs.llm; tts = costs.tts; total = costs.total;
+          }
+          conversations.push({
+            timestamp: item.timestamp,
+            session_id: item.session_id,
+            device_id: item._device_id ?? item.device_id ?? deviceId,
+            user_message: lastUserContent,
+            assistant_message: item.content,
+            character_id: item.character_id ?? "default",
+            stt, llm, tts, total,
+          });
+          lastUserContent = null;
+        }
+      }
+
+      return response(200, { date, conversations });
     }
 
     return response(404, { error: "Not found" });

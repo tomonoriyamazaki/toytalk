@@ -19,7 +19,7 @@ import { useOwnerId } from "../../hooks/useOwnerId";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 
-type SettingsScreen = "main" | "stt-select" | "character-list" | "character-edit" | "voice-select" | "llm-select" | "version";
+type SettingsScreen = "main" | "stt-select" | "character-list" | "character-edit" | "voice-select" | "llm-select" | "version" | "usage" | "usage-detail";
 
 type CharacterItem = {
   character_id: string;
@@ -98,12 +98,119 @@ export default function Settings() {
   const [llms, setLlms] = useState<LlmItem[]>([]);
   const [llmsLoading, setLlmsLoading] = useState(false);
 
+  // 利用状況
+  const [usageData, setUsageData] = useState<any>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageMonth, setUsageMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [expandedApi, setExpandedApi] = useState<string | null>(null);
+  const [expandedDevice, setExpandedDevice] = useState<string | null>(null);
+  const [usageDetailData, setUsageDetailData] = useState<any>(null);
+  const [usageDetailLoading, setUsageDetailLoading] = useState(false);
+  const [usageDetailDate, setUsageDetailDate] = useState("");
+
   useEffect(() => {
     (async () => {
       const saved = await AsyncStorage.getItem("sttMode");
       if (saved === "local" || saved === "soniox") setSttMode(saved);
     })();
   }, []);
+
+  const loadUsage = async (month: string) => {
+    if (!ownerId) return;
+    setUsageLoading(true);
+    try {
+      const res = await fetch(`${DEVICE_SETTING_URL}/usage?owner_id=${encodeURIComponent(ownerId)}&month=${month}`);
+      const data = await res.json();
+      setUsageData(data);
+    } catch (e) {
+      console.error("[Usage] error:", e);
+    } finally {
+      setUsageLoading(false);
+    }
+  };
+
+  const openUsage = () => {
+    const month = new Date().toISOString().slice(0, 7);
+    setUsageMonth(month);
+    setExpandedApi(null);
+    setExpandedDevice(null);
+    loadUsage(month);
+    navigateTo("usage");
+  };
+
+  const changeMonth = (delta: number) => {
+    const [y, m] = usageMonth.split("-").map(Number);
+    const d = new Date(y, m - 1 + delta, 1);
+    const next = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    setUsageMonth(next);
+    setExpandedApi(null);
+    setExpandedDevice(null);
+    loadUsage(next);
+  };
+
+  const formatCost = (v: number) => {
+    if (v >= 1) return `${Math.round(v * 10) / 10}`;
+    if (v >= 0.01) return v.toFixed(2);
+    if (v > 0) return v.toFixed(3);
+    return "0";
+  };
+
+  const formatMonthLabel = (month: string) => {
+    const [y, m] = month.split("-");
+    return `${y}年${parseInt(m)}月`;
+  };
+
+  const API_LABELS: Record<string, string> = { llm: "LLM（言語モデル）", tts: "TTS（音声合成）", stt: "STT（音声認識）" };
+
+  const CHART_COLORS: Record<string, string> = {
+    stt: "#34C759", llm: "#007AFF", tts: "#FF9500",
+    // プロバイダ別の色
+    openai: "#10A37F", google: "#4285F4", gemini: "#886FBF",
+    anthropic: "#D97706", elevenlabs: "#F472B6", fishaudio: "#6366F1",
+    sakura: "#EC4899", soniox: "#34C759",
+  };
+
+  type PieSlice = { label: string; value: number; color: string };
+
+  const PieChart = ({ slices }: { slices: PieSlice[] }) => {
+    const total = slices.reduce((s, d) => s + d.value, 0);
+    if (total <= 0) return null;
+    const filtered = slices.filter(d => d.value > 0).map(d => ({ ...d, pct: d.value / total }));
+
+    return (
+      <View style={{ alignItems: "center", marginVertical: 12 }}>
+        <Text style={{ fontSize: 12, color: "#999", marginBottom: 4 }}>合計</Text>
+        <Text style={{ fontSize: 20, fontWeight: "700", color: "#333", marginBottom: 12 }}>{formatCost(total)}円</Text>
+        <View style={{ flexDirection: "row", width: "100%", height: 20, borderRadius: 10, overflow: "hidden", backgroundColor: "#f0f0f0" }}>
+          {filtered.map((seg, i) => (
+            <View key={i} style={{ flex: seg.pct, backgroundColor: seg.color }} />
+          ))}
+        </View>
+        <View style={s.legendRow}>
+          {filtered.map((p, i) => (
+            <View key={i} style={s.legendItem}>
+              <View style={[s.legendDot, { backgroundColor: p.color }]} />
+              <Text style={s.legendText}>{p.label} {Math.round(p.pct * 100)}% ({formatCost(p.value)}円)</Text>
+            </View>
+          ))}
+        </View>
+      </View>
+    );
+  };
+
+  const openUsageDetail = (date: string) => {
+    if (!ownerId) return;
+    setUsageDetailDate(date);
+    setUsageDetailData(null);
+    setUsageDetailLoading(true);
+    navigateTo("usage-detail");
+    if (characters.length === 0) loadCharacters();
+    fetch(`${DEVICE_SETTING_URL}/usage/detail?owner_id=${encodeURIComponent(ownerId)}&date=${date}`)
+      .then(r => r.json())
+      .then(data => setUsageDetailData(data))
+      .catch(e => console.error("[UsageDetail] error:", e))
+      .finally(() => setUsageDetailLoading(false));
+  };
 
   const handleSttChange = async (value: "local" | "soniox") => {
     setSttMode(value);
@@ -230,6 +337,267 @@ export default function Settings() {
       setSaving(false);
     }
   };
+
+  // ---- 利用状況詳細画面（日次） ----
+  if (screen === "usage-detail") {
+    const convos = usageDetailData?.conversations ?? [];
+    return (
+      <SafeAreaView style={s.root}>
+        <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
+          <View style={s.header}>
+            <TouchableOpacity onPress={() => navigateTo("usage", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+              <Text style={s.back}>←</Text>
+            </TouchableOpacity>
+            <Text style={s.headerTitle}>{usageDetailDate} の詳細</Text>
+          </View>
+          <ScrollView contentContainerStyle={s.wrap}>
+            {usageDetailLoading ? (
+              <ActivityIndicator style={{ marginTop: 32 }} />
+            ) : convos.length === 0 ? (
+              <Text style={s.emptyText}>この日の会話データはありません</Text>
+            ) : (
+              <>
+                {/* 円グラフ: API種別×プロバイダ */}
+                {(() => {
+                  const sliceMap: Record<string, { label: string; value: number; color: string }> = {};
+                  for (const c of convos) {
+                    if (c.stt?.cost) {
+                      const key = "STT";
+                      if (!sliceMap[key]) sliceMap[key] = { label: key, value: 0, color: CHART_COLORS.stt };
+                      sliceMap[key].value += c.stt.cost;
+                    }
+                    if (c.llm?.cost) {
+                      const provider = c.llm.provider ?? "llm";
+                      const key = `LLM(${provider})`;
+                      if (!sliceMap[key]) sliceMap[key] = { label: key, value: 0, color: CHART_COLORS[provider] ?? CHART_COLORS.llm };
+                      sliceMap[key].value += c.llm.cost;
+                    }
+                    if (c.tts?.cost) {
+                      const provider = c.tts.provider ?? "tts";
+                      const key = `TTS(${provider})`;
+                      if (!sliceMap[key]) sliceMap[key] = { label: key, value: 0, color: CHART_COLORS[provider] ?? CHART_COLORS.tts };
+                      sliceMap[key].value += c.tts.cost;
+                    }
+                  }
+                  const slices = Object.values(sliceMap).sort((a, b) => b.value - a.value);
+                  return <PieChart slices={slices} />;
+                })()}
+
+                {/* 会話ごとの詳細 */}
+                {convos.map((c: any, i: number) => {
+                  const time = c.timestamp ? new Date(c.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
+                  const charName = characters.find(ch => ch.character_id === c.character_id)?.name ?? c.character_id ?? "";
+                  const devLabel = c.device_id === "app" ? "アプリ" : (c.device_id ?? "");
+                  return (
+                    <View key={i} style={s.detailCard}>
+                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                        <Text style={s.detailTime}>{time}</Text>
+                        <View style={{ flexDirection: "row", gap: 8 }}>
+                          {charName ? <Text style={s.detailMeta}>{charName}</Text> : null}
+                          {devLabel ? <Text style={s.detailMeta}>{devLabel}</Text> : null}
+                        </View>
+                      </View>
+                      {c.user_message && (
+                        <Text style={s.detailUserMsg} numberOfLines={2}>{c.user_message}</Text>
+                      )}
+                      <View style={s.detailCostList}>
+                        {c.stt && (
+                          <View style={s.detailCostRow}>
+                            <Text style={s.detailCostLabel}>STT</Text>
+                            <Text style={s.detailCostSub}>{c.stt.characters}文字</Text>
+                            <Text style={s.detailCostValue}>{formatCost(c.stt.cost)} 円</Text>
+                          </View>
+                        )}
+                        {c.llm && (
+                          <View style={s.detailCostRow}>
+                            <Text style={s.detailCostLabel}>LLM</Text>
+                            <Text style={s.detailCostSub}>{c.llm.provider} / in:{c.llm.tokens_in} out:{c.llm.tokens_out}</Text>
+                            <Text style={s.detailCostValue}>{formatCost(c.llm.cost)} 円</Text>
+                          </View>
+                        )}
+                        {c.tts && (
+                          <View style={s.detailCostRow}>
+                            <Text style={s.detailCostLabel}>TTS</Text>
+                            <Text style={s.detailCostSub}>{c.tts.provider} / {c.tts.characters}文字</Text>
+                            <Text style={s.detailCostValue}>{formatCost(c.tts.cost)} 円</Text>
+                          </View>
+                        )}
+                      </View>
+                      <View style={s.detailTotalRow}>
+                        <Text style={s.detailTotalLabel}>合計</Text>
+                        <Text style={s.detailTotalValue}>{formatCost(c.total)} 円</Text>
+                      </View>
+                    </View>
+                  );
+                })}
+              </>
+            )}
+          </ScrollView>
+        </Animated.View>
+      </SafeAreaView>
+    );
+  }
+
+  // ---- 利用状況画面 ----
+  if (screen === "usage") {
+    const byApi = usageData?.by_api_type ?? {};
+    const byDevice = usageData?.by_device ?? {};
+    const rate = usageData?.exchange_rate;
+
+    return (
+      <SafeAreaView style={s.root}>
+        <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
+          <View style={s.header}>
+            <TouchableOpacity onPress={() => navigateTo("main", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+              <Text style={s.back}>←</Text>
+            </TouchableOpacity>
+            <Text style={s.headerTitle}>利用状況</Text>
+          </View>
+          <ScrollView contentContainerStyle={s.wrap}>
+            {/* 月選択 */}
+            <View style={s.usageMonthRow}>
+              <TouchableOpacity onPress={() => changeMonth(-1)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Text style={s.usageMonthArrow}>←</Text>
+              </TouchableOpacity>
+              <Text style={s.usageMonthText}>{formatMonthLabel(usageMonth)}</Text>
+              <TouchableOpacity onPress={() => changeMonth(1)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Text style={s.usageMonthArrow}>→</Text>
+              </TouchableOpacity>
+            </View>
+
+            {usageLoading ? (
+              <ActivityIndicator style={{ marginTop: 32 }} />
+            ) : (
+              <>
+                {/* 合計 */}
+                <View style={s.usageTotalCard}>
+                  <Text style={s.usageTotalLabel}>今月の合計</Text>
+                  <Text style={s.usageTotalAmount}>{formatCost(usageData?.total_cost ?? 0)} 円</Text>
+                </View>
+
+                {/* デバイス別 */}
+                {Object.keys(byDevice).length > 0 && (
+                  <>
+                    <Text style={[s.sectionTitle, { marginTop: 16 }]}>デバイス別</Text>
+                    {Object.entries(byDevice).map(([deviceId, info]: [string, any]) => {
+                      const isExpanded = expandedDevice === deviceId;
+                      return (
+                        <TouchableOpacity
+                          key={deviceId}
+                          style={s.usageApiCard}
+                          onPress={() => setExpandedDevice(isExpanded ? null : deviceId)}
+                          activeOpacity={0.7}
+                        >
+                          <View style={s.usageApiHeader}>
+                            <Text style={s.usageApiLabel}>{deviceId === "app" ? "アプリ" : deviceId}</Text>
+                            <Text style={s.usageApiCost}>{formatCost(info.total)} 円</Text>
+                          </View>
+                          {isExpanded && (
+                            <View style={s.usageDailyList}>
+                              {["stt", "llm", "tts"].map((t) =>
+                                info[t] ? (
+                                  <View key={t} style={s.usageDailyRow}>
+                                    <Text style={s.usageDailyDate}>{API_LABELS[t] ?? t}</Text>
+                                    <Text style={s.usageDailyCost}>{formatCost(info[t])} 円</Text>
+                                  </View>
+                                ) : null
+                              )}
+                            </View>
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </>
+                )}
+
+                {/* 日別グラフ */}
+                {(() => {
+                  const dailyTotals: Record<string, number> = {};
+                  for (const apiType of ["stt", "llm", "tts"]) {
+                    for (const d of byApi[apiType]?.daily ?? []) {
+                      dailyTotals[d.date] = (dailyTotals[d.date] ?? 0) + (d.cost ?? 0);
+                    }
+                  }
+                  const days = Object.entries(dailyTotals).sort((a, b) => a[0].localeCompare(b[0]));
+                  if (days.length === 0) return null;
+                  const maxCost = Math.max(...days.map(([, c]) => c), 0.001);
+                  return (
+                    <>
+                      <Text style={[s.sectionTitle, { marginTop: 16 }]}>日別</Text>
+                      <View style={s.usageApiCard}>
+                        {days.map(([date, cost]) => (
+                          <TouchableOpacity key={date} style={s.dailyBarRow} onPress={() => openUsageDetail(date)} activeOpacity={0.7}>
+                            <Text style={s.dailyBarDate}>{date.slice(8)}日</Text>
+                            <View style={s.dailyBarTrack}>
+                              <View style={[s.dailyBarFill, { flex: cost / maxCost }]} />
+                              <View style={{ flex: 1 - cost / maxCost }} />
+                            </View>
+                            <Text style={s.dailyBarCost}>{formatCost(cost)} 円</Text>
+                            <Text style={s.chevronSmall}>›</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </>
+                  );
+                })()}
+
+                {/* API種別カード */}
+                <Text style={[s.sectionTitle, { marginTop: 16 }]}>API種別</Text>
+                {["stt", "llm", "tts"].map((apiType) => {
+                  const data = byApi[apiType];
+                  if (!data) return null;
+                  const isExpanded = expandedApi === apiType;
+                  const dailyMap: Record<string, { cost: number; requests: number }> = {};
+                  for (const d of data.daily ?? []) {
+                    if (!dailyMap[d.date]) dailyMap[d.date] = { cost: 0, requests: 0 };
+                    dailyMap[d.date].cost += d.cost;
+                    dailyMap[d.date].requests += d.requests ?? 0;
+                  }
+                  const dailySorted = Object.entries(dailyMap).sort((a, b) => a[0].localeCompare(b[0]));
+
+                  return (
+                    <TouchableOpacity
+                      key={apiType}
+                      style={s.usageApiCard}
+                      onPress={() => setExpandedApi(isExpanded ? null : apiType)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={s.usageApiHeader}>
+                        <Text style={s.usageApiLabel}>{API_LABELS[apiType] ?? apiType.toUpperCase()}</Text>
+                        <Text style={s.usageApiCost}>{formatCost(data.total)} 円</Text>
+                      </View>
+                      {isExpanded && dailySorted.length > 0 && (
+                        <View style={s.usageDailyList}>
+                          {dailySorted.map(([date, info]) => (
+                            <View key={date} style={s.usageDailyRow}>
+                              <Text style={s.usageDailyDate}>{date.slice(5)}</Text>
+                              <Text style={s.usageDailyRequests}>{info.requests}回</Text>
+                              <Text style={s.usageDailyCost}>{formatCost(info.cost)} 円</Text>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+
+                {/* 為替レート */}
+                {rate && (
+                  <Text style={s.usageRateText}>
+                    適用レート: 1 USD = {rate.rate} 円（{rate.fetched_at?.slice(0, 10)}）
+                  </Text>
+                )}
+
+                {usageData?.total_cost === 0 && (
+                  <Text style={s.emptyText}>この月の利用データはありません</Text>
+                )}
+              </>
+            )}
+          </ScrollView>
+        </Animated.View>
+      </SafeAreaView>
+    );
+  }
 
   // ---- バージョン情報画面 ----
   if (screen === "version") {
@@ -578,7 +946,7 @@ export default function Settings() {
             <Text style={s.chevron}>›</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={s.navRow} onPress={() => {}}>
+          <TouchableOpacity style={s.navRow} onPress={openUsage}>
             <Text style={s.navText}>利用状況</Text>
             <Text style={s.chevron}>›</Text>
           </TouchableOpacity>
@@ -650,4 +1018,46 @@ const s = StyleSheet.create({
   buttonDanger:            { backgroundColor: "#ff3b30", padding: 16, borderRadius: 12, alignItems: "center" },
   buttonDisabled:          { backgroundColor: "#999" },
   buttonText:              { color: "#fff", fontSize: 16, fontWeight: "600" },
+  // 利用状況
+  usageMonthRow:           { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 24, paddingVertical: 8 },
+  usageMonthArrow:         { fontSize: 18, color: "#007AFF", fontWeight: "600", paddingHorizontal: 8 },
+  usageMonthText:          { fontSize: 18, fontWeight: "700", color: "#333" },
+  usageTotalCard:          { backgroundColor: "#f0f7ff", padding: 20, borderRadius: 12, alignItems: "center", borderWidth: 1, borderColor: "#007AFF" },
+  usageTotalLabel:         { fontSize: 14, color: "#666" },
+  usageTotalAmount:        { fontSize: 32, fontWeight: "800", color: "#007AFF", marginTop: 4 },
+  usageApiCard:            { backgroundColor: "#f9f9f9", padding: 14, borderRadius: 10, borderWidth: 1, borderColor: "#e0e0e0" },
+  usageApiHeader:          { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  usageApiLabel:           { fontSize: 15, fontWeight: "600", color: "#333" },
+  usageApiCost:            { fontSize: 15, fontWeight: "700", color: "#007AFF" },
+  usageDailyList:          { marginTop: 10, borderTopWidth: 1, borderTopColor: "#e0e0e0", paddingTop: 8 },
+  usageDailyRow:           { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 4 },
+  usageDailyDate:          { fontSize: 13, color: "#666", flex: 1 },
+  usageDailyRequests:      { fontSize: 13, color: "#999", marginRight: 12 },
+  usageDailyCost:          { fontSize: 13, fontWeight: "600", color: "#333" },
+  usageRateText:           { fontSize: 12, color: "#999", textAlign: "center", marginTop: 16 },
+  usageDailyDateLink:      { fontSize: 13, color: "#007AFF", flex: 1 },
+  chevronSmall:            { fontSize: 14, color: "#999", marginLeft: 4 },
+  dailyBarRow:             { flexDirection: "row", alignItems: "center", paddingVertical: 5 },
+  dailyBarDate:            { fontSize: 12, color: "#666", width: 32, textAlign: "right", marginRight: 8 },
+  dailyBarTrack:           { flex: 1, flexDirection: "row", height: 14, borderRadius: 7, backgroundColor: "#f0f0f0", overflow: "hidden" },
+  dailyBarFill:            { backgroundColor: "#007AFF", borderRadius: 7 },
+  dailyBarCost:            { fontSize: 12, color: "#007AFF", width: 58, textAlign: "right", marginLeft: 6 },
+  // 利用状況詳細
+  detailCard:              { backgroundColor: "#f9f9f9", padding: 14, borderRadius: 10, borderWidth: 1, borderColor: "#e0e0e0" },
+  detailTime:              { fontSize: 14, fontWeight: "700", color: "#333" },
+  detailMeta:              { fontSize: 11, color: "#999", backgroundColor: "#f0f0f0", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, overflow: "hidden" },
+  detailUserMsg:           { fontSize: 13, color: "#666", marginTop: 4, fontStyle: "italic" },
+  detailCostList:          { marginTop: 8, gap: 4 },
+  detailCostRow:           { flexDirection: "row", alignItems: "center" },
+  detailCostLabel:         { fontSize: 12, fontWeight: "600", color: "#555", width: 32 },
+  detailCostSub:           { fontSize: 11, color: "#999", flex: 1 },
+  detailCostValue:         { fontSize: 13, fontWeight: "600", color: "#333" },
+  detailTotalRow:          { flexDirection: "row", justifyContent: "space-between", marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: "#e0e0e0" },
+  detailTotalLabel:        { fontSize: 13, fontWeight: "600", color: "#333" },
+  detailTotalValue:        { fontSize: 14, fontWeight: "700", color: "#007AFF" },
+  // 円グラフ凡例
+  legendRow:               { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 8, marginTop: 12 },
+  legendItem:              { flexDirection: "row", alignItems: "center", gap: 4 },
+  legendDot:               { width: 10, height: 10, borderRadius: 5 },
+  legendText:              { fontSize: 11, color: "#666" },
 });
