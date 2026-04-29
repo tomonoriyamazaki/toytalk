@@ -650,13 +650,6 @@ export default function Chat() {
     ws.onclose = async (e) => {
       if(DEBUG)setLog(L => [...L, `Soniox WS closed: code=${e.code}`]);
 
-      // ★チャット履歴保持のための一時設定
-      const leftover = curAssistantRef.current.trim();
-      if (leftover) {
-        historyRef.current.push({ role: "assistant", text: leftover, ts: Date.now() });
-        curAssistantRef.current = "";
-      }
-
       // 録音停止
       try { await AudioRecord.stop(); } catch {}
       try { AudioRecord.removeAllListeners?.(); } catch {}
@@ -985,15 +978,7 @@ export default function Chat() {
               }
             }
             if (final) {
-              historyRef.current.push({ role: "user", text: t, ts: Date.now() });
-              const whole = curAssistantRef.current.trim();
-              if (whole) {
-                historyRef.current.push({ role: "assistant", text: whole, ts: Date.now() });
-                if (DEBUG_HISTORY)
-                  setLog((L) => [...L, `🧾 hist +assistant "${whole.slice(0, 40)}"`]);
-              }
-              curAssistantRef.current = "";
-              console.log("🧾 assistant final segment:", JSON.stringify(whole), "historyLen=", historyRef.current.length);
+              console.log("🧾 final segment received");
             }
           } else if (ev === "error") {
             setLog((L) => [...L, `Error: ${dataStr}`]);
@@ -1052,6 +1037,15 @@ export default function Chat() {
         if (tail) processChunk(tail);
         const out = accText.trim();
         if (DEBUG) setLog((L) => [...L, "=== stream done ==="]);
+
+        historyRef.current.push({ role: "user", text: t, ts: Date.now() });
+        const whole = curAssistantRef.current.trim();
+        if (whole) {
+          historyRef.current.push({ role: "assistant", text: whole, ts: Date.now() });
+        }
+        curAssistantRef.current = "";
+        console.log("🧾 xhr.onload history push: historyLen=", historyRef.current.length);
+
         sendingRef.current = false;
       };
 
