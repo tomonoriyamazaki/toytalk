@@ -156,6 +156,22 @@ size_t backchannelPcmSize = 0;
 String backchannelText = "";
 TaskHandle_t backchannelTaskHandle = NULL;
 
+// 過去の相槌リスト（セッション内で重複回避）
+const int MAX_PAST_BACKCHANNELS = 10;
+String pastBackchannels[MAX_PAST_BACKCHANNELS];
+int pastBackchannelCount = 0;
+
+void addPastBackchannel(const String& text) {
+  if (pastBackchannelCount >= MAX_PAST_BACKCHANNELS) {
+    for (int i = 0; i < pastBackchannelCount - 1; i++) {
+      pastBackchannels[i] = pastBackchannels[i + 1];
+    }
+    pastBackchannelCount--;
+  }
+  pastBackchannels[pastBackchannelCount] = text;
+  pastBackchannelCount++;
+}
+
 // ==== セッションID（電源ON/OFF単位） ====
 String sessionId = "";
 
@@ -877,6 +893,25 @@ void fetchBackchannelTask(void* param) {
   if (charId.length() > 0 && charId != "default") {
     payload += ",\"character_id\":\"" + charId + "\"";
   }
+  // 会話履歴（直近6ターン）
+  if (historyCount > 0) {
+    payload += ",\"history\":[";
+    int start = (historyCount > 6) ? historyCount - 6 : 0;
+    for (int i = start; i < historyCount; i++) {
+      if (i > start) payload += ",";
+      payload += "{\"role\":\"" + conversationHistory[i].role + "\",\"content\":\"" + conversationHistory[i].content + "\"}";
+    }
+    payload += "]";
+  }
+  // 過去の相槌（重複回避用）
+  if (pastBackchannelCount > 0) {
+    payload += ",\"past_backchannels\":[";
+    for (int i = 0; i < pastBackchannelCount; i++) {
+      if (i > 0) payload += ",";
+      payload += "\"" + pastBackchannels[i] + "\"";
+    }
+    payload += "]";
+  }
   payload += "}";
 
   // ブロックスコープでHTTPClientのデストラクタを確実に呼ぶ
@@ -1040,6 +1075,9 @@ bool playBackchannelIfReady() {
   }
 
   backchannelFired = true;
+  if (backchannelText.length() > 0) {
+    addPastBackchannel(backchannelText);
+  }
   Serial.println("[BC] Backchannel playback done");
 
   // PCM解放
