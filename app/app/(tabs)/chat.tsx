@@ -203,6 +203,7 @@ export default function Chat() {
     closeDrawer();
     setLog([]);
     historyRef.current = [];
+    pastBackchannelsRef.current = [];
     const newId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setSessionId(newId);
     sessionIdRef.current = newId;
@@ -444,6 +445,7 @@ export default function Chat() {
   const sonioxNonFinalBufRef = useRef<string>(""); // 非確定の表示用
 
   // 相槌
+  const pastBackchannelsRef = useRef<string[]>([]);
   const backchannelFiredRef = useRef(false);
   const backchannelAudioRef = useRef<{ text: string; audio: string; format: string } | null>(null);
   const sttFinishedRef = useRef(false);
@@ -612,6 +614,7 @@ export default function Chat() {
                     partial_text: bcPartial,
                     character_id: charId,
                     history: historyRef.current.slice(-6).map(t => ({ role: t.role, content: t.text })),
+                    past_backchannels: pastBackchannelsRef.current.slice(-10),
                   }),
                 });
                 console.log("[BC] status=", r.status);
@@ -620,6 +623,7 @@ export default function Chat() {
                 let data = JSON.parse(raw);
                 if (typeof data.body === "string") data = JSON.parse(data.body);
                 console.log("[BC] text=", data.text, "hasAudio=", !!data.audio, "sttDone=", sttFinishedRef.current);
+                if (data.text) pastBackchannelsRef.current.push(data.text);
                 if (data.audio) {
                   if (sttFinishedRef.current) {
                     console.log("[BC] playing now");

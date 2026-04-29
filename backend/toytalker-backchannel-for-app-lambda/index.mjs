@@ -63,27 +63,33 @@ async function resolveCharacter(characterId) {
 }
 
 // ---- Haiku LLM (相槌生成) ----
-async function generateBackchannel(partialText, personalityPrompt, history = []) {
+async function generateBackchannel(partialText, personalityPrompt, history = [], pastBackchannels = []) {
   const key = process.env.GOOGLE_API_KEY;
   if (!key) throw new Error("GOOGLE_API_KEY is not set");
+
+  const now = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour: "numeric", minute: "numeric" });
+  const isFirstTurn = history.length === 0;
 
   const historyContext = history.length > 0
     ? "\n直前の会話:\n" + history.map(h => `${h.role === "user" ? "ユーザー" : "あなた"}: ${h.content}`).join("\n") + "\n"
     : "";
 
+  const firstTurnHint = isFirstTurn
+    ? `\n- 会話の最初なので、時間帯（現在${now}）に合った挨拶で返してもよい（必須ではない）`
+    : "";
+
+  const avoidHint = pastBackchannels.length > 0
+    ? `\n- 過去に使った相槌: ${pastBackchannels.join("、")}。これらとは違う表現を使うこと`
+    : "";
+
   const systemPrompt = `あなたは会話相手で、相槌を打つ役割です。${personalityPrompt ? "あなたの性格: " + personalityPrompt + "\n" : ""}${historyContext}ユーザーが今まさに話している途中です。聞こえている部分と会話の流れに合った、自然な相槌を一言だけ返してください。
 ルール:
-- 相槌とは「聞いているよ」「わかるよ」という反応のこと
-- 必ず1〜8文字程度の短い相槌のみ
+- 相槌とは「聞いているよ」「わかるよ」という短い反応のこと
+- 1〜10文字程度
 - 句読点不要
-- 会話の流れに合わせてバリエーション豊かに（同じ相槌の連続を避ける）
-- 楽しい話題: わぁ、いいね、おー、やったー
-- 困った話題: えぇー、うーん、そっかぁ
-- 驚き: えっ、まじで、ほんとに
-- 共感: わかる、だよね、そうそう
-- 挨拶: おはよう、こんにちは、やっほー（会話の最初のみ）
-- 普通の相槌: うんうん、へぇー、そうなんだ、なるほど、ふーん
-- キャラの口調を反映してよいが、相槌として不自然な語尾は使わない
+- 話題の内容や感情に合った相槌を自分で考えて返す（楽しい・困っている・驚き・共感など）
+- 会話の流れを見て、毎回違う表現を使う${firstTurnHint}${avoidHint}
+- キャラの口調に少し寄せてもよいが、自然さを最優先する
 - 絶対に質問・返答・感想・コメントはしない。相槌のみ`;
 
   const resp = await fetch(
@@ -258,6 +264,7 @@ export const handler = async (event) => {
     const partialText = body.partial_text ?? "";
     const characterId = body.character_id ?? null;
     const history = Array.isArray(body.history) ? body.history.slice(-6) : [];
+    const pastBackchannels = Array.isArray(body.past_backchannels) ? body.past_backchannels.slice(-10) : [];
 
     if (!partialText) {
       return { statusCode: 400, body: JSON.stringify({ error: "partial_text is required" }) };
@@ -281,7 +288,7 @@ export const handler = async (event) => {
 
     // LLM + TTS を並列実行
     const [backchannelText, _] = await Promise.all([
-      generateBackchannel(partialText, personalityPrompt, history),
+      generateBackchannel(partialText, personalityPrompt, history, pastBackchannels),
       // TTS は backchannelText が必要なので後で実行
     ]);
 
