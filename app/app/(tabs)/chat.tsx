@@ -105,11 +105,17 @@ export default function Chat() {
 
   // STTモード
   const [sttMode, setSttMode] = useState<"local" | "soniox">("soniox");
+  const [backchannelEnabled, setBackchannelEnabled] = useState(true);
+  const backchannelEnabledRef = useRef(true);
   useFocusEffect(
     useCallback(() => {
       (async () => {
         const saved = await AsyncStorage.getItem("sttMode");
         if (saved === "local" || saved === "soniox") setSttMode(saved);
+        const bcSaved = await AsyncStorage.getItem("backchannelEnabled");
+        const enabled = bcSaved !== "false";
+        setBackchannelEnabled(enabled);
+        backchannelEnabledRef.current = enabled;
       })();
     }, [])
   );
@@ -599,8 +605,8 @@ export default function Chat() {
         if (fullText.trim()) {
           setPartial(fullText);
 
-          // 相槌トリガー: 5文字以上 & まだ発火していない
-          if (!backchannelFiredRef.current && fullText.trim().length >= BACKCHANNEL_TRIGGER_CHARS) {
+          // 相槌トリガー: 有効 & 5文字以上 & まだ発火していない
+          if (backchannelEnabledRef.current && !backchannelFiredRef.current && fullText.trim().length >= BACKCHANNEL_TRIGGER_CHARS) {
             backchannelFiredRef.current = true;
             const charId = selectedCharacterRef.current.character_id;
             const bcPartial = fullText.trim();

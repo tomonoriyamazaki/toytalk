@@ -12,6 +12,7 @@ import {
   ScrollView,
   Animated,
   Dimensions,
+  Switch,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect, useRef, useState } from "react";
@@ -75,6 +76,9 @@ export default function Settings() {
   // STT設定
   const [sttMode, setSttMode] = useState<"local" | "soniox">("soniox");
 
+  // 相槌設定
+  const [backchannelEnabled, setBackchannelEnabled] = useState(true);
+
   // キャラクター管理
   const [characters, setCharacters] = useState<CharacterItem[]>([]);
   const [charsLoading, setCharsLoading] = useState(false);
@@ -112,6 +116,8 @@ export default function Settings() {
     (async () => {
       const saved = await AsyncStorage.getItem("sttMode");
       if (saved === "local" || saved === "soniox") setSttMode(saved);
+      const bcSaved = await AsyncStorage.getItem("backchannelEnabled");
+      if (bcSaved === "false") setBackchannelEnabled(false);
     })();
   }, []);
 
@@ -941,6 +947,17 @@ export default function Settings() {
             <Text style={s.navText}>音声認識</Text>
             <Text style={s.chevron}>›</Text>
           </TouchableOpacity>
+
+          <View style={s.navRow}>
+            <Text style={s.navText}>相槌（あいづち）</Text>
+            <Switch
+              value={backchannelEnabled}
+              onValueChange={async (val) => {
+                setBackchannelEnabled(val);
+                await AsyncStorage.setItem("backchannelEnabled", val ? "true" : "false");
+              }}
+            />
+          </View>
 
           <TouchableOpacity style={s.navRow} onPress={openCharacterList}>
             <Text style={s.navText}>キャラクター管理</Text>
