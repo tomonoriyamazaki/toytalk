@@ -684,9 +684,10 @@ export default function Chat() {
         // ケース1（fetchがまだ返ってない）はfetch完了時にsttFinishedRefを見て即再生
       }
 
-      // 録音停止（send後に非同期で実行）
+      // 録音停止 + 再生モードに切り替え（send後に非同期で実行）
       try { await AudioRecord.stop(); } catch {}
       try { AudioRecord.removeAllListeners?.(); } catch {}
+      await restoreIOSPlayback();
     };
   };
 
