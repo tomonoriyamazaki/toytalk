@@ -660,10 +660,6 @@ export default function Chat() {
     ws.onclose = async (e) => {
       if(DEBUG)setLog(L => [...L, `Soniox WS closed: code=${e.code}`]);
 
-      // 録音停止
-      try { await AudioRecord.stop(); } catch {}
-      try { AudioRecord.removeAllListeners?.(); } catch {}
-
       // 状態リセット
       sonioxListeningRef.current = false;
       setIsListening(false);
@@ -674,7 +670,10 @@ export default function Chat() {
         setLog(L => [...L, JSON.stringify({ type: "user", text: fullText })]);
         setPartial("");
 
-        // 相槌音声があれば即再生（ケース2: fetch完了済み）
+        // 本Lambdaへの送信を最優先（録音停止を待たない）
+        send(fullText);
+
+        // 相槌音声があれば再生（ケース2: fetch完了済み）
         const bc = backchannelAudioRef.current;
         if (bc) {
           console.log("[BC] Playing cached backchannel:", bc.text);
@@ -683,10 +682,11 @@ export default function Chat() {
           backchannelAudioRef.current = null;
         }
         // ケース1（fetchがまだ返ってない）はfetch完了時にsttFinishedRefを見て即再生
-
-        if (DEBUG) setLog(L => [...L, `🚀 Send (final+partial): ${fullText}`]);
-        send(fullText);
       }
+
+      // 録音停止（send後に非同期で実行）
+      try { await AudioRecord.stop(); } catch {}
+      try { AudioRecord.removeAllListeners?.(); } catch {}
     };
   };
 
