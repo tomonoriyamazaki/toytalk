@@ -1078,6 +1078,7 @@ export default function Chat() {
         owner_id: ownerId,
         device_id: "app",
         request_at: new Date().toISOString(),
+        backchannel_fired: backchannelFiredRef.current,
       };
       console.log("🚀 payload to Lambda:", JSON.stringify(payload, null, 2));
       xhr.send(JSON.stringify(payload));
