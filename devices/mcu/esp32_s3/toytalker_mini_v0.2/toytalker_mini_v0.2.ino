@@ -1025,23 +1025,6 @@ bool playBackchannelIfReady() {
 
   Serial.printf("[BC] Playing backchannel: %d bytes\n", backchannelPcmSize);
 
-  // デバッグ: 先頭16バイトを表示（PCMかbase64テキストか判別）
-  size_t debugLen = min((size_t)16, backchannelPcmSize);
-  Serial.printf("[BC] First %d bytes (hex):", debugLen);
-  for (size_t i = 0; i < debugLen; i++) {
-    Serial.printf(" %02X", backchannelPcm[i]);
-  }
-  Serial.println();
-  // ASCII表示（base64テキストならここで読める）
-  char debugAscii[17] = {};
-  memcpy(debugAscii, backchannelPcm, debugLen);
-  debugAscii[debugLen] = '\0';
-  Serial.printf("[BC] First bytes (ascii): %s\n", debugAscii);
-
-  // I2S再生設定（録音→再生の切り替え）
-  i2s_driver_uninstall(I2S_NUM_0);
-  setupI2SPlay();
-
   // アンプON（ソフトスタート）
   if (!ampOn) {
     ledcAttach(PIN_AMP_SD, 1000, 8);
@@ -1119,15 +1102,11 @@ void sendToLambdaAndPlay(const String& text) {
     }
   }
 
-  // 相槌が準備できていたら先に再生（I2S切り替え含む）
-  bool bcPlayed = playBackchannelIfReady();
+  // I2S切り替え（録音→再生）
+  i2s_driver_uninstall(I2S_NUM_0);
+  setupI2SPlay();
 
-  if (!bcPlayed) {
-    // 相槌再生しなかった場合のみI2S切り替え
-    i2s_driver_uninstall(I2S_NUM_0);
-    setupI2SPlay();
-  }
-
+  // ① 本Lambdaに先に接続＋リクエスト送信（Lambda側の処理を先に開始させる）
   Serial.printf("💾 Free heap before Lambda connect: %d\n", ESP.getFreeHeap());
 
   WiFiClientSecure client;
@@ -1137,7 +1116,6 @@ void sendToLambdaAndPlay(const String& text) {
     Serial.println("❌ connect failed");
     Serial.printf("💾 Free heap at failure: %d\n", ESP.getFreeHeap());
     setLEDMode(LED_OFF);
-    // I2S復帰してSTT再開
     i2s_stop(I2S_NUM_1);
     i2s_driver_uninstall(I2S_NUM_1);
     if (ampOn) { digitalWrite(PIN_AMP_SD, LOW); ampOn = false; }
@@ -1176,7 +1154,25 @@ void sendToLambdaAndPlay(const String& text) {
     + payload;
 
   client.print(req);
+  Serial.println("📨 Request sent, Lambda processing...");
 
+  // ② 相槌再生（本Lambdaが処理している間に再生）
+  // 再生直前に本Lambdaのデータが既に来ていたら相槌スキップ
+  if (backchannelReady && backchannelPcm && backchannelPcmSize > 0) {
+    if (client.available()) {
+      Serial.println("[BC] Main Lambda already responding, skipping backchannel");
+      // 相槌キャッシュ解放
+      free(backchannelPcm);
+      backchannelPcm = NULL;
+      backchannelPcmSize = 0;
+      backchannelReady = false;
+    } else {
+      Serial.println("[BC] Playing backchannel while Lambda processes...");
+      playBackchannelIfReady();
+    }
+  }
+
+  // ③ HTTPレスポンスヘッダー読み取り
   while (true) {
     String line = client.readStringUntil('\n');
     if (line.length() == 0 || line == "\r") break;
