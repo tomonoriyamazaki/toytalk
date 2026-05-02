@@ -1064,15 +1064,30 @@ bool playBackchannelIfReady() {
   return true;
 }
 
+// ---- Lambda SSL接続バックグラウンドタスク ----
+struct LambdaConnectParams {
+  WiFiClientSecure* client;
+  volatile bool done;
+  volatile bool ok;
+};
+
+void lambdaConnectTask(void* param) {
+  LambdaConnectParams* p = (LambdaConnectParams*)param;
+  p->client->setInsecure();
+  p->ok = p->client->connect(LAMBDA_HOST, 443);
+  p->done = true;
+  vTaskDelete(NULL);
+}
+
 // ==== Lambda に送信 & SSE 受信 ====
 void sendToLambdaAndPlay(const String& text) {
+  unsigned long t0 = millis();
   Serial.println("🚀 Sending to Lambda: " + text);
   Serial.printf("💾 Free heap: %d bytes\n", ESP.getFreeHeap());
   responseText = "";
 
   if (isRecording) {
     isRecording = false;
-    Serial.println("🛑 Stopped recording");
   }
 
   // バックチャネルタスクがまだ動いている場合、完了を待つ（相槌を再生するため）
@@ -1092,24 +1107,38 @@ void sendToLambdaAndPlay(const String& text) {
       backchannelAbort = false;
     }
   }
+  Serial.printf("⏱️ [%lums] BC wait done\n", millis() - t0);
 
   // I2S切り替え（録音→再生）
   i2s_driver_uninstall(I2S_NUM_0);
   setupI2SPlay();
+  Serial.printf("⏱️ [%lums] I2S switched\n", millis() - t0);
 
   // Soniox WebSocket切断（SSL解放でヒープ確保）
-  unsigned long wsStart = millis();
   ws.disconnect();
-  Serial.printf("🔌 WS disconnect: %lums\n", millis() - wsStart);
+  Serial.printf("⏱️ [%lums] WS disconnected\n", millis() - t0);
 
-  // ① 本Lambdaに先に接続＋リクエスト送信（Lambda側の処理を先に開始させる）
-  Serial.printf("💾 Free heap before Lambda connect: %d\n", ESP.getFreeHeap());
-
+  // ① Lambda SSL接続をCore 0でバックグラウンド開始
   WiFiClientSecure client;
-  client.setInsecure();
+  LambdaConnectParams connParams = { &client, false, false };
+  TaskHandle_t connTaskHandle = NULL;
+  xTaskCreatePinnedToCore(lambdaConnectTask, "lambda_conn", 16384, &connParams, 1, &connTaskHandle, 0);
+  Serial.printf("⏱️ [%lums] Lambda connect task started on Core 0\n", millis() - t0);
 
-  if (!client.connect(LAMBDA_HOST, 443)) {
-    Serial.println("❌ connect failed");
+  // ② 相槌を即座に再生（Lambda接続と並列）
+  if (backchannelReady && backchannelPcm && backchannelPcmSize > 0) {
+    Serial.println("[BC] Playing backchannel while Lambda connects...");
+    playBackchannelIfReady();
+  }
+  Serial.printf("⏱️ [%lums] Backchannel phase done\n", millis() - t0);
+
+  // ③ Lambda接続完了を待つ
+  while (!connParams.done) {
+    delay(1);
+  }
+  Serial.printf("⏱️ [%lums] Lambda connected (ok=%d)\n", millis() - t0, connParams.ok);
+
+  if (!connParams.ok) {
     Serial.printf("💾 Free heap at failure: %d\n", ESP.getFreeHeap());
     setLEDMode(LED_OFF);
     i2s_stop(I2S_NUM_1);
@@ -1120,6 +1149,7 @@ void sendToLambdaAndPlay(const String& text) {
     return;
   }
 
+  // ④ リクエスト送信
   String messagesJson = "[";
   for (int i = 0; i < historyCount; i++) {
     if (i > 0) messagesJson += ",";
@@ -1150,23 +1180,7 @@ void sendToLambdaAndPlay(const String& text) {
     + payload;
 
   client.print(req);
-  Serial.println("📨 Request sent, Lambda processing...");
-
-  // ② 相槌再生（本Lambdaが処理している間に再生）
-  // 再生直前に本Lambdaのデータが既に来ていたら相槌スキップ
-  if (backchannelReady && backchannelPcm && backchannelPcmSize > 0) {
-    if (client.available()) {
-      Serial.println("[BC] Main Lambda already responding, skipping backchannel");
-      // 相槌キャッシュ解放
-      free(backchannelPcm);
-      backchannelPcm = NULL;
-      backchannelPcmSize = 0;
-      backchannelReady = false;
-    } else {
-      Serial.println("[BC] Playing backchannel while Lambda processes...");
-      playBackchannelIfReady();
-    }
-  }
+  Serial.printf("⏱️ [%lums] Request sent\n", millis() - t0);
 
   // ③ HTTPレスポンスヘッダー読み取り
   while (true) {
@@ -1174,6 +1188,7 @@ void sendToLambdaAndPlay(const String& text) {
     if (line.length() == 0 || line == "\r") break;
   }
 
+  Serial.printf("⏱️ [%lums] Headers read, first audio byte incoming\n", millis() - t0);
   Serial.println("📨 BINARY STREAM START (Chunked)");
 
   g_currentChunkSize = -1;
