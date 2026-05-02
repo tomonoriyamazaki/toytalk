@@ -85,11 +85,11 @@ enum LEDMode {
   LED_BLINKING    // 点滅（再生中）
 };
 
-LEDMode currentLEDMode = LED_OFF;
-unsigned long lastLEDUpdate = 0;
-int breathingValue = 0;
-bool breathingUp = true;
-bool blinkState = false;
+volatile LEDMode currentLEDMode = LED_OFF;
+volatile int breathingValue = 0;
+volatile bool breathingUp = true;
+volatile bool blinkState = false;
+hw_timer_t* ledTimer = NULL;
 bool ampOn = false;  // アンプON状態管理（ソフトスタート用）
 volatile bool bargeInRequested = false;  // 再生中のbarge-in（ボタン割り込み）フラグ
 
@@ -437,19 +437,47 @@ void printMemoryStatus(const char* label) {
 }
 #endif
 
+// ==== LED タイマー割り込み（30ms周期）====
+void IRAM_ATTR onLEDTimer() {
+  LEDMode mode = currentLEDMode;
+  if (mode == LED_BREATHING) {
+    if (breathingUp) {
+      breathingValue += 5;
+      if (breathingValue >= 16) {
+        breathingValue = 16;
+        breathingUp = false;
+      }
+    } else {
+      breathingValue -= 5;
+      if (breathingValue <= 3) {
+        breathingValue = 3;
+        breathingUp = true;
+      }
+    }
+    ledcWrite(PIN_LED, breathingValue);
+  }
+  else if (mode == LED_BLINKING) {
+    static uint8_t blinkCounter = 0;
+    blinkCounter++;
+    if (blinkCounter >= 10) {  // 30ms * 10 = 300ms
+      blinkCounter = 0;
+      blinkState = !blinkState;
+      ledcWrite(PIN_LED, blinkState ? 16 : 0);
+    }
+  }
+}
+
 // ==== LED制御関数（単色LED）====
 void setLEDMode(LEDMode mode) {
   if (currentLEDMode == mode) return;
   currentLEDMode = mode;
-  lastLEDUpdate = millis();
   breathingValue = 0;
   breathingUp = true;
   blinkState = false;
 
-  // 即座に状態を反映
   switch (mode) {
     case LED_OFF:
-      ledcWrite(PIN_LED, 0);    // 0=OFF (GPIO LOW)
+      ledcWrite(PIN_LED, 0);
       break;
     case LED_ON:
       ledcWrite(PIN_LED, 16);
@@ -462,42 +490,6 @@ void setLEDMode(LEDMode mode) {
       blinkState = true;
       ledcWrite(PIN_LED, 16);
       break;
-  }
-}
-
-// loop()から呼ぶLED更新
-void updateLEDAnimation() {
-  unsigned long now = millis();
-
-  if (currentLEDMode == LED_BREATHING) {
-    // ふわふわ: 30ms毎に明るさ変更
-    if (now - lastLEDUpdate > 30) {
-      lastLEDUpdate = now;
-
-      if (breathingUp) {
-        breathingValue += 5;
-        if (breathingValue >= 16) {
-          breathingValue = 16;
-          breathingUp = false;
-        }
-      } else {
-        breathingValue -= 5;
-        if (breathingValue <= 3) {  // 完全に消さず、3で折り返し
-          breathingValue = 3;
-          breathingUp = true;
-        }
-      }
-
-      ledcWrite(PIN_LED, breathingValue);  // PWM値そのまま
-    }
-  }
-  else if (currentLEDMode == LED_BLINKING) {
-    // 点滅: 300ms毎にON/OFF
-    if (now - lastLEDUpdate > 300) {
-      lastLEDUpdate = now;
-      blinkState = !blinkState;
-      ledcWrite(PIN_LED, blinkState ? 16 : 0);
-    }
   }
 }
 
@@ -798,7 +790,7 @@ bool processPCM(WiFiClientSecure& client, uint32_t length) {
   uint32_t totalPlayed = 0;
 
   while (remaining > 0) {
-    updateLEDAnimation();
+
 
     // === Barge-in チェック（ISRでフラグが立っていれば即中断） ===
     if (bargeInRequested) {
@@ -1491,6 +1483,11 @@ void setup() {
   ledcAttach(PIN_LED, LED_FREQ, LED_RESOLUTION);
   setLEDMode(LED_ON);  // 起動中は点灯
 
+  // LEDアニメーション用ハードウェアタイマー（30ms周期）
+  ledTimer = timerBegin(1000000);  // 1MHz
+  timerAttachInterrupt(ledTimer, &onLEDTimer);
+  timerAlarm(ledTimer, 30000, true, 0);  // 30ms = 30000us, auto-reload
+
   // NVSからBLE MACアドレスを読み込み（WiFi設定時に保存済みの場合）
   deviceMacAddress = loadDeviceMac();
   if (deviceMacAddress.length() > 0) {
@@ -1576,7 +1573,7 @@ void handleButtonLongPress() {
 void loop() {
   // ===== BLEモード処理 =====
   if (currentMode == MODE_BLE_PROV) {
-    updateLEDAnimation();
+
     handleButtonLongPress();
 
     // BLE接続状態変化処理
@@ -1594,9 +1591,6 @@ void loop() {
 
   // ===== 通常モード: 会話処理 =====
   ws.loop();
-
-  // LED演出更新
-  updateLEDAnimation();
 
   // ボタン長押しチェック
   handleButtonLongPress();
@@ -1632,7 +1626,7 @@ void loop() {
       int32_t raw[512];
       int16_t pcm[512];
       size_t n = 0;
-      i2s_read(I2S_NUM_0, (void*)raw, sizeof(raw), &n, portMAX_DELAY);
+      i2s_read(I2S_NUM_0, (void*)raw, sizeof(raw), &n, pdMS_TO_TICKS(10));
       int samples = n / sizeof(int32_t);
       for (int i = 0; i < samples; i++) {
         pcm[i] = (int16_t)(raw[i] >> 14);
