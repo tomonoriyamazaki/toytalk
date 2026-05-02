@@ -1071,9 +1071,8 @@ void sendToLambdaAndPlay(const String& text) {
   responseText = "";
 
   if (isRecording) {
-    ws.disconnect();
     isRecording = false;
-    Serial.println("🛑 Stopped recording for TTS");
+    Serial.println("🛑 Stopped recording");
   }
 
   // バックチャネルタスクがまだ動いている場合、完了を待つ（相槌を再生するため）
@@ -1097,6 +1096,11 @@ void sendToLambdaAndPlay(const String& text) {
   // I2S切り替え（録音→再生）
   i2s_driver_uninstall(I2S_NUM_0);
   setupI2SPlay();
+
+  // Soniox WebSocket切断（SSL解放でヒープ確保）
+  unsigned long wsStart = millis();
+  ws.disconnect();
+  Serial.printf("🔌 WS disconnect: %lums\n", millis() - wsStart);
 
   // ① 本Lambdaに先に接続＋リクエスト送信（Lambda側の処理を先に開始させる）
   Serial.printf("💾 Free heap before Lambda connect: %d\n", ESP.getFreeHeap());
