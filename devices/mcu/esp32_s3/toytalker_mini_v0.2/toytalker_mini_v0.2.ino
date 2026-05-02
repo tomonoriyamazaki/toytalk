@@ -1017,20 +1017,6 @@ bool playBackchannelIfReady() {
 
   Serial.printf("[BC] Playing backchannel: %d bytes\n", backchannelPcmSize);
 
-  // アンプON（ソフトスタート）
-  if (!ampOn) {
-    ledcAttach(PIN_AMP_SD, 1000, 8);
-    for (int i = 0; i <= 255; i += 5) {
-      ledcWrite(PIN_AMP_SD, i);
-      delay(2);
-    }
-    ledcDetach(PIN_AMP_SD);
-    pinMode(PIN_AMP_SD, OUTPUT);
-    digitalWrite(PIN_AMP_SD, HIGH);
-    delay(50);
-    ampOn = true;
-  }
-
   // mono→stereo変換して再生
   size_t samples = backchannelPcmSize / 2;
   const size_t PLAY_CHUNK = 4096;
@@ -1124,6 +1110,21 @@ void sendToLambdaAndPlay(const String& text) {
   TaskHandle_t connTaskHandle = NULL;
   xTaskCreatePinnedToCore(lambdaConnectTask, "lambda_conn", 16384, &connParams, 1, &connTaskHandle, 0);
   Serial.printf("⏱️ [%lums] Lambda connect task started on Core 0\n", millis() - t0);
+
+  // アンプON（ソフトスタート）— Lambda SSL接続と並列で実行
+  if (!ampOn) {
+    ledcAttach(PIN_AMP_SD, 1000, 8);
+    for (int i = 0; i <= 255; i += 5) {
+      ledcWrite(PIN_AMP_SD, i);
+      delay(2);
+    }
+    ledcDetach(PIN_AMP_SD);
+    pinMode(PIN_AMP_SD, OUTPUT);
+    digitalWrite(PIN_AMP_SD, HIGH);
+    delay(50);
+    ampOn = true;
+    Serial.printf("⏱️ [%lums] Amp ready\n", millis() - t0);
+  }
 
   // ② 相槌を即座に再生（Lambda接続と並列）
   if (backchannelReady && backchannelPcm && backchannelPcmSize > 0) {
