@@ -1006,7 +1006,7 @@ void startBackchannelFetch(const String& partial) {
     params,
     1,          // 低優先度
     &backchannelTaskHandle,
-    0           // Core 0（メインループはCore 1）
+    1           // Core 1（Core 0のWiFiスタックと競合しない）
   );
 }
 
@@ -1050,18 +1050,26 @@ bool playBackchannelIfReady() {
   return true;
 }
 
-// ---- Lambda SSL接続バックグラウンドタスク ----
+// ---- Lambda SSL接続+リクエスト送信バックグラウンドタスク ----
 struct LambdaConnectParams {
   WiFiClientSecure* client;
-  volatile bool done;
-  volatile bool ok;
+  String* request;
+  volatile bool connected;
+  volatile bool sent;
+  volatile bool failed;
 };
 
-void lambdaConnectTask(void* param) {
+void lambdaConnectAndSendTask(void* param) {
   LambdaConnectParams* p = (LambdaConnectParams*)param;
   p->client->setInsecure();
-  p->ok = p->client->connect(LAMBDA_HOST, 443);
-  p->done = true;
+  if (!p->client->connect(LAMBDA_HOST, 443)) {
+    p->failed = true;
+    vTaskDelete(NULL);
+    return;
+  }
+  p->connected = true;
+  p->client->print(*(p->request));
+  p->sent = true;
   vTaskDelete(NULL);
 }
 
@@ -1104,53 +1112,7 @@ void sendToLambdaAndPlay(const String& text) {
   ws.disconnect();
   Serial.printf("⏱️ [%lums] WS disconnected\n", millis() - t0);
 
-  // ① Lambda SSL接続をCore 0でバックグラウンド開始
-  WiFiClientSecure client;
-  LambdaConnectParams connParams = { &client, false, false };
-  TaskHandle_t connTaskHandle = NULL;
-  xTaskCreatePinnedToCore(lambdaConnectTask, "lambda_conn", 16384, &connParams, 1, &connTaskHandle, 0);
-  Serial.printf("⏱️ [%lums] Lambda connect task started on Core 0\n", millis() - t0);
-
-  // アンプON（ソフトスタート）— Lambda SSL接続と並列で実行
-  if (!ampOn) {
-    ledcAttach(PIN_AMP_SD, 1000, 8);
-    for (int i = 0; i <= 255; i += 5) {
-      ledcWrite(PIN_AMP_SD, i);
-      delay(2);
-    }
-    ledcDetach(PIN_AMP_SD);
-    pinMode(PIN_AMP_SD, OUTPUT);
-    digitalWrite(PIN_AMP_SD, HIGH);
-    delay(50);
-    ampOn = true;
-    Serial.printf("⏱️ [%lums] Amp ready\n", millis() - t0);
-  }
-
-  // ② 相槌を即座に再生（Lambda接続と並列）
-  if (backchannelReady && backchannelPcm && backchannelPcmSize > 0) {
-    Serial.println("[BC] Playing backchannel while Lambda connects...");
-    playBackchannelIfReady();
-  }
-  Serial.printf("⏱️ [%lums] Backchannel phase done\n", millis() - t0);
-
-  // ③ Lambda接続完了を待つ
-  while (!connParams.done) {
-    delay(1);
-  }
-  Serial.printf("⏱️ [%lums] Lambda connected (ok=%d)\n", millis() - t0, connParams.ok);
-
-  if (!connParams.ok) {
-    Serial.printf("💾 Free heap at failure: %d\n", ESP.getFreeHeap());
-    setLEDMode(LED_OFF);
-    i2s_stop(I2S_NUM_1);
-    i2s_driver_uninstall(I2S_NUM_1);
-    if (ampOn) { digitalWrite(PIN_AMP_SD, LOW); ampOn = false; }
-    clearBackchannelCache();
-    startSTTRecording();
-    return;
-  }
-
-  // ④ リクエスト送信
+  // ① ペイロードを先に組み立て
   String messagesJson = "[";
   for (int i = 0; i < historyCount; i++) {
     if (i > 0) messagesJson += ",";
@@ -1180,8 +1142,51 @@ void sendToLambdaAndPlay(const String& text) {
     "Content-Length: " + payload.length() + "\r\n\r\n"
     + payload;
 
-  client.print(req);
-  Serial.printf("⏱️ [%lums] Request sent\n", millis() - t0);
+  // ② Lambda SSL接続+リクエスト送信をCore 0でバックグラウンド開始
+  WiFiClientSecure client;
+  LambdaConnectParams connParams = { &client, &req, false, false, false };
+  TaskHandle_t connTaskHandle = NULL;
+  xTaskCreatePinnedToCore(lambdaConnectAndSendTask, "lambda_conn", 16384, &connParams, 1, &connTaskHandle, 0);
+  Serial.printf("⏱️ [%lums] Lambda task started on Core 0\n", millis() - t0);
+
+  // ③ アンプON（ソフトスタート）— Lambda接続と並列で実行
+  if (!ampOn) {
+    ledcAttach(PIN_AMP_SD, 1000, 8);
+    for (int i = 0; i <= 255; i += 5) {
+      ledcWrite(PIN_AMP_SD, i);
+      delay(2);
+    }
+    ledcDetach(PIN_AMP_SD);
+    pinMode(PIN_AMP_SD, OUTPUT);
+    digitalWrite(PIN_AMP_SD, HIGH);
+    delay(50);
+    ampOn = true;
+    Serial.printf("⏱️ [%lums] Amp ready\n", millis() - t0);
+  }
+
+  // ④ 相槌を即座に再生（Lambda接続+送信と並列）
+  if (backchannelReady && backchannelPcm && backchannelPcmSize > 0) {
+    Serial.println("[BC] Playing backchannel while Lambda connects...");
+    playBackchannelIfReady();
+  }
+  Serial.printf("⏱️ [%lums] Backchannel phase done\n", millis() - t0);
+
+  // ⑤ Lambda接続+送信完了を待つ
+  while (!connParams.sent && !connParams.failed) {
+    delay(1);
+  }
+  Serial.printf("⏱️ [%lums] Lambda request sent (ok=%d)\n", millis() - t0, !connParams.failed);
+
+  if (connParams.failed) {
+    Serial.printf("💾 Free heap at failure: %d\n", ESP.getFreeHeap());
+    setLEDMode(LED_OFF);
+    i2s_stop(I2S_NUM_1);
+    i2s_driver_uninstall(I2S_NUM_1);
+    if (ampOn) { digitalWrite(PIN_AMP_SD, LOW); ampOn = false; }
+    clearBackchannelCache();
+    startSTTRecording();
+    return;
+  }
 
   // ③ HTTPレスポンスヘッダー読み取り
   while (true) {
