@@ -565,7 +565,7 @@ void setupI2SPlay() {
     .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
     .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB),
     .intr_alloc_flags = 0,
-    .dma_buf_count = 32,
+    .dma_buf_count = 8,
     .dma_buf_len = 1024,
     .use_apll = true,
     .tx_desc_auto_clear = true,
@@ -1235,24 +1235,26 @@ void sendToLambdaAndPlay(const String& text) {
     }
   }
 
+  unsigned long tEnd = millis();
+
   if (bargeInRequested) {
     Serial.println("🔘 Barge-in: skipping buffer flush");
   } else {
-    // 無音データでDMAバッファをフラッシュ（決め打ちdelayの代わり）
-    Serial.println("🔊 Flushing DMA buffer with silence...");
-    const size_t dmaBytes = 32 * 1024 * 2 * 2; // dma_buf_count * dma_buf_len * 16bit * stereo
+    // 無音データでDMAバッファをフラッシュ（dma_buf_count=8に合わせた軽量版）
+    const size_t dmaBytes = 8 * 1024 * 2 * 2; // dma_buf_count * dma_buf_len * 16bit * stereo
     uint8_t* silence = (uint8_t*)calloc(1, dmaBytes);
     if (silence) {
       size_t written = 0;
       i2s_write(I2S_NUM_1, silence, dmaBytes, &written, portMAX_DELAY);
       free(silence);
     }
-    Serial.println("🔊 Playback complete");
+    Serial.printf("⏱️ end+[%lums] DMA flush (%d bytes)\n", millis() - tEnd, dmaBytes);
   }
 
   // アンプOFF＋次回ソフトスタートのためフラグリセット
   digitalWrite(PIN_AMP_SD, LOW);
   ampOn = false;
+  Serial.printf("⏱️ end+[%lums] Amp off\n", millis() - tEnd);
 
   // barge-in時でも会話履歴は残す（途中でも会話は継続中）
   addToHistory("user", text);
@@ -1262,11 +1264,14 @@ void sendToLambdaAndPlay(const String& text) {
 
   bargeInRequested = false;
   clearBackchannelCache();
+  Serial.printf("⏱️ end+[%lums] Cleanup done\n", millis() - tEnd);
 
   i2s_stop(I2S_NUM_1);
   i2s_driver_uninstall(I2S_NUM_1);
+  Serial.printf("⏱️ end+[%lums] I2S uninstalled\n", millis() - tEnd);
 
   startSTTRecording();
+  Serial.printf("⏱️ end+[%lums] STT recording started\n", millis() - tEnd);
 }
 
 // ==== Soniox WebSocketイベント ====
@@ -1361,16 +1366,19 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
 
 // ==== STT録音開始 ====
 void startSTTRecording() {
+  unsigned long tRec = millis();
   Serial.println("🎙️ Starting STT recording...");
 
   // 録音準備中はLED点灯（WebSocket接続後にふわふわに変わる）
   setLEDMode(LED_ON);
 
   setupI2SRecord();
+  Serial.printf("⏱️ rec+[%lums] I2S record setup\n", millis() - tRec);
 
   ws.beginSSL(SONIOX_WS_URL, SONIOX_WS_PORT, "/transcribe-websocket");
   ws.onEvent(webSocketEvent);
   ws.enableHeartbeat(15000, 3000, 2);
+  Serial.printf("⏱️ rec+[%lums] Soniox WS begin\n", millis() - tRec);
 
   partialText = "";
   sonioxFinalBuf = "";
@@ -1646,7 +1654,7 @@ void loop() {
       int32_t raw[512];
       int16_t pcm[512];
       size_t n = 0;
-      i2s_read(I2S_NUM_0, (void*)raw, sizeof(raw), &n, pdMS_TO_TICKS(10));
+      i2s_read(I2S_NUM_0, (void*)raw, sizeof(raw), &n, portMAX_DELAY);
       int samples = n / sizeof(int32_t);
       for (int i = 0; i < samples; i++) {
         pcm[i] = (int16_t)(raw[i] >> 14);
