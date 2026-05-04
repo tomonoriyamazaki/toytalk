@@ -59,6 +59,7 @@ const char* SONIOX_LAMBDA_URL = "https://ug5fcnjsxa22vtnrzlwpfgshd40nngbo.lambda
 const char* SONIOX_WS_URL = "stt-rt.soniox.com";
 const int SONIOX_WS_PORT = 443;
 String sonioxKey;
+String sonioxModel = "stt-rt-v4";
 
 // ==== I2S PIN ====
 #define PIN_WS     3
@@ -1105,6 +1106,9 @@ void sendToLambdaAndPlay(const String& text) {
   }
   Serial.printf("⏱️ [%lums] BC wait done\n", millis() - t0);
 
+  // タイマー割り込み再開（再生中のLEDアニメーション用）
+  timerAlarm(ledTimer, 30000, true, 0);
+
   // I2S切り替え（録音→再生）
   i2s_driver_uninstall(I2S_NUM_0);
   setupI2SPlay();
@@ -1289,7 +1293,7 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
       {
         String startMsg =
           "{\"api_key\":\"" + sonioxKey + "\","
-          "\"model\":\"stt-rt-v3\","
+          "\"model\":\"" + sonioxModel + "\","
           "\"audio_format\":\"pcm_s16le\","
           "\"sample_rate\":16000,"
           "\"num_channels\":1,"
@@ -1299,8 +1303,9 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
           "}";
         ws.sendTXT(startMsg);
         Serial.println("📤 Sent start message to Soniox");
-        // 録音開始 = LEDふわふわ
-        setLEDMode(LED_BREATHING);
+        // 録音中はタイマー割り込みを停止（I2S競合回避）
+        timerAlarm(ledTimer, 0, false, 0);
+        setLEDMode(LED_ON);
       }
       isRecording = true;
       break;
@@ -1501,7 +1506,10 @@ void startNormalOperation() {
   if (doc.containsKey("backchannel_enabled")) {
     backchannelEnabled = doc["backchannel_enabled"].as<bool>();
   }
-  Serial.printf("🔊 Backchannel: %s\n", backchannelEnabled ? "ON" : "OFF");
+  if (doc.containsKey("stt_model")) {
+    sonioxModel = doc["stt_model"].as<String>();
+  }
+  Serial.printf("🔊 Backchannel: %s, STT: %s\n", backchannelEnabled ? "ON" : "OFF", sonioxModel.c_str());
 
 #if DEBUG_MEMORY
   printMemoryStatus("After WiFi & Soniox Init");
@@ -1663,6 +1671,8 @@ void loop() {
   // 録音データをWebSocketに送信
   if (isRecording && wifiGotIP && ws.isConnected()) {
     static uint32_t lastSend = 0;
+    static uint32_t sendOk = 0, sendFail = 0;
+    static uint32_t lastStats = 0;
     if (millis() - lastSend > 5) {
       int32_t raw[512];
       int16_t pcm[512];
@@ -1672,8 +1682,14 @@ void loop() {
       for (int i = 0; i < samples; i++) {
         pcm[i] = (int16_t)(raw[i] >> 14);
       }
-      ws.sendBIN((uint8_t*)pcm, samples * sizeof(int16_t));
+      bool ok = ws.sendBIN((uint8_t*)pcm, samples * sizeof(int16_t));
+      if (ok) sendOk++; else sendFail++;
       lastSend = millis();
+    }
+    if (millis() - lastStats > 5000) {
+      Serial.printf("[STT] send ok=%d fail=%d RSSI=%d\n", sendOk, sendFail, WiFi.RSSI());
+      sendOk = 0; sendFail = 0;
+      lastStats = millis();
     }
   }
 

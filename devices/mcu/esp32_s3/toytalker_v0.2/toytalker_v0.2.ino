@@ -1309,6 +1309,8 @@ void loop() {
   // 録音データをWebSocketに送信
   if (isRecording && wifiGotIP && ws.isConnected()) {
     static uint32_t lastSend = 0;
+    static uint32_t sendOk = 0, sendFail = 0;
+    static uint32_t lastStats = 0;
     if (millis() - lastSend > 5) {
       int32_t raw[512];
       int16_t pcm[512];
@@ -1318,8 +1320,14 @@ void loop() {
       for (int i = 0; i < samples; i++) {
         pcm[i] = (int16_t)(raw[i] >> 14);
       }
-      ws.sendBIN((uint8_t*)pcm, samples * sizeof(int16_t));
+      bool ok = ws.sendBIN((uint8_t*)pcm, samples * sizeof(int16_t));
+      if (ok) sendOk++; else sendFail++;
       lastSend = millis();
+    }
+    if (millis() - lastStats > 5000) {
+      Serial.printf("[STT] send ok=%d fail=%d RSSI=%d\n", sendOk, sendFail, WiFi.RSSI());
+      sendOk = 0; sendFail = 0;
+      lastStats = millis();
     }
   }
 

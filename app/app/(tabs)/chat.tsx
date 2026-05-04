@@ -34,7 +34,7 @@ import Sound from "react-native-sound";
 
 /* === Soniox定数 === */
 const SONIOX_WS_URL = "wss://stt-rt.soniox.com/transcribe-websocket"; // 公式
-const SONIOX_MODEL = "stt-rt-v3";
+let SONIOX_MODEL = "stt-rt-v4";
 const SONIOX_SAMPLE_RATE = 16000;
 const SONIOX_CHANNELS = 1;
 
@@ -473,6 +473,7 @@ export default function Chat() {
     });
     const js = await res.json();
     if (!res.ok || !js?.api_key) throw new Error("Failed to get Soniox temp key");
+    if (js.stt_model) SONIOX_MODEL = js.stt_model;
     return js.api_key as string;
   };
 

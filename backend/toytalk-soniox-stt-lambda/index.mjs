@@ -57,6 +57,7 @@ export const handler = async (event) => {
     const data = await sonioxRes.json();
 
     const result = { ok: true, ...data };
+    result.stt_model = process.env.SONIOX_MODEL || "stt-rt-v4";
     if (deviceSettings?.Item) {
       result.backchannel_enabled = deviceSettings.Item.backchannel_enabled !== false;
     }
