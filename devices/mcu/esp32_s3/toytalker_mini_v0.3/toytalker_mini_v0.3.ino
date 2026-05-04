@@ -1206,7 +1206,7 @@ void tryConnectWiFiFromBLE(const String& ssid, const String& password) {
 
   Serial.printf("📶 Connecting to WiFi from BLE: %s\n", ssid.c_str());
 
-  const int MAX_RETRIES = 5;
+  const int MAX_RETRIES = 2;
   for (int retry = 1; retry <= MAX_RETRIES; retry++) {
     Serial.printf("\n🔄 Attempt %d of %d\n", retry, MAX_RETRIES);
     if (tryConnectWiFiOnce(ssid, password)) {
@@ -1299,7 +1299,7 @@ void setup() {
   digitalWrite(PIN_AMP_SD, LOW);
 
   if (loadWiFiCredentials()) {
-    const int MAX_RETRIES = 5;
+    const int MAX_RETRIES = 2;
     bool connected = false;
 
     for (int retry = 1; retry <= MAX_RETRIES; retry++) {
