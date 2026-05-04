@@ -132,7 +132,7 @@ uint8_t* currentPcmBuffer = NULL;
 size_t currentPcmSize = 0;
 
 // ==== 相槌（Backchannel）状態 ====
-const int BACKCHANNEL_TRIGGER_CHARS = 5;  // UTF-8文字数（バイト数ではない）
+const int BACKCHANNEL_TRIGGER_CHARS = 10;  // UTF-8文字数（バイト数ではない）
 
 // UTF-8文字数カウント
 int utf8Len(const String& s) {
@@ -882,8 +882,8 @@ void fetchBackchannelTask(void* param) {
 
   String url = String("https://") + BACKCHANNEL_HOST + BACKCHANNEL_PATH;
   String payload = "{\"partial_text\":\"" + partial + "\"";
-  if (charId.length() > 0 && charId != "default") {
-    payload += ",\"character_id\":\"" + charId + "\"";
+  if (charId.length() > 0) {
+    payload += ",\"device_id\":\"" + charId + "\"";
   }
   // 会話履歴（直近6ターン）
   if (historyCount > 0) {

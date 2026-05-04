@@ -616,7 +616,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       if (systemMsg) {
         body.systemInstruction = { parts: [{ text: systemMsg.content }] };
       }
-      body.generationConfig = { temperature: 0.7 };
+      body.generationConfig = { temperature: 0.7, thinkingConfig: { thinkingBudget: 0 } };
 
       const key = process.env.GOOGLE_API_KEY;
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${key}`;
@@ -646,7 +646,9 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
             if (data === "[DONE]") return;
             try {
               const parsed = JSON.parse(data);
-              const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+              const parts = parsed.candidates?.[0]?.content?.parts ?? [];
+              const textPart = parts.find(p => p.text !== undefined && !p.thought);
+              const text = textPart?.text ?? "";
               if (parsed.usageMetadata) {
                 llmTokensIn  = parsed.usageMetadata.promptTokenCount ?? 0;
                 llmTokensOut = parsed.usageMetadata.candidatesTokenCount ?? 0;

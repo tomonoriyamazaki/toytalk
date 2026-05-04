@@ -8,6 +8,7 @@ import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 
 const ddbClient = new DynamoDBClient({ region: "ap-northeast-1" });
 const ddb = DynamoDBDocumentClient.from(ddbClient);
+const DEVICES_TABLE    = "toytalker-devices";
 const CHARACTERS_TABLE = "toytalker-characters";
 const VOICES_TABLE     = "toytalker-voices";
 
@@ -32,6 +33,26 @@ function normalizeModelKey(k) {
   if (s.includes("fishaudio") || s.includes("fish")) return "FishAudio";
   if (s.includes("sakura"))      return "Sakura";
   return undefined;
+}
+
+// ---- device_idからキャラクター解決（ESP用） ----
+async function resolveCharacterFromDevice(deviceId) {
+  try {
+    const deviceRes = await ddb.send(new GetCommand({
+      TableName: DEVICES_TABLE,
+      Key: { device_id: deviceId },
+    }));
+    const device = deviceRes.Item;
+    if (!device) return null;
+
+    if (device.character_id && device.character_id !== "default") {
+      return resolveCharacter(device.character_id);
+    }
+    return null;
+  } catch (e) {
+    console.error("[resolveCharacterFromDevice] error:", e);
+    return null;
+  }
 }
 
 // ---- キャラクター解決 ----
@@ -242,6 +263,7 @@ export const handler = async (event) => {
   try {
     const body = event.body ? JSON.parse(event.body) : {};
     const partialText = body.partial_text ?? "";
+    const deviceId = body.device_id ?? null;
     const characterId = body.character_id ?? null;
     const history = Array.isArray(body.history) ? body.history.slice(-6) : [];
     const pastBackchannels = Array.isArray(body.past_backchannels) ? body.past_backchannels.slice(-10) : [];
@@ -250,20 +272,24 @@ export const handler = async (event) => {
       return { statusCode: 400, body: JSON.stringify({ error: "partial_text is required" }) };
     }
 
-    // キャラクター設定を解決
+    // キャラクター設定を解決（device_id優先、なければcharacter_id）
     let ttsVendor = "sakura";
     let ttsVoice = "zundamon";
     let personalityPrompt = null;
 
-    if (characterId && characterId !== "default") {
-      const charConfig = await resolveCharacter(characterId);
-      if (charConfig) {
-        const ttsKey = normalizeModelKey(charConfig.provider) ?? TTS_DEFAULT;
-        const cfg = TTS_TABLE[ttsKey] ?? TTS_TABLE[TTS_DEFAULT];
-        ttsVendor = cfg.ttsVendor;
-        ttsVoice = charConfig.vendorId ?? ttsVoice;
-        personalityPrompt = charConfig.personalityPrompt;
-      }
+    let charConfig = null;
+    if (deviceId) {
+      charConfig = await resolveCharacterFromDevice(deviceId);
+    }
+    if (!charConfig && characterId && characterId !== "default") {
+      charConfig = await resolveCharacter(characterId);
+    }
+    if (charConfig) {
+      const ttsKey = normalizeModelKey(charConfig.provider) ?? TTS_DEFAULT;
+      const cfg = TTS_TABLE[ttsKey] ?? TTS_TABLE[TTS_DEFAULT];
+      ttsVendor = cfg.ttsVendor;
+      ttsVoice = charConfig.vendorId ?? ttsVoice;
+      personalityPrompt = charConfig.personalityPrompt;
     }
 
     // LLM生成
