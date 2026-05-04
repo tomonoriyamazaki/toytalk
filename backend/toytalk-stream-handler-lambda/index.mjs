@@ -537,6 +537,7 @@
     // 単価キャッシュを先にロード（await不要、バックグラウンドで）
     loadPricingCache();
 
+    const backchannelFired = !!body.backchannel_fired;
     const characterId = typeof body.character_id === "string" ? body.character_id : null;
     if (characterId && characterId !== "default") {
       const charConfig = await resolveCharacterFromDynamo(characterId);
@@ -592,7 +593,8 @@
       send(res, "mark", { k: "llm_start", t: Date.now() });
     }
     const now = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", year: "numeric", month: "long", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit" });
-    const basePrompt = `あなたは子供向けの友好的な音声アシスタントです。簡潔に答えて、自然に会話を続けてください。漢字は最小限にして、ひらがな多めで答えてください。単語の間に半角スペースを入れないでください。現在の日時は${now}です。日時を聞かれたら年は省略して簡潔に答えてください。相手が話した言語で返答してください。`;
+    const backchannelHint = backchannelFired ? "\n【重要】相槌は別途再生済みです。返答の冒頭に「うんうん」「そうなんだ」「なるほど」「へぇ」「おお」などの相槌・感嘆詞を絶対に入れないでください。最初の一文字目から本題の内容で返答を始めてください。" : "";
+    const basePrompt = `あなたは子供向けの友好的な音声アシスタントです。簡潔に答えて、自然に会話を続けてください。漢字は最小限にして、ひらがな多めで答えてください。単語の間に半角スペースを入れないでください。現在の日時は${now}です。日時を聞かれたら年は省略して簡潔に答えてください。相手が話した言語で返答してください。${backchannelHint}`;
     const systemContent = personalityPrompt ? `${personalityPrompt}\n\n${basePrompt}` : basePrompt;
     const messagesWithSystem = [{ role: "system", content: systemContent }, ...messages];
 

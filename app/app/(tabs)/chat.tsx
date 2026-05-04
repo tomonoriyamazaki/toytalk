@@ -34,7 +34,7 @@ import Sound from "react-native-sound";
 
 /* === Soniox定数 === */
 const SONIOX_WS_URL = "wss://stt-rt.soniox.com/transcribe-websocket"; // 公式
-const SONIOX_MODEL = "stt-rt-v3";
+let SONIOX_MODEL = "stt-rt-v4";
 const SONIOX_SAMPLE_RATE = 16000;
 const SONIOX_CHANNELS = 1;
 
@@ -54,6 +54,11 @@ const DEBUG_HISTORY = false;
 /* 既存：あなたのSSEサーバ（LLM→TTS）*/
 const STREAM_URL =
   "https://ruc3x2rt3bcnsqxvuyvwdshhh40mzadk.lambda-url.ap-northeast-1.on.aws/";
+
+/* 相槌Lambda */
+const BACKCHANNEL_URL =
+  "https://5zcqptvuekdtfjnl4fian2crnm0alohv.lambda-url.ap-northeast-1.on.aws/";
+const BACKCHANNEL_TRIGGER_CHARS = 5;
 
 /* === ユーティリティ === */
 function base64ToArrayBuffer(b64: string): ArrayBuffer {
@@ -100,11 +105,17 @@ export default function Chat() {
 
   // STTモード
   const [sttMode, setSttMode] = useState<"local" | "soniox">("soniox");
+  const [backchannelEnabled, setBackchannelEnabled] = useState(true);
+  const backchannelEnabledRef = useRef(true);
   useFocusEffect(
     useCallback(() => {
       (async () => {
         const saved = await AsyncStorage.getItem("sttMode");
         if (saved === "local" || saved === "soniox") setSttMode(saved);
+        const bcSaved = await AsyncStorage.getItem("backchannelEnabled");
+        const enabled = bcSaved !== "false";
+        setBackchannelEnabled(enabled);
+        backchannelEnabledRef.current = enabled;
       })();
     }, [])
   );
@@ -198,6 +209,7 @@ export default function Chat() {
     closeDrawer();
     setLog([]);
     historyRef.current = [];
+    pastBackchannelsRef.current = [];
     const newId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setSessionId(newId);
     sessionIdRef.current = newId;
@@ -438,6 +450,12 @@ export default function Chat() {
   const sonioxFinalBufRef = useRef<string>(""); // final確定の蓄積
   const sonioxNonFinalBufRef = useRef<string>(""); // 非確定の表示用
 
+  // 相槌
+  const pastBackchannelsRef = useRef<string[]>([]);
+  const backchannelFiredRef = useRef(false);
+  const backchannelAudioRef = useRef<{ text: string; audio: string; format: string } | null>(null);
+  const sttFinishedRef = useRef(false);
+
   const configureAudioRecord = () => {
     AudioRecord.init({
       sampleRate: SONIOX_SAMPLE_RATE,
@@ -455,6 +473,7 @@ export default function Chat() {
     });
     const js = await res.json();
     if (!res.ok || !js?.api_key) throw new Error("Failed to get Soniox temp key");
+    if (js.stt_model) SONIOX_MODEL = js.stt_model;
     return js.api_key as string;
   };
 
@@ -537,6 +556,8 @@ export default function Chat() {
         setIsListening(true);
         setPartial(""); setFinalText("");
         sonioxFinalBufRef.current = ""; sonioxNonFinalBufRef.current = "";
+        backchannelFiredRef.current = false; backchannelAudioRef.current = null;
+        sttFinishedRef.current = false;
         if(DEBUG)setLog(L => [...L, "AudioRecord started"]);
       } catch (e: any) {
         setIsListening(false);
@@ -584,6 +605,47 @@ export default function Chat() {
         const fullText = sonioxFinalBufRef.current + nonFinalCurrent;
         if (fullText.trim()) {
           setPartial(fullText);
+
+          // 相槌トリガー: 有効 & 5文字以上 & まだ発火していない
+          if (backchannelEnabledRef.current && !backchannelFiredRef.current && fullText.trim().length >= BACKCHANNEL_TRIGGER_CHARS) {
+            backchannelFiredRef.current = true;
+            const charId = selectedCharacterRef.current.character_id;
+            const bcPartial = fullText.trim();
+            console.log("[BC] fetch firing:", bcPartial, "historyLen=", historyRef.current.length);
+            (async () => {
+              try {
+                const r = await fetch(BACKCHANNEL_URL, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    partial_text: bcPartial,
+                    character_id: charId,
+                    history: historyRef.current.slice(-6).map(t => ({ role: t.role, content: t.text })),
+                    past_backchannels: pastBackchannelsRef.current.slice(-10),
+                  }),
+                });
+                console.log("[BC] status=", r.status);
+                const raw = await r.text();
+                console.log("[BC] raw len=", raw.length);
+                let data = JSON.parse(raw);
+                if (typeof data.body === "string") data = JSON.parse(data.body);
+                console.log("[BC] text=", data.text, "hasAudio=", !!data.audio, "sttDone=", sttFinishedRef.current);
+                if (data.text) pastBackchannelsRef.current.push(data.text);
+                if (data.audio) {
+                  if (sttFinishedRef.current) {
+                    console.log("[BC] playing now");
+                    setLog(L => [...L, data.text]);
+                    enqueueAudio(data.audio, `bc-${Date.now()}`, data.format || "wav");
+                  } else {
+                    console.log("[BC] cached for later");
+                    backchannelAudioRef.current = { text: data.text, audio: data.audio, format: data.format || "wav" };
+                  }
+                }
+              } catch (e: any) {
+                console.log("[BC] ERROR:", e?.message ?? e);
+              }
+            })();
+          }
         }
       } catch (e: any) {
         setLog(L => [...L, `Soniox parse err: ${e?.message ?? e}`]);
@@ -599,28 +661,34 @@ export default function Chat() {
     ws.onclose = async (e) => {
       if(DEBUG)setLog(L => [...L, `Soniox WS closed: code=${e.code}`]);
 
-      // ★チャット履歴保持のための一時設定
-      const leftover = curAssistantRef.current.trim();
-      if (leftover) {
-        historyRef.current.push({ role: "assistant", text: leftover, ts: Date.now() });
-        curAssistantRef.current = "";
-      }
-
-      // 録音停止
-      try { await AudioRecord.stop(); } catch {}
-      try { AudioRecord.removeAllListeners?.(); } catch {}
-
       // 状態リセット
       sonioxListeningRef.current = false;
       setIsListening(false);
+      sttFinishedRef.current = true;
 
       const fullText = (sonioxFinalBufRef.current + sonioxNonFinalBufRef.current).trim();
       if (fullText) {
         setLog(L => [...L, JSON.stringify({ type: "user", text: fullText })]);
         setPartial("");
-        if (DEBUG) setLog(L => [...L, `🚀 Send (final+partial): ${fullText}`]);
+
+        // 本Lambdaへの送信を最優先（録音停止を待たない）
         send(fullText);
+
+        // 相槌音声があれば再生（ケース2: fetch完了済み）
+        const bc = backchannelAudioRef.current;
+        if (bc) {
+          console.log("[BC] Playing cached backchannel:", bc.text);
+          setLog(L => [...L, bc.text]);
+          enqueueAudio(bc.audio, `bc-${Date.now()}`, bc.format);
+          backchannelAudioRef.current = null;
+        }
+        // ケース1（fetchがまだ返ってない）はfetch完了時にsttFinishedRefを見て即再生
       }
+
+      // 録音停止 + 再生モードに切り替え（send後に非同期で実行）
+      try { await AudioRecord.stop(); } catch {}
+      try { AudioRecord.removeAllListeners?.(); } catch {}
+      await restoreIOSPlayback();
     };
   };
 
@@ -922,15 +990,7 @@ export default function Chat() {
               }
             }
             if (final) {
-              historyRef.current.push({ role: "user", text: t, ts: Date.now() });
-              const whole = curAssistantRef.current.trim();
-              if (whole) {
-                historyRef.current.push({ role: "assistant", text: whole, ts: Date.now() });
-                if (DEBUG_HISTORY)
-                  setLog((L) => [...L, `🧾 hist +assistant "${whole.slice(0, 40)}"`]);
-              }
-              curAssistantRef.current = "";
-              console.log("🧾 assistant final segment:", JSON.stringify(whole));
+              console.log("🧾 final segment received");
             }
           } else if (ev === "error") {
             setLog((L) => [...L, `Error: ${dataStr}`]);
@@ -989,6 +1049,15 @@ export default function Chat() {
         if (tail) processChunk(tail);
         const out = accText.trim();
         if (DEBUG) setLog((L) => [...L, "=== stream done ==="]);
+
+        historyRef.current.push({ role: "user", text: t, ts: Date.now() });
+        const whole = curAssistantRef.current.trim();
+        if (whole) {
+          historyRef.current.push({ role: "assistant", text: whole, ts: Date.now() });
+        }
+        curAssistantRef.current = "";
+        console.log("🧾 xhr.onload history push: historyLen=", historyRef.current.length);
+
         sendingRef.current = false;
       };
 
@@ -1010,6 +1079,7 @@ export default function Chat() {
         owner_id: ownerId,
         device_id: "app",
         request_at: new Date().toISOString(),
+        backchannel_fired: backchannelFiredRef.current,
       };
       console.log("🚀 payload to Lambda:", JSON.stringify(payload, null, 2));
       xhr.send(JSON.stringify(payload));

@@ -287,18 +287,19 @@ export const handler = async (event) => {
       return response(200, result.Item);
     }
 
-    // ---- PUT /devices/{device_id} ---- デバイス設定更新（character_id / device_name）
+    // ---- PUT /devices/{device_id} ---- デバイス設定更新（character_id / device_name / backchannel_enabled）
     if (method === "PUT" && path.startsWith("/devices/")) {
       const device_id = decodeURIComponent(path.split("/")[2]);
       const body      = JSON.parse(event.body ?? "{}");
-      const { character_id, device_name } = body;
+      const { character_id, device_name, backchannel_enabled } = body;
 
       const updates = ["last_seen = :t"];
       const vals = { ":t": new Date().toISOString() };
-      if (character_id !== undefined) { updates.push("character_id = :c"); vals[":c"] = character_id; }
-      if (device_name  !== undefined) { updates.push("device_name = :n");  vals[":n"] = device_name; }
-      if (character_id === undefined && device_name === undefined) {
-        return response(400, { error: "character_id or device_name is required" });
+      if (character_id        !== undefined) { updates.push("character_id = :c");        vals[":c"] = character_id; }
+      if (device_name         !== undefined) { updates.push("device_name = :n");         vals[":n"] = device_name; }
+      if (backchannel_enabled !== undefined) { updates.push("backchannel_enabled = :b"); vals[":b"] = backchannel_enabled; }
+      if (character_id === undefined && device_name === undefined && backchannel_enabled === undefined) {
+        return response(400, { error: "character_id, device_name, or backchannel_enabled is required" });
       }
 
       await ddb.send(new UpdateCommand({

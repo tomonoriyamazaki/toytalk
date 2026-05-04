@@ -48,6 +48,10 @@ String deviceMacAddress = "";
 const char* LAMBDA_HOST = "koufofwm3w4tidbe52crbyhpyq0cshss.lambda-url.ap-northeast-1.on.aws";
 const char* LAMBDA_PATH = "/";
 
+// ==== Lambda (Backchannel) ====
+const char* BACKCHANNEL_HOST = "birb7yjw4nkldidcza4xfiyn5e0taluh.lambda-url.ap-northeast-1.on.aws";
+const char* BACKCHANNEL_PATH = "/";
+
 // ==== Lambda (Soniox Key) ====
 const char* SONIOX_LAMBDA_URL = "https://ug5fcnjsxa22vtnrzlwpfgshd40nngbo.lambda-url.ap-northeast-1.on.aws/";
 
@@ -55,6 +59,7 @@ const char* SONIOX_LAMBDA_URL = "https://ug5fcnjsxa22vtnrzlwpfgshd40nngbo.lambda
 const char* SONIOX_WS_URL = "stt-rt.soniox.com";
 const int SONIOX_WS_PORT = 443;
 String sonioxKey;
+String sonioxModel = "stt-rt-v4";
 
 // ==== I2S PIN ====
 #define PIN_WS     3
@@ -81,11 +86,11 @@ enum LEDMode {
   LED_BLINKING    // 点滅（再生中）
 };
 
-LEDMode currentLEDMode = LED_OFF;
-unsigned long lastLEDUpdate = 0;
-int breathingValue = 0;
-bool breathingUp = true;
-bool blinkState = false;
+volatile LEDMode currentLEDMode = LED_OFF;
+volatile int breathingValue = 0;
+volatile bool breathingUp = true;
+volatile bool blinkState = false;
+hw_timer_t* ledTimer = NULL;
 bool ampOn = false;  // アンプON状態管理（ソフトスタート用）
 volatile bool bargeInRequested = false;  // 再生中のbarge-in（ボタン割り込み）フラグ
 
@@ -113,6 +118,7 @@ volatile bool wifiGotIP = false;
 // ==== Soniox STT 状態 ====
 WebSocketsClient ws;
 String partialText = "";
+String sonioxFinalBuf = "";
 String lastFinalText = "";
 unsigned long lastPartialMs = 0;
 const unsigned long END_SILENCE_MS = 800;
@@ -125,6 +131,48 @@ int curSegmentId = -1;
 String responseText = "";
 uint8_t* currentPcmBuffer = NULL;
 size_t currentPcmSize = 0;
+
+// ==== 相槌（Backchannel）状態 ====
+bool backchannelEnabled = true;  // サーバーから取得（起動時）
+const int BACKCHANNEL_TRIGGER_CHARS = 10;  // UTF-8文字数（バイト数ではない）
+
+// UTF-8文字数カウント
+int utf8Len(const String& s) {
+  int count = 0;
+  for (int i = 0; i < s.length(); ) {
+    uint8_t c = (uint8_t)s.charAt(i);
+    if (c < 0x80) i += 1;
+    else if (c < 0xE0) i += 2;
+    else if (c < 0xF0) i += 3;
+    else i += 4;
+    count++;
+  }
+  return count;
+}
+volatile bool backchannelFetching = false;
+volatile bool backchannelReady = false;
+volatile bool backchannelFired = false;
+volatile bool backchannelAbort = false;
+uint8_t* backchannelPcm = NULL;
+size_t backchannelPcmSize = 0;
+String backchannelText = "";
+TaskHandle_t backchannelTaskHandle = NULL;
+
+// 過去の相槌リスト（セッション内で重複回避）
+const int MAX_PAST_BACKCHANNELS = 10;
+String pastBackchannels[MAX_PAST_BACKCHANNELS];
+int pastBackchannelCount = 0;
+
+void addPastBackchannel(const String& text) {
+  if (pastBackchannelCount >= MAX_PAST_BACKCHANNELS) {
+    for (int i = 0; i < pastBackchannelCount - 1; i++) {
+      pastBackchannels[i] = pastBackchannels[i + 1];
+    }
+    pastBackchannelCount--;
+  }
+  pastBackchannels[pastBackchannelCount] = text;
+  pastBackchannelCount++;
+}
 
 // ==== セッションID（電源ON/OFF単位） ====
 String sessionId = "";
@@ -391,19 +439,47 @@ void printMemoryStatus(const char* label) {
 }
 #endif
 
+// ==== LED タイマー割り込み（30ms周期）====
+void IRAM_ATTR onLEDTimer() {
+  LEDMode mode = currentLEDMode;
+  if (mode == LED_BREATHING) {
+    if (breathingUp) {
+      breathingValue += 5;
+      if (breathingValue >= 16) {
+        breathingValue = 16;
+        breathingUp = false;
+      }
+    } else {
+      breathingValue -= 5;
+      if (breathingValue <= 3) {
+        breathingValue = 3;
+        breathingUp = true;
+      }
+    }
+    ledcWrite(PIN_LED, breathingValue);
+  }
+  else if (mode == LED_BLINKING) {
+    static uint8_t blinkCounter = 0;
+    blinkCounter++;
+    if (blinkCounter >= 10) {  // 30ms * 10 = 300ms
+      blinkCounter = 0;
+      blinkState = !blinkState;
+      ledcWrite(PIN_LED, blinkState ? 16 : 0);
+    }
+  }
+}
+
 // ==== LED制御関数（単色LED）====
 void setLEDMode(LEDMode mode) {
   if (currentLEDMode == mode) return;
   currentLEDMode = mode;
-  lastLEDUpdate = millis();
   breathingValue = 0;
   breathingUp = true;
   blinkState = false;
 
-  // 即座に状態を反映
   switch (mode) {
     case LED_OFF:
-      ledcWrite(PIN_LED, 0);    // 0=OFF (GPIO LOW)
+      ledcWrite(PIN_LED, 0);
       break;
     case LED_ON:
       ledcWrite(PIN_LED, 16);
@@ -416,42 +492,6 @@ void setLEDMode(LEDMode mode) {
       blinkState = true;
       ledcWrite(PIN_LED, 16);
       break;
-  }
-}
-
-// loop()から呼ぶLED更新
-void updateLEDAnimation() {
-  unsigned long now = millis();
-
-  if (currentLEDMode == LED_BREATHING) {
-    // ふわふわ: 30ms毎に明るさ変更
-    if (now - lastLEDUpdate > 30) {
-      lastLEDUpdate = now;
-
-      if (breathingUp) {
-        breathingValue += 5;
-        if (breathingValue >= 16) {
-          breathingValue = 16;
-          breathingUp = false;
-        }
-      } else {
-        breathingValue -= 5;
-        if (breathingValue <= 3) {  // 完全に消さず、3で折り返し
-          breathingValue = 3;
-          breathingUp = true;
-        }
-      }
-
-      ledcWrite(PIN_LED, breathingValue);  // PWM値そのまま
-    }
-  }
-  else if (currentLEDMode == LED_BLINKING) {
-    // 点滅: 300ms毎にON/OFF
-    if (now - lastLEDUpdate > 300) {
-      lastLEDUpdate = now;
-      blinkState = !blinkState;
-      ledcWrite(PIN_LED, blinkState ? 16 : 0);
-    }
   }
 }
 
@@ -527,7 +567,7 @@ void setupI2SPlay() {
     .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
     .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB),
     .intr_alloc_flags = 0,
-    .dma_buf_count = 32,
+    .dma_buf_count = 8,
     .dma_buf_len = 1024,
     .use_apll = true,
     .tx_desc_auto_clear = true,
@@ -752,7 +792,7 @@ bool processPCM(WiFiClientSecure& client, uint32_t length) {
   uint32_t totalPlayed = 0;
 
   while (remaining > 0) {
-    updateLEDAnimation();
+
 
     // === Barge-in チェック（ISRでフラグが立っていれば即中断） ===
     if (bargeInRequested) {
@@ -813,33 +853,272 @@ bool processPCM(WiFiClientSecure& client, uint32_t length) {
   return false;
 }
 
+// ==== 相槌キャッシュクリア ====
+void clearBackchannelCache() {
+  if (backchannelPcm) {
+    free(backchannelPcm);
+    backchannelPcm = NULL;
+  }
+  backchannelPcmSize = 0;
+  backchannelText = "";
+  backchannelReady = false;
+  backchannelFetching = false;
+  backchannelFired = false;
+  backchannelAbort = false;
+}
+
+// ==== 相槌フェッチ用FreeRTOSタスク ====
+struct BackchannelParams {
+  String partialText;
+  String characterId;
+};
+
+void fetchBackchannelTask(void* param) {
+  BackchannelParams* p = (BackchannelParams*)param;
+  String partial = p->partialText;
+  String charId = p->characterId;
+  delete p;
+
+  Serial.printf("[BC] Fetching backchannel for: %s\n", partial.c_str());
+  Serial.printf("[BC] Free heap before: %d\n", ESP.getFreeHeap());
+
+  String url = String("https://") + BACKCHANNEL_HOST + BACKCHANNEL_PATH;
+  String payload = "{\"partial_text\":\"" + partial + "\"";
+  if (charId.length() > 0) {
+    payload += ",\"device_id\":\"" + charId + "\"";
+  }
+  // 会話履歴（直近6ターン）
+  if (historyCount > 0) {
+    payload += ",\"history\":[";
+    int start = (historyCount > 6) ? historyCount - 6 : 0;
+    for (int i = start; i < historyCount; i++) {
+      if (i > start) payload += ",";
+      payload += "{\"role\":\"" + conversationHistory[i].role + "\",\"content\":\"" + conversationHistory[i].content + "\"}";
+    }
+    payload += "]";
+  }
+  // 過去の相槌（重複回避用）
+  if (pastBackchannelCount > 0) {
+    payload += ",\"past_backchannels\":[";
+    for (int i = 0; i < pastBackchannelCount; i++) {
+      if (i > 0) payload += ",";
+      payload += "\"" + pastBackchannels[i] + "\"";
+    }
+    payload += "]";
+  }
+  payload += "}";
+
+  // ブロックスコープでHTTPClientのデストラクタを確実に呼ぶ
+  {
+    HTTPClient http;
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+    http.setTimeout(8000);
+    const char* headerKeys[] = {"X-Backchannel-Text", "x-backchannel-text"};
+    http.collectHeaders(headerKeys, 2);
+
+    int httpCode = http.POST(payload);
+
+    if (backchannelAbort || httpCode != 200) {
+      Serial.printf("[BC] %s (code=%d)\n", backchannelAbort ? "Aborted" : "HTTP error", httpCode);
+      http.end();
+    } else {
+      // ヘッダーからテキスト取得
+      if (http.hasHeader("X-Backchannel-Text")) {
+        backchannelText = http.header("X-Backchannel-Text");
+      } else if (http.hasHeader("x-backchannel-text")) {
+        backchannelText = http.header("x-backchannel-text");
+      }
+
+      // レスポンスボディ = raw PCMバイナリ（BUFFEREDモードでbase64デコード済み）
+      int len = http.getSize();
+      WiFiClient* stream = http.getStreamPtr();
+
+      const size_t INIT_SIZE = 32768;
+      const size_t MAX_SIZE = 256000;
+      size_t bufSize = (len > 0) ? (size_t)len : INIT_SIZE;
+      uint8_t* pcm = (uint8_t*)ps_malloc(bufSize);
+      if (!pcm) pcm = (uint8_t*)malloc(bufSize);
+
+      if (pcm) {
+        size_t totalRead = 0;
+        unsigned long startTime = millis();
+        while (http.connected() && (millis() - startTime < 15000) && !backchannelAbort) {
+          size_t avail = stream->available();
+          if (avail > 0) {
+            if (totalRead + avail > bufSize) {
+              size_t newSize = min(bufSize * 2, MAX_SIZE);
+              if (newSize <= bufSize) break;
+              uint8_t* newBuf = (uint8_t*)ps_realloc(pcm, newSize);
+              if (!newBuf) newBuf = (uint8_t*)realloc(pcm, newSize);
+              if (!newBuf) break;
+              pcm = newBuf;
+              bufSize = newSize;
+            }
+            size_t rd = stream->readBytes(pcm + totalRead, avail);
+            totalRead += rd;
+          } else {
+            if (len > 0 && (int)totalRead >= len) break;
+            delay(1);
+          }
+        }
+
+        if (totalRead > 0 && !backchannelAbort) {
+          backchannelPcm = pcm;
+          backchannelPcmSize = totalRead;
+          backchannelReady = true;
+          Serial.printf("[BC] Ready: pcm=%d bytes\n", totalRead);
+        } else {
+          free(pcm);
+          Serial.printf("[BC] %s\n", backchannelAbort ? "Aborted" : "No PCM data");
+        }
+      } else {
+        Serial.println("[BC] malloc failed");
+      }
+      http.end();
+    }
+  } // HTTPClient デストラクタ実行 → SSL解放
+
+  Serial.printf("[BC] Free heap after: %d\n", ESP.getFreeHeap());
+  backchannelFetching = false;
+  backchannelTaskHandle = NULL;
+  vTaskDelete(NULL);
+}
+
+// ==== 相槌フェッチ開始 ====
+void startBackchannelFetch(const String& partial) {
+  if (!backchannelEnabled) return;
+  if (backchannelFetching || backchannelReady || backchannelFired) return;
+  if (strlen(BACKCHANNEL_HOST) == 0) return;
+  // SSL接続に最低50KB必要
+  if (ESP.getFreeHeap() < 60000) {
+    Serial.printf("[BC] Not enough heap: %d bytes, skipping\n", ESP.getFreeHeap());
+    return;
+  }
+
+  backchannelFetching = true;
+
+  BackchannelParams* params = new BackchannelParams();
+  params->partialText = partial;
+  params->characterId = deviceMacAddress;  // device_idをcharacter解決に使う
+
+  xTaskCreatePinnedToCore(
+    fetchBackchannelTask,
+    "bc_fetch",
+    16384,
+    params,
+    1,          // 低優先度
+    &backchannelTaskHandle,
+    1           // Core 1（Core 0のWiFiスタックと競合しない）
+  );
+}
+
+// ==== 相槌再生 ====
+// 戻り値: 再生したかどうか
+bool playBackchannelIfReady() {
+  if (!backchannelReady || !backchannelPcm || backchannelPcmSize == 0) return false;
+
+  Serial.printf("[BC] Playing backchannel: %d bytes\n", backchannelPcmSize);
+
+  // mono→stereo変換して再生
+  size_t samples = backchannelPcmSize / 2;
+  const size_t PLAY_CHUNK = 4096;
+  size_t offset = 0;
+
+  while (offset < samples) {
+    size_t chunkSamples = min(PLAY_CHUNK, samples - offset);
+    size_t stereoBytes = chunkSamples * 4;
+    int16_t* stereo = (int16_t*)malloc(stereoBytes);
+    if (!stereo) break;
+
+    monoToStereo((int16_t*)(backchannelPcm + offset * 2), stereo, chunkSamples);
+    size_t written = 0;
+    i2s_write(I2S_NUM_1, (uint8_t*)stereo, stereoBytes, &written, portMAX_DELAY);
+    free(stereo);
+    offset += chunkSamples;
+  }
+
+  backchannelFired = true;
+  if (backchannelText.length() > 0) {
+    addPastBackchannel(backchannelText);
+  }
+  Serial.println("[BC] Backchannel playback done");
+
+  // PCM解放
+  free(backchannelPcm);
+  backchannelPcm = NULL;
+  backchannelPcmSize = 0;
+  backchannelReady = false;
+
+  return true;
+}
+
+// ---- Lambda SSL接続+リクエスト送信バックグラウンドタスク ----
+struct LambdaConnectParams {
+  WiFiClientSecure* client;
+  String* request;
+  volatile bool connected;
+  volatile bool sent;
+  volatile bool failed;
+};
+
+void lambdaConnectAndSendTask(void* param) {
+  LambdaConnectParams* p = (LambdaConnectParams*)param;
+  p->client->setInsecure();
+  if (!p->client->connect(LAMBDA_HOST, 443)) {
+    p->failed = true;
+    vTaskDelete(NULL);
+    return;
+  }
+  p->connected = true;
+  p->client->print(*(p->request));
+  p->sent = true;
+  vTaskDelete(NULL);
+}
+
 // ==== Lambda に送信 & SSE 受信 ====
 void sendToLambdaAndPlay(const String& text) {
+  unsigned long t0 = millis();
   Serial.println("🚀 Sending to Lambda: " + text);
   Serial.printf("💾 Free heap: %d bytes\n", ESP.getFreeHeap());
   responseText = "";
 
-  // 処理中状態は省略（LED更新を最小化）
-  // setLEDState(LED_PROCESSING);
-
   if (isRecording) {
-    ws.disconnect();
     isRecording = false;
-    Serial.println("🛑 Stopped recording for TTS");
   }
 
+  // バックチャネルタスクがまだ動いている場合、完了を待つ（相槌を再生するため）
+  if (backchannelFetching && backchannelTaskHandle != NULL) {
+    Serial.println("[BC] Waiting for backchannel task to finish...");
+    unsigned long waitStart = millis();
+    while (backchannelTaskHandle != NULL && (millis() - waitStart < 10000)) {
+      delay(10);
+    }
+    if (backchannelTaskHandle != NULL) {
+      Serial.println("[BC] Timeout - aborting task");
+      backchannelAbort = true;
+      unsigned long abortStart = millis();
+      while (backchannelTaskHandle != NULL && (millis() - abortStart < 3000)) {
+        delay(10);
+      }
+      backchannelAbort = false;
+    }
+  }
+  Serial.printf("⏱️ [%lums] BC wait done\n", millis() - t0);
+
+  // タイマー割り込み再開（再生中のLEDアニメーション用）
+  timerAlarm(ledTimer, 30000, true, 0);
+
+  // I2S切り替え（録音→再生）
   i2s_driver_uninstall(I2S_NUM_0);
   setupI2SPlay();
+  Serial.printf("⏱️ [%lums] I2S switched\n", millis() - t0);
 
-  WiFiClientSecure client;
-  client.setInsecure();
+  // Soniox WebSocket切断（SSL解放でヒープ確保）
+  ws.disconnect();
+  Serial.printf("⏱️ [%lums] WS disconnected\n", millis() - t0);
 
-  if (!client.connect(LAMBDA_HOST, 443)) {
-    Serial.println("❌ connect failed");
-    setLEDMode(LED_OFF);  // エラー時は消灯
-    return;
-  }
-
+  // ① ペイロードを先に組み立て
   String messagesJson = "[";
   for (int i = 0; i < historyCount; i++) {
     if (i > 0) messagesJson += ",";
@@ -855,6 +1134,7 @@ void sendToLambdaAndPlay(const String& text) {
     "\"device_id\":\"" + deviceMacAddress + "\","
     "\"session_id\":\"" + sessionId + "\","
     "\"owner_id\":\"" + deviceMacAddress + "\","
+    "\"backchannel_fired\":" + (backchannelFired ? "true" : "false") + ","
     "\"messages\":" + messagesJson + "}";
 
   Serial.printf("📝 History count: %d\n", historyCount);
@@ -868,13 +1148,59 @@ void sendToLambdaAndPlay(const String& text) {
     "Content-Length: " + payload.length() + "\r\n\r\n"
     + payload;
 
-  client.print(req);
+  // ② Lambda SSL接続+リクエスト送信をCore 0でバックグラウンド開始
+  WiFiClientSecure client;
+  LambdaConnectParams connParams = { &client, &req, false, false, false };
+  TaskHandle_t connTaskHandle = NULL;
+  xTaskCreatePinnedToCore(lambdaConnectAndSendTask, "lambda_conn", 16384, &connParams, 1, &connTaskHandle, 0);
+  Serial.printf("⏱️ [%lums] Lambda task started on Core 0\n", millis() - t0);
 
+  // ③ アンプON（ソフトスタート）— Lambda接続と並列で実行
+  if (!ampOn) {
+    ledcAttach(PIN_AMP_SD, 1000, 8);
+    for (int i = 0; i <= 255; i += 5) {
+      ledcWrite(PIN_AMP_SD, i);
+      delay(2);
+    }
+    ledcDetach(PIN_AMP_SD);
+    pinMode(PIN_AMP_SD, OUTPUT);
+    digitalWrite(PIN_AMP_SD, HIGH);
+    delay(50);
+    ampOn = true;
+    Serial.printf("⏱️ [%lums] Amp ready\n", millis() - t0);
+  }
+
+  // ④ 相槌を即座に再生（Lambda接続+送信と並列）
+  if (backchannelReady && backchannelPcm && backchannelPcmSize > 0) {
+    Serial.println("[BC] Playing backchannel while Lambda connects...");
+    playBackchannelIfReady();
+  }
+  Serial.printf("⏱️ [%lums] Backchannel phase done\n", millis() - t0);
+
+  // ⑤ Lambda接続+送信完了を待つ
+  while (!connParams.sent && !connParams.failed) {
+    delay(1);
+  }
+  Serial.printf("⏱️ [%lums] Lambda request sent (ok=%d)\n", millis() - t0, !connParams.failed);
+
+  if (connParams.failed) {
+    Serial.printf("💾 Free heap at failure: %d\n", ESP.getFreeHeap());
+    setLEDMode(LED_OFF);
+    i2s_stop(I2S_NUM_1);
+    i2s_driver_uninstall(I2S_NUM_1);
+    if (ampOn) { digitalWrite(PIN_AMP_SD, LOW); ampOn = false; }
+    clearBackchannelCache();
+    startSTTRecording();
+    return;
+  }
+
+  // ③ HTTPレスポンスヘッダー読み取り
   while (true) {
     String line = client.readStringUntil('\n');
     if (line.length() == 0 || line == "\r") break;
   }
 
+  Serial.printf("⏱️ [%lums] Headers read, first audio byte incoming\n", millis() - t0);
   Serial.println("📨 BINARY STREAM START (Chunked)");
 
   g_currentChunkSize = -1;
@@ -920,24 +1246,26 @@ void sendToLambdaAndPlay(const String& text) {
     }
   }
 
+  unsigned long tEnd = millis();
+
   if (bargeInRequested) {
     Serial.println("🔘 Barge-in: skipping buffer flush");
   } else {
-    // 無音データでDMAバッファをフラッシュ（決め打ちdelayの代わり）
-    Serial.println("🔊 Flushing DMA buffer with silence...");
-    const size_t dmaBytes = 32 * 1024 * 2 * 2; // dma_buf_count * dma_buf_len * 16bit * stereo
+    // 無音データでDMAバッファをフラッシュ（dma_buf_count=8に合わせた軽量版）
+    const size_t dmaBytes = 8 * 1024 * 2 * 2; // dma_buf_count * dma_buf_len * 16bit * stereo
     uint8_t* silence = (uint8_t*)calloc(1, dmaBytes);
     if (silence) {
       size_t written = 0;
       i2s_write(I2S_NUM_1, silence, dmaBytes, &written, portMAX_DELAY);
       free(silence);
     }
-    Serial.println("🔊 Playback complete");
+    Serial.printf("⏱️ end+[%lums] DMA flush (%d bytes)\n", millis() - tEnd, dmaBytes);
   }
 
   // アンプOFF＋次回ソフトスタートのためフラグリセット
   digitalWrite(PIN_AMP_SD, LOW);
   ampOn = false;
+  Serial.printf("⏱️ end+[%lums] Amp off\n", millis() - tEnd);
 
   // barge-in時でも会話履歴は残す（途中でも会話は継続中）
   addToHistory("user", text);
@@ -946,11 +1274,15 @@ void sendToLambdaAndPlay(const String& text) {
   }
 
   bargeInRequested = false;
+  clearBackchannelCache();
+  Serial.printf("⏱️ end+[%lums] Cleanup done\n", millis() - tEnd);
 
   i2s_stop(I2S_NUM_1);
   i2s_driver_uninstall(I2S_NUM_1);
+  Serial.printf("⏱️ end+[%lums] I2S uninstalled\n", millis() - tEnd);
 
   startSTTRecording();
+  Serial.printf("⏱️ end+[%lums] STT recording started\n", millis() - tEnd);
 }
 
 // ==== Soniox WebSocketイベント ====
@@ -961,7 +1293,7 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
       {
         String startMsg =
           "{\"api_key\":\"" + sonioxKey + "\","
-          "\"model\":\"stt-rt-v3\","
+          "\"model\":\"" + sonioxModel + "\","
           "\"audio_format\":\"pcm_s16le\","
           "\"sample_rate\":16000,"
           "\"num_channels\":1,"
@@ -971,8 +1303,9 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
           "}";
         ws.sendTXT(startMsg);
         Serial.println("📤 Sent start message to Soniox");
-        // 録音開始 = LEDふわふわ
-        setLEDMode(LED_BREATHING);
+        // 録音中はタイマー割り込みを停止（I2S競合回避）
+        timerAlarm(ledTimer, 0, false, 0);
+        setLEDMode(LED_ON);
       }
       isRecording = true;
       break;
@@ -980,30 +1313,43 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
     case WStype_TEXT: {
       String msg = (char*)payload;
       if (msg.indexOf("\"tokens\"") >= 0) {
-        String newText = "";
+        String nonFinalCurrent = "";
         bool foundEndToken = false;
-        int pos = 0;
-        while ((pos = msg.indexOf("\"text\":\"", pos)) >= 0) {
-          pos += 8;
-          int end = msg.indexOf("\"", pos);
-          if (end < 0) break;
-          String token = msg.substring(pos, end);
+        int searchPos = msg.indexOf("\"tokens\"");
+        while (true) {
+          int textPos = msg.indexOf("\"text\":\"", searchPos);
+          if (textPos < 0) break;
+          textPos += 8;
+          int textEnd = msg.indexOf("\"", textPos);
+          if (textEnd < 0) break;
+          String token = msg.substring(textPos, textEnd);
+
+          int objEnd = msg.indexOf("}", textEnd);
+          if (objEnd < 0) objEnd = msg.length();
+          String objSlice = msg.substring(textEnd, objEnd);
+          bool isFinal = objSlice.indexOf("\"is_final\":true") >= 0;
+
           if (token == "\\u003cend\\u003e") {
-            foundEndToken = true;  // <end>トークン検出
+            foundEndToken = true;
+          } else if (isFinal) {
+            sonioxFinalBuf += token;
           } else {
-            newText += token;
+            nonFinalCurrent += token;
           }
+          searchPos = textEnd + 1;
         }
 
-        if (newText.length() > 0) {
-          if (newText.startsWith(partialText)) {
-            partialText = newText;
-          } else {
-            partialText = newText;
-          }
+        String fullText = sonioxFinalBuf + nonFinalCurrent;
+        if (fullText.length() > 0) {
+          partialText = fullText;
           lastPartialMs = millis();
           armed = true;
           Serial.println("📝 " + partialText);
+
+          // 相槌トリガー: 閾値文字数（UTF-8）に達したらバックグラウンドでフェッチ開始
+          if (utf8Len(fullText) >= BACKCHANNEL_TRIGGER_CHARS && !backchannelFired && !backchannelFetching && !backchannelReady) {
+            startBackchannelFetch(fullText);
+          }
         }
 
         // <end>トークン検出時、即座に確定
@@ -1032,21 +1378,26 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
 
 // ==== STT録音開始 ====
 void startSTTRecording() {
+  unsigned long tRec = millis();
   Serial.println("🎙️ Starting STT recording...");
 
   // 録音準備中はLED点灯（WebSocket接続後にふわふわに変わる）
   setLEDMode(LED_ON);
 
   setupI2SRecord();
+  Serial.printf("⏱️ rec+[%lums] I2S record setup\n", millis() - tRec);
 
   ws.beginSSL(SONIOX_WS_URL, SONIOX_WS_PORT, "/transcribe-websocket");
   ws.onEvent(webSocketEvent);
   ws.enableHeartbeat(15000, 3000, 2);
+  Serial.printf("⏱️ rec+[%lums] Soniox WS begin\n", millis() - tRec);
 
   partialText = "";
+  sonioxFinalBuf = "";
   lastFinalText = "";
   armed = false;
   endpointDetected = false;
+  clearBackchannelCache();
 }
 
 // ==== WiFi接続（1回試行）- Country=JP対応 ====
@@ -1130,9 +1481,10 @@ void startNormalOperation() {
   Serial.println("🎯 Starting normal operation...");
   currentMode = MODE_NORMAL;
 
-  // Soniox temp key取得
+  // Soniox temp key取得 + デバイス設定
   HTTPClient http;
-  http.begin(SONIOX_LAMBDA_URL);
+  String initUrl = String(SONIOX_LAMBDA_URL) + "?device_id=" + deviceMacAddress;
+  http.begin(initUrl);
   int code = http.GET();
   if (code != 200) {
     Serial.printf("❌ HTTP fail %d\n", code);
@@ -1150,6 +1502,14 @@ void startNormalOperation() {
   }
   sonioxKey = doc["api_key"].as<String>();
   Serial.println("✅ Soniox temp key obtained");
+
+  if (doc.containsKey("backchannel_enabled")) {
+    backchannelEnabled = doc["backchannel_enabled"].as<bool>();
+  }
+  if (doc.containsKey("stt_model")) {
+    sonioxModel = doc["stt_model"].as<String>();
+  }
+  Serial.printf("🔊 Backchannel: %s, STT: %s\n", backchannelEnabled ? "ON" : "OFF", sonioxModel.c_str());
 
 #if DEBUG_MEMORY
   printMemoryStatus("After WiFi & Soniox Init");
@@ -1171,6 +1531,11 @@ void setup() {
   // LED初期化（PWM使用 - 新API）
   ledcAttach(PIN_LED, LED_FREQ, LED_RESOLUTION);
   setLEDMode(LED_ON);  // 起動中は点灯
+
+  // LEDアニメーション用ハードウェアタイマー（30ms周期）
+  ledTimer = timerBegin(1000000);  // 1MHz
+  timerAttachInterrupt(ledTimer, &onLEDTimer);
+  timerAlarm(ledTimer, 30000, true, 0);  // 30ms = 30000us, auto-reload
 
   // NVSからBLE MACアドレスを読み込み（WiFi設定時に保存済みの場合）
   deviceMacAddress = loadDeviceMac();
@@ -1257,7 +1622,7 @@ void handleButtonLongPress() {
 void loop() {
   // ===== BLEモード処理 =====
   if (currentMode == MODE_BLE_PROV) {
-    updateLEDAnimation();
+
     handleButtonLongPress();
 
     // BLE接続状態変化処理
@@ -1275,9 +1640,6 @@ void loop() {
 
   // ===== 通常モード: 会話処理 =====
   ws.loop();
-
-  // LED演出更新
-  updateLEDAnimation();
 
   // ボタン長押しチェック
   handleButtonLongPress();
@@ -1342,6 +1704,7 @@ void loop() {
     endpointDetected = false;
     armed = false;
     partialText = "";
+    sonioxFinalBuf = "";
   }
   // 無音検出 → 確定文出力（フォールバック）
   else if (armed && partialText.length() > 0 && (millis() - lastPartialMs) >= END_SILENCE_MS) {
@@ -1353,5 +1716,6 @@ void loop() {
     }
     armed = false;
     partialText = "";
+    sonioxFinalBuf = "";
   }
 }
