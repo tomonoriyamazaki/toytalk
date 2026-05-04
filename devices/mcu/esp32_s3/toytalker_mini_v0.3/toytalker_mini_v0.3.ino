@@ -370,26 +370,17 @@ void stopBLE() {
   bleDeviceConnected = false;
 }
 
-// ==== LED タイマー割り込み（3ms周期、digitalWriteで擬似PWM）====
+// ==== LED タイマー割り込み（30ms周期）====
 void IRAM_ATTR onLEDTimer() {
-  static uint8_t cycle = 0;
-  cycle = (cycle + 1) % 10;  // 0-9の10段階、3ms*10=30ms周期
-
   LEDMode mode = currentLEDMode;
-  if (mode == LED_OFF) {
-    if (cycle == 0) digitalWrite(PIN_LED, LOW);
-  } else if (mode == LED_ON) {
-    // 10%デューティ（1/10だけON）
-    digitalWrite(PIN_LED, (cycle == 0) ? HIGH : LOW);
-  } else if (mode == LED_BLINKING) {
+  if (mode == LED_BLINKING) {
     static uint8_t blinkCounter = 0;
-    if (cycle == 0) blinkCounter++;
+    blinkCounter++;
     if (blinkCounter >= 10) {  // 30ms*10=300ms周期
       blinkCounter = 0;
       blinkState = !blinkState;
+      digitalWrite(PIN_LED, blinkState ? HIGH : LOW);
     }
-    // 点灯中は10%デューティ
-    digitalWrite(PIN_LED, (blinkState && cycle == 0) ? HIGH : LOW);
   }
 }
 
@@ -918,7 +909,7 @@ void sendToLambdaAndPlay(const String& text) {
   Serial.printf("⏱️ [%lums] BC wait done\n", millis() - t0);
 
   // タイマー再開（再生中のLEDアニメーション用）
-  timerAlarm(ledTimer, 3000, true, 0);
+  timerAlarm(ledTimer, 30000, true, 0);
 
   // I2S切り替え
   i2s_driver_uninstall(I2S_NUM_0);
@@ -1292,7 +1283,7 @@ void setup() {
   // LEDアニメーション用ハードウェアタイマー
   ledTimer = timerBegin(1000000);
   timerAttachInterrupt(ledTimer, &onLEDTimer);
-  timerAlarm(ledTimer, 3000, true, 0);  // 3ms周期（擬似PWM用）
+  timerAlarm(ledTimer, 30000, true, 0);  // 30ms周期
 
   // NVSからBLE MACアドレスを読み込み
   deviceMacAddress = loadDeviceMac();
