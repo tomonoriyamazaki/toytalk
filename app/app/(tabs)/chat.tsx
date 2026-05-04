@@ -447,6 +447,7 @@ export default function Chat() {
   /* === Soniox: リアルタイムWS === */
   const sonioxWsRef = useRef<WebSocket | null>(null);
   const sonioxListeningRef = useRef(false);
+  const preconnectedWsRef = useRef<WebSocket | null>(null);
   const sonioxFinalBufRef = useRef<string>(""); // final確定の蓄積
   const sonioxNonFinalBufRef = useRef<string>(""); // 非確定の表示用
 
@@ -475,6 +476,40 @@ export default function Chat() {
     if (!res.ok || !js?.api_key) throw new Error("Failed to get Soniox temp key");
     if (js.stt_model) SONIOX_MODEL = js.stt_model;
     return js.api_key as string;
+  };
+
+  // Soniox WS先行接続（再生中に呼ぶ）
+  const preconnectSonioxWs = async () => {
+    if (preconnectedWsRef.current) return;
+    console.log("⏱️ preconnect: creating WebSocket");
+    const ws = new WebSocket(SONIOX_WS_URL);
+    ws.binaryType = "arraybuffer";
+    preconnectedWsRef.current = ws;
+
+    ws.onopen = async () => {
+      console.log("⏱️ preconnect: WebSocket OPEN, sending config");
+      const cfg = {
+        api_key: sonioxKey ?? (await fetchSonioxTempKey()),
+        model: SONIOX_MODEL,
+        audio_format: "pcm_s16le",
+        sample_rate: SONIOX_SAMPLE_RATE,
+        num_channels: SONIOX_CHANNELS,
+        enable_endpoint_detection: true,
+        language_hints: ["ja","en"],
+      };
+      ws.send(JSON.stringify(cfg));
+    };
+
+    ws.onerror = () => {
+      console.log("⏱️ preconnect: WebSocket error");
+      preconnectedWsRef.current = null;
+    };
+
+    ws.onclose = () => {
+      if (preconnectedWsRef.current === ws) {
+        preconnectedWsRef.current = null;
+      }
+    };
   };
 
   const startSonioxSTT = async () => {
@@ -506,9 +541,18 @@ export default function Chat() {
     let bytesSent = 0;
     let gotServerMsg = false;
 
-    // 新規WS
-    console.log(`⏱️ STT [${Date.now() - sttT0}ms] creating WebSocket`);
-    const ws = new WebSocket(SONIOX_WS_URL);
+    // 先行接続済みWSがあれば再利用
+    const preWs = preconnectedWsRef.current;
+    const usePreconnected = preWs && preWs.readyState === WebSocket.OPEN;
+    if (usePreconnected) {
+      console.log(`⏱️ STT [${Date.now() - sttT0}ms] using preconnected WebSocket`);
+    } else {
+      console.log(`⏱️ STT [${Date.now() - sttT0}ms] creating new WebSocket`);
+      if (preWs) try { preWs.close(); } catch {}
+    }
+    preconnectedWsRef.current = null;
+
+    const ws = usePreconnected ? preWs! : new WebSocket(SONIOX_WS_URL);
     ws.binaryType = "arraybuffer";
     sonioxWsRef.current = ws;
 
@@ -520,28 +564,12 @@ export default function Chat() {
       sonioxWatchRef.current = null;
     };
 
-    ws.onopen = async () => {
-      if (!guard()) return;
-      console.log(`⏱️ STT [${Date.now() - sttT0}ms] WebSocket OPEN`);
-
-      // サーバへ設定送信（まず設定→次に音声）
-      const cfg = {
-        api_key: sonioxKey ?? (await fetchSonioxTempKey()),
-        model: SONIOX_MODEL,
-        audio_format: "pcm_s16le",
-        sample_rate: SONIOX_SAMPLE_RATE,
-        num_channels: SONIOX_CHANNELS,
-        enable_endpoint_detection: true,
-        language_hints: ["ja","en"],
-      };
-      ws.send(JSON.stringify(cfg));
-      if(DEBUG)setLog(L => [...L, "Soniox WS: OPEN + cfg sent"]);
-
-      // 録音開始（onopen後に開始）
+    // 録音開始処理（WS接続済み後に呼ぶ）
+    const beginRecording = async () => {
       console.log(`⏱️ STT [${Date.now() - sttT0}ms] configuring AudioRecord`);
       configureAudioRecord();
       AudioRecord.on("data", (b64: string) => {
-        if (!guard()) return;                   // 古いセッションは無視
+        if (!guard()) return;
         if (!sonioxListeningRef.current) return;
 
         try {
@@ -568,13 +596,36 @@ export default function Chat() {
       } catch (e: any) {
         setIsListening(false);
         setLog(L => [...L, `AudioRecord.start failed: ${e?.message ?? e}`]);
-        // 録音開始に失敗したら即終了
         try { ws.close(); } catch {}
         sonioxListeningRef.current = false;
         setIsListening(false);
         return;
       }
     };
+
+    if (usePreconnected) {
+      // 先行接続済み: config送信済み、即録音開始
+      await beginRecording();
+    } else {
+      ws.onopen = async () => {
+        if (!guard()) return;
+        console.log(`⏱️ STT [${Date.now() - sttT0}ms] WebSocket OPEN`);
+
+        const cfg = {
+          api_key: sonioxKey ?? (await fetchSonioxTempKey()),
+          model: SONIOX_MODEL,
+          audio_format: "pcm_s16le",
+          sample_rate: SONIOX_SAMPLE_RATE,
+          num_channels: SONIOX_CHANNELS,
+          enable_endpoint_detection: true,
+          language_hints: ["ja","en"],
+        };
+        ws.send(JSON.stringify(cfg));
+        if(DEBUG)setLog(L => [...L, "Soniox WS: OPEN + cfg sent"]);
+
+        await beginRecording();
+      };
+    }
 
     ws.onmessage = (ev) => {
       if (!guard()) return;
@@ -831,6 +882,10 @@ export default function Chat() {
             console.log("✅ Sound loaded:", path);
             currentSoundRef.current = s;
             loopBeatRef.current = Date.now();
+            // 最後のチャンクならSoniox WSを先行接続
+            if (queueRef.current.length === 0 && sttMode === "soniox") {
+              preconnectSonioxWs();
+            }
             s.play((success) => {
               if (success) console.log("🏁 Finished playing:", path);
               else console.log("⚠️ Playback failed:", path);
