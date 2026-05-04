@@ -58,7 +58,7 @@ const STREAM_URL =
 /* 相槌Lambda */
 const BACKCHANNEL_URL =
   "https://5zcqptvuekdtfjnl4fian2crnm0alohv.lambda-url.ap-northeast-1.on.aws/";
-const BACKCHANNEL_TRIGGER_CHARS = 5;
+const BACKCHANNEL_TRIGGER_CHARS = 7;
 
 /* === ユーティリティ === */
 function base64ToArrayBuffer(b64: string): ArrayBuffer {

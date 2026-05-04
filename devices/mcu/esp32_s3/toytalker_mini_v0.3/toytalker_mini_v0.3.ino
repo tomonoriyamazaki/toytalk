@@ -131,7 +131,7 @@ size_t currentPcmSize = 0;
 
 // ==== 相槌（Backchannel）状態 ====
 bool backchannelEnabled = true;
-const int BACKCHANNEL_TRIGGER_CHARS = 10;
+const int BACKCHANNEL_TRIGGER_CHARS = 7;
 
 int utf8Len(const String& s) {
   int count = 0;
