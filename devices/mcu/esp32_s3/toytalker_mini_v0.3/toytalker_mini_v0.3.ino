@@ -121,6 +121,7 @@ bool armed = false;
 bool isRecording = false;
 bool endpointDetected = false;
 bool i2sRecordReady = false;
+unsigned long sttRestartMs = 0;  // STT再開計測用
 
 // ==== TTS 受信状態 ====
 int curSegmentId = -1;
@@ -678,6 +679,7 @@ bool processPCM(WiFiClientSecure& client, uint32_t length) {
 
     totalPlayed += written;
     remaining -= bytesRead;
+    ws.loop();  // SSL handshake進行
   }
 
   Serial.printf("[PCM] Streaming complete: %d bytes total\n", totalPlayed);
@@ -917,9 +919,12 @@ void sendToLambdaAndPlay(const String& text) {
   setupI2SPlay();
   Serial.printf("⏱️ [%lums] I2S switched\n", millis() - t0);
 
-  // Soniox WebSocket切断
+  // Soniox WebSocket切断→即再接続開始（再生中にSSL handshakeを進める）
   ws.disconnect();
-  Serial.printf("⏱️ [%lums] WS disconnected\n", millis() - t0);
+  ws.beginSSL(SONIOX_WS_URL, SONIOX_WS_PORT, "/transcribe-websocket");
+  ws.onEvent(webSocketEvent);
+  ws.enableHeartbeat(15000, 3000, 2);
+  Serial.printf("⏱️ [%lums] WS reconnect started (preconnect during playback)\n", millis() - t0);
 
   // ペイロード組み立て
   String messagesJson = "[";
@@ -1020,6 +1025,8 @@ void sendToLambdaAndPlay(const String& text) {
 
     Serial.printf("[BINARY] type=0x%02X, length=%d\n", type, length);
 
+    ws.loop();  // SSL handshake進行
+
     if (type == 0x01) {
       processMetadata(client, length);
     } else if (type == 0x02) {
@@ -1044,10 +1051,17 @@ void sendToLambdaAndPlay(const String& text) {
     Serial.println("🔘 Barge-in: skipping buffer flush");
   } else {
     const size_t dmaBytes = 8 * 1024 * 2 * 2;
-    uint8_t* silence = (uint8_t*)calloc(1, dmaBytes);
+    const size_t flushChunk = 8192;
+    uint8_t* silence = (uint8_t*)calloc(1, flushChunk);
     if (silence) {
-      size_t written = 0;
-      i2s_write(I2S_NUM_1, silence, dmaBytes, &written, portMAX_DELAY);
+      size_t remaining = dmaBytes;
+      while (remaining > 0) {
+        size_t toWrite = (remaining > flushChunk) ? flushChunk : remaining;
+        size_t written = 0;
+        i2s_write(I2S_NUM_1, silence, toWrite, &written, portMAX_DELAY);
+        remaining -= written;
+        ws.loop();  // SSL handshake進行
+      }
       free(silence);
     }
     Serial.printf("⏱️ end+[%lums] DMA flush\n", millis() - tEnd);
@@ -1076,6 +1090,9 @@ void sendToLambdaAndPlay(const String& text) {
 void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
     case WStype_CONNECTED:
+      if (sttRestartMs > 0) {
+        Serial.printf("⏱️ STT [%lums] WS actually connected (from restart)\n", millis() - sttRestartMs);
+      }
       Serial.println("✅ Connected to Soniox!");
       {
         String startMsg =
@@ -1094,7 +1111,7 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
         timerAlarm(ledTimer, 0, false, 0);
         setLEDMode(LED_ON);
       }
-      isRecording = true;
+      // isRecordingはstartSTTRecordingで設定（再生中のpreconnect時に録音開始を防ぐ）
       break;
 
     case WStype_TEXT: {
@@ -1158,17 +1175,38 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
 
 // ==== STT録音開始 ====
 void startSTTRecording() {
+  unsigned long t0 = millis();
+  sttRestartMs = t0;
   Serial.println("🎙️ Starting STT recording...");
   setLEDMode(LED_ON);
 
   if (!i2sRecordReady) {
     setupI2SRecord();
+    Serial.printf("⏱️ STT [%lums] I2S record setup\n", millis() - t0);
   }
-  i2sRecordReady = false;  // 次回は再セットアップ（再生後など）
+  i2sRecordReady = false;
 
-  ws.beginSSL(SONIOX_WS_URL, SONIOX_WS_PORT, "/transcribe-websocket");
-  ws.onEvent(webSocketEvent);
-  ws.enableHeartbeat(15000, 3000, 2);
+  if (ws.isConnected()) {
+    Serial.printf("⏱️ STT [%lums] WS already connected (preconnect success!)\n", millis() - t0);
+  } else {
+    Serial.printf("⏱️ STT [%lums] WS not yet connected, waiting...\n", millis() - t0);
+    // preconnectが進行中のはずなので、ws.loop()で完了を待つ
+    unsigned long wsWaitStart = millis();
+    while (!ws.isConnected() && (millis() - wsWaitStart < 5000)) {
+      ws.loop();
+      delay(1);
+    }
+    if (ws.isConnected()) {
+      Serial.printf("⏱️ STT [%lums] WS connected after wait\n", millis() - t0);
+    } else {
+      Serial.printf("⏱️ STT [%lums] WS still not connected, starting fresh\n", millis() - t0);
+      ws.beginSSL(SONIOX_WS_URL, SONIOX_WS_PORT, "/transcribe-websocket");
+      ws.onEvent(webSocketEvent);
+      ws.enableHeartbeat(15000, 3000, 2);
+    }
+  }
+  isRecording = true;
+  Serial.printf("⏱️ STT [%lums] isRecording=true\n", millis() - t0);
 
   partialText = "";
   sonioxFinalBuf = "";
@@ -1176,6 +1214,7 @@ void startSTTRecording() {
   armed = false;
   endpointDetected = false;
   clearBackchannelCache();
+  Serial.printf("⏱️ STT [%lums] startSTTRecording done\n", millis() - t0);
 }
 
 // ==== WiFi接続（1回試行） ====
@@ -1417,7 +1456,15 @@ void loop() {
         pcm[i] = (int16_t)(raw[i] >> 14);
       }
       bool ok = ws.sendBIN((uint8_t*)pcm, samples * sizeof(int16_t));
-      if (ok) sendOk++; else sendFail++;
+      if (ok) {
+        sendOk++;
+        if (sendOk == 1 && sttRestartMs > 0) {
+          Serial.printf("⏱️ STT [%lums] First audio packet sent\n", millis() - sttRestartMs);
+          sttRestartMs = 0;
+        }
+      } else {
+        sendFail++;
+      }
       lastSend = millis();
     }
     if (millis() - lastStats > 5000) {
