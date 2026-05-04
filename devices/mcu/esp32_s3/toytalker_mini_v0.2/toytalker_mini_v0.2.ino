@@ -132,6 +132,7 @@ uint8_t* currentPcmBuffer = NULL;
 size_t currentPcmSize = 0;
 
 // ==== 相槌（Backchannel）状態 ====
+bool backchannelEnabled = true;  // サーバーから取得（起動時）
 const int BACKCHANNEL_TRIGGER_CHARS = 10;  // UTF-8文字数（バイト数ではない）
 
 // UTF-8文字数カウント
@@ -985,6 +986,7 @@ void fetchBackchannelTask(void* param) {
 
 // ==== 相槌フェッチ開始 ====
 void startBackchannelFetch(const String& partial) {
+  if (!backchannelEnabled) return;
   if (backchannelFetching || backchannelReady || backchannelFired) return;
   if (strlen(BACKCHANNEL_HOST) == 0) return;
   // SSL接続に最低50KB必要
@@ -1474,9 +1476,10 @@ void startNormalOperation() {
   Serial.println("🎯 Starting normal operation...");
   currentMode = MODE_NORMAL;
 
-  // Soniox temp key取得
+  // Soniox temp key取得 + デバイス設定
   HTTPClient http;
-  http.begin(SONIOX_LAMBDA_URL);
+  String initUrl = String(SONIOX_LAMBDA_URL) + "?device_id=" + deviceMacAddress;
+  http.begin(initUrl);
   int code = http.GET();
   if (code != 200) {
     Serial.printf("❌ HTTP fail %d\n", code);
@@ -1494,6 +1497,11 @@ void startNormalOperation() {
   }
   sonioxKey = doc["api_key"].as<String>();
   Serial.println("✅ Soniox temp key obtained");
+
+  if (doc.containsKey("backchannel_enabled")) {
+    backchannelEnabled = doc["backchannel_enabled"].as<bool>();
+  }
+  Serial.printf("🔊 Backchannel: %s\n", backchannelEnabled ? "ON" : "OFF");
 
 #if DEBUG_MEMORY
   printMemoryStatus("After WiFi & Soniox Init");

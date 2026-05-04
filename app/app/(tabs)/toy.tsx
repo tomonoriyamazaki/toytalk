@@ -14,6 +14,7 @@ import {
   Platform,
   PermissionsAndroid,
   ScrollView,
+  Switch,
 } from "react-native";
 import { BleManager, Device } from "react-native-ble-plx";
 
@@ -47,6 +48,7 @@ type RegisteredDevice = {
   character_id: string | null;
   owner_id: string;
   device_name: string;
+  backchannel_enabled?: boolean;
 };
 
 type SessionItem = {
@@ -119,6 +121,7 @@ export default function Toy() {
             character_id: d.character_id,
             owner_id: d.owner_id,
             device_name: d.device_name ?? "",
+            backchannel_enabled: d.backchannel_enabled !== false,
           }));
           setRegisteredDevices(devices);
           await AsyncStorage.setItem("registeredDevices", JSON.stringify(devices));
@@ -610,6 +613,27 @@ export default function Toy() {
             </View>
             <Text style={s.chevron}>›</Text>
           </TouchableOpacity>
+          <View style={s.settingRow}>
+            <Text style={s.settingLabel}>相槌（あいづち）</Text>
+            <Switch
+              value={currentDevice?.backchannel_enabled !== false}
+              onValueChange={async (val) => {
+                setRegisteredDevices((prev) => {
+                  const updated = prev.map((d) => (d.device_id === deviceId ? { ...d, backchannel_enabled: val } : d));
+                  AsyncStorage.setItem("registeredDevices", JSON.stringify(updated));
+                  return updated;
+                });
+                try {
+                  await fetch(`${DEVICE_SETTING_URL}/devices/${encodeURIComponent(deviceId!)}`, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ backchannel_enabled: val }),
+                  });
+                } catch {}
+                Alert.alert("設定を変更しました", "おもちゃの電源を入れ直してください");
+              }}
+            />
+          </View>
           <TouchableOpacity style={s.settingRow} onPress={openConversationLog}>
             <View>
               <Text style={s.settingLabel}>会話ログ</Text>
