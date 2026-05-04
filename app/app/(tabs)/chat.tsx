@@ -478,6 +478,7 @@ export default function Chat() {
   };
 
   const startSonioxSTT = async () => {
+    const sttT0 = Date.now();
     if(DEBUG)setLog(L => [...L, "Soniox STT: start()"]);
 
     // すでに起動中なら無視（多重起動防止）
@@ -489,6 +490,7 @@ export default function Chat() {
     // 権限チェック
     const okAndroid = await ensureMicPermissionAndroid();
     const okIOS = await ensureMicPermissionIOS();
+    console.log(`⏱️ STT [${Date.now() - sttT0}ms] mic permission checked`);
     if (!okAndroid || !okIOS) {
       setLog(L => [...L, "STT: マイク権限がありません"]);
       return;
@@ -505,6 +507,7 @@ export default function Chat() {
     let gotServerMsg = false;
 
     // 新規WS
+    console.log(`⏱️ STT [${Date.now() - sttT0}ms] creating WebSocket`);
     const ws = new WebSocket(SONIOX_WS_URL);
     ws.binaryType = "arraybuffer";
     sonioxWsRef.current = ws;
@@ -519,7 +522,7 @@ export default function Chat() {
 
     ws.onopen = async () => {
       if (!guard()) return;
-
+      console.log(`⏱️ STT [${Date.now() - sttT0}ms] WebSocket OPEN`);
 
       // サーバへ設定送信（まず設定→次に音声）
       const cfg = {
@@ -535,6 +538,7 @@ export default function Chat() {
       if(DEBUG)setLog(L => [...L, "Soniox WS: OPEN + cfg sent"]);
 
       // 録音開始（onopen後に開始）
+      console.log(`⏱️ STT [${Date.now() - sttT0}ms] configuring AudioRecord`);
       configureAudioRecord();
       AudioRecord.on("data", (b64: string) => {
         if (!guard()) return;                   // 古いセッションは無視
@@ -551,7 +555,9 @@ export default function Chat() {
       });
 
       try {
+        console.log(`⏱️ STT [${Date.now() - sttT0}ms] AudioRecord.start()`);
         await AudioRecord.start();
+        console.log(`⏱️ STT [${Date.now() - sttT0}ms] AudioRecord started OK`);
         sonioxListeningRef.current = true;
         setIsListening(true);
         setPartial(""); setFinalText("");
@@ -846,6 +852,7 @@ export default function Chat() {
         console.log("🔄 playLoop restarting (Sound)");
         playLoop();
       } else {
+        const t0 = Date.now();
         console.log("🎙️ Auto restart STT after playback");
 
         const doAutoRestart = async () => {
@@ -859,8 +866,10 @@ export default function Chat() {
             return;
           }
 
+          console.log(`⏱️ [${Date.now() - t0}ms] before startSonioxSTT`);
           if (sttMode === "soniox") {
-            startSonioxSTT();
+            await startSonioxSTT();
+            console.log(`⏱️ [${Date.now() - t0}ms] startSonioxSTT returned`);
           } else if (sttMode === "local") {
             console.log("🎤 preparing local STT restart");
             try {
