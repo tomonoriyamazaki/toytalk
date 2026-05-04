@@ -120,6 +120,7 @@ const unsigned long END_SILENCE_MS = 800;
 bool armed = false;
 bool isRecording = false;
 bool endpointDetected = false;
+bool i2sRecordReady = false;
 
 // ==== TTS 受信状態 ====
 int curSegmentId = -1;
@@ -1160,7 +1161,10 @@ void startSTTRecording() {
   Serial.println("🎙️ Starting STT recording...");
   setLEDMode(LED_ON);
 
-  setupI2SRecord();
+  if (!i2sRecordReady) {
+    setupI2SRecord();
+  }
+  i2sRecordReady = false;  // 次回は再セットアップ（再生後など）
 
   ws.beginSSL(SONIOX_WS_URL, SONIOX_WS_PORT, "/transcribe-websocket");
   ws.onEvent(webSocketEvent);
@@ -1299,24 +1303,45 @@ void setup() {
   digitalWrite(PIN_AMP_SD, LOW);
 
   if (loadWiFiCredentials()) {
-    const int MAX_RETRIES = 2;
-    bool connected = false;
+    // 高速起動: disconnect不要、100msポーリング
+    WiFi.mode(WIFI_STA);
+    wifi_country_t country = {
+      .cc = "JP", .schan = 1, .nchan = 14, .max_tx_power = 20, .policy = WIFI_COUNTRY_POLICY_MANUAL
+    };
+    esp_wifi_set_country(&country);
 
-    for (int retry = 1; retry <= MAX_RETRIES; retry++) {
-      Serial.printf("\n🔄 Attempt %d of %d\n", retry, MAX_RETRIES);
-      if (tryConnectWiFiOnce(wifiSSID, wifiPassword)) {
-        connected = true;
-        break;
-      }
-      Serial.printf("\n❌ Attempt %d failed\n", retry);
-      if (retry < MAX_RETRIES) {
-        Serial.println("⏳ Waiting 2 seconds before retry...");
-        delay(2000);
+    Serial.printf("📶 Connecting to: %s\n", wifiSSID.c_str());
+    WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+
+    // I2S録音設定をWiFi接続待ち中に先行実行
+    setupI2SRecord();
+    i2sRecordReady = true;
+    Serial.println("🎙️ I2S ready (during WiFi connect)");
+
+    // 100msポーリングで最大8秒待ち
+    bool connected = false;
+    for (int i = 0; i < 80; i++) {
+      delay(100);
+      if (wifiGotIP) { connected = true; break; }
+      if (i % 10 == 9) Serial.print(".");
+    }
+
+    if (!connected) {
+      // リトライ1回
+      Serial.println("\n🔄 Retry...");
+      WiFi.disconnect(true);
+      delay(500);
+      WiFi.mode(WIFI_STA);
+      esp_wifi_set_country(&country);
+      WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+      for (int i = 0; i < 80; i++) {
+        delay(100);
+        if (wifiGotIP) { connected = true; break; }
       }
     }
 
     if (connected) {
-      Serial.printf("\n✅ WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
+      Serial.printf("\n✅ WiFi connected! IP: %s (%.1fs)\n", WiFi.localIP().toString().c_str(), millis() / 1000.0);
       sessionId = String(millis()) + "-" + String(random(100000, 999999));
       Serial.printf("🆔 Session ID: %s\n", sessionId.c_str());
       startNormalOperation();
