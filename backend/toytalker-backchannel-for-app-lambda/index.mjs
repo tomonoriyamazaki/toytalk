@@ -85,11 +85,11 @@ async function generateBackchannel(partialText, personalityPrompt, history = [],
   const systemPrompt = `あなたは会話相手で、相槌を打つ役割です。${personalityPrompt ? "あなたの性格: " + personalityPrompt + "\n" : ""}${historyContext}ユーザーが今まさに話している途中です。聞こえている部分と会話の流れに合った、自然な相槌を一言だけ返してください。
 ルール:
 - 相槌とは「聞いているよ」「わかるよ」という短い反応のこと
-- 1〜10文字程度
+- 1〜15文字程度
 - 句読点不要
 - 話題の内容や感情に合った相槌を自分で考えて返す（楽しい・困っている・驚き・共感など）
 - 会話の流れを見て、毎回違う表現を使う${firstTurnHint}${avoidHint}
-- キャラの口調に少し寄せてもよいが、自然さを最優先する
+- キャラの口調は使わず、自然な日本語の相槌にする
 - 絶対に質問・返答・感想・コメントはしない。相槌のみ`;
 
   const resp = await fetch(
