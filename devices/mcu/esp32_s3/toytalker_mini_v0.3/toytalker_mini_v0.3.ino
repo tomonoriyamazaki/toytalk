@@ -121,6 +121,7 @@ bool armed = false;
 bool isRecording = false;
 bool endpointDetected = false;
 bool i2sRecordReady = false;
+unsigned long sttRestartMs = 0;  // STT再開計測用
 
 // ==== TTS 受信状態 ====
 int curSegmentId = -1;
@@ -1076,6 +1077,9 @@ void sendToLambdaAndPlay(const String& text) {
 void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
     case WStype_CONNECTED:
+      if (sttRestartMs > 0) {
+        Serial.printf("⏱️ STT [%lums] WS actually connected (from restart)\n", millis() - sttRestartMs);
+      }
       Serial.println("✅ Connected to Soniox!");
       {
         String startMsg =
@@ -1095,6 +1099,9 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
         setLEDMode(LED_ON);
       }
       isRecording = true;
+      if (sttRestartMs > 0) {
+        Serial.printf("⏱️ STT [%lums] isRecording=true, ready for audio\n", millis() - sttRestartMs);
+      }
       break;
 
     case WStype_TEXT: {
@@ -1158,17 +1165,21 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
 
 // ==== STT録音開始 ====
 void startSTTRecording() {
+  unsigned long t0 = millis();
+  sttRestartMs = t0;
   Serial.println("🎙️ Starting STT recording...");
   setLEDMode(LED_ON);
 
   if (!i2sRecordReady) {
     setupI2SRecord();
+    Serial.printf("⏱️ STT [%lums] I2S record setup\n", millis() - t0);
   }
   i2sRecordReady = false;  // 次回は再セットアップ（再生後など）
 
   ws.beginSSL(SONIOX_WS_URL, SONIOX_WS_PORT, "/transcribe-websocket");
   ws.onEvent(webSocketEvent);
   ws.enableHeartbeat(15000, 3000, 2);
+  Serial.printf("⏱️ STT [%lums] WS beginSSL called\n", millis() - t0);
 
   partialText = "";
   sonioxFinalBuf = "";
@@ -1176,6 +1187,7 @@ void startSTTRecording() {
   armed = false;
   endpointDetected = false;
   clearBackchannelCache();
+  Serial.printf("⏱️ STT [%lums] startSTTRecording done\n", millis() - t0);
 }
 
 // ==== WiFi接続（1回試行） ====
@@ -1417,7 +1429,15 @@ void loop() {
         pcm[i] = (int16_t)(raw[i] >> 14);
       }
       bool ok = ws.sendBIN((uint8_t*)pcm, samples * sizeof(int16_t));
-      if (ok) sendOk++; else sendFail++;
+      if (ok) {
+        sendOk++;
+        if (sendOk == 1 && sttRestartMs > 0) {
+          Serial.printf("⏱️ STT [%lums] First audio packet sent\n", millis() - sttRestartMs);
+          sttRestartMs = 0;
+        }
+      } else {
+        sendFail++;
+      }
       lastSend = millis();
     }
     if (millis() - lastStats > 5000) {
