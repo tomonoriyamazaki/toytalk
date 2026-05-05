@@ -564,7 +564,11 @@ export default function Chat() {
       sonioxWatchRef.current = null;
     };
 
-    // 録音開始処理（WS接続済み後に呼ぶ）
+    // WS未接続中のPCMバッファ
+    const audioBuffer: Uint8Array[] = [];
+    let wsReady = usePreconnected;
+
+    // 録音開始処理（WS接続前でも呼べる — バッファリングする）
     const beginRecording = async () => {
       console.log(`⏱️ STT [${Date.now() - sttT0}ms] configuring AudioRecord`);
       configureAudioRecord();
@@ -575,7 +579,11 @@ export default function Chat() {
         try {
           const ab = base64ToArrayBuffer(b64);
           const chunk = new Uint8Array(ab);
-          ws.readyState === 1 && ws.send(chunk);
+          if (wsReady && ws.readyState === 1) {
+            ws.send(chunk);
+          } else {
+            audioBuffer.push(chunk);
+          }
           bytesSent += chunk.byteLength;
         } catch (e: any) {
           setLog(L => [...L, `Soniox send err: ${e?.message ?? String(e)}`]);
@@ -607,6 +615,7 @@ export default function Chat() {
       // 先行接続済み: config送信済み、即録音開始
       await beginRecording();
     } else {
+      // WS接続と録音を並行開始
       ws.onopen = async () => {
         if (!guard()) return;
         console.log(`⏱️ STT [${Date.now() - sttT0}ms] WebSocket OPEN`);
@@ -623,8 +632,19 @@ export default function Chat() {
         ws.send(JSON.stringify(cfg));
         if(DEBUG)setLog(L => [...L, "Soniox WS: OPEN + cfg sent"]);
 
-        await beginRecording();
+        // バッファに溜まったPCMを一括送信
+        if (audioBuffer.length > 0) {
+          console.log(`⏱️ STT [${Date.now() - sttT0}ms] flushing ${audioBuffer.length} buffered chunks`);
+          for (const chunk of audioBuffer) {
+            ws.send(chunk);
+          }
+          audioBuffer.length = 0;
+        }
+        wsReady = true;
       };
+
+      // WS接続待ちの間も録音開始（バッファリングモード）
+      await beginRecording();
     }
 
     ws.onmessage = (ev) => {
