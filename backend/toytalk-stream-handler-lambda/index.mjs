@@ -623,7 +623,8 @@
     }
     const now = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", year: "numeric", month: "long", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit" });
     const backchannelHint = backchannelFired ? "\n【重要】相槌は別途再生済みです。冒頭の相槌・挨拶・オウム返しは不要です。本題から返答を始めてください。" : "";
-    const basePrompt = `あなたは子供向けの友好的な音声アシスタントです。簡潔に答えて、自然に会話を続けてください。単語の間に半角スペースを入れないでください。現在の日時は${now}です。日時を聞かれたら年は省略して簡潔に答えてください。相手が話した言語で返答してください。${backchannelHint}`;
+    const toolHint = SERPER_API_KEY ? "\nウェブ検索ツールが使えます。最新情報や具体的な事実を調べたいときに使ってください。検索するときは、検索する前に短い一言（例:「調べてみるね」「ちょっと待ってね」など）を必ず添えてください。毎回違う表現にしてください。" : "";
+    const basePrompt = `あなたは子供向けの友好的な音声アシスタントです。簡潔に答えて、自然に会話を続けてください。単語の間に半角スペースを入れないでください。現在の日時は${now}です。日時を聞かれたら年は省略して簡潔に答えてください。相手が話した言語で返答してください。${backchannelHint}${toolHint}`;
     const systemContent = personalityPrompt ? `${personalityPrompt}\n\n${basePrompt}` : basePrompt;
     const messagesWithSystem = [{ role: "system", content: systemContent }, ...messages];
 
@@ -884,6 +885,12 @@
         if (delta && delta.__toolCall) {
           toolCallDetected = true;
           console.log(`[ToolCall] ${delta.name}(${JSON.stringify(delta.args)})`);
+          // tool call前のつなぎテキストをflush
+          const preBuf = buf.trim();
+          if (preBuf) {
+            buf = "";
+            await emitSegment(preBuf);
+          }
           send(res, "tool_call", { name: delta.name, args: delta.args });
 
           let toolResult;
