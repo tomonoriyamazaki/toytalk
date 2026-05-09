@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from "react";
 import { useOwnerId } from "../../hooks/useOwnerId";
 import AudioRecord from "react-native-audio-record";
 import { Audio } from "expo-av";
+import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
@@ -280,6 +281,7 @@ export default function Settings() {
   const cvWavPathRef = useRef<string>("");
   const [editingVoiceId, setEditingVoiceId] = useState<string | null>(null);
   const [editingVoiceLabel, setEditingVoiceLabel] = useState("");
+  const [cvUploadedFile, setCvUploadedFile] = useState<{ uri: string; name: string; mimeType: string; durationSec: number } | null>(null);
   const CV_DURATION = 5;
   const CV_GUIDE_TEXT = "以下の文章を、普段の声で読み上げてください：\n\n「こんにちは！今日はとてもいい天気ですね。一緒にお散歩に行きませんか？楽しいお話をたくさんしましょう。」";
 
@@ -307,6 +309,7 @@ export default function Settings() {
     setCvRecordSeconds(0);
     setCvRecording(false);
     cvWavPathRef.current = "";
+    setCvUploadedFile(null);
     navigateTo("custom-voice-record");
   };
 
@@ -356,17 +359,20 @@ export default function Settings() {
 
   const registerCustomVoice = async () => {
     if (!cvName.trim()) { Alert.alert("エラー", "ボイス名を入力してください"); return; }
-    if (!cvWavPathRef.current) { Alert.alert("エラー", "まず録音してください"); return; }
+    if (!cvWavPathRef.current && !cvUploadedFile) { Alert.alert("エラー", "まず録音するかファイルを選択してください"); return; }
 
     setCvRegistering(true);
     try {
-      const filePath = cvWavPathRef.current.startsWith("file://") ? cvWavPathRef.current : `file://${cvWavPathRef.current}`;
-      const audioBase64 = await FileSystem.readAsStringAsync(filePath, { encoding: FileSystem.EncodingType.Base64 });
+      const fileUri = cvUploadedFile
+        ? (cvUploadedFile.uri.startsWith("file://") ? cvUploadedFile.uri : `file://${cvUploadedFile.uri}`)
+        : (cvWavPathRef.current.startsWith("file://") ? cvWavPathRef.current : `file://${cvWavPathRef.current}`);
+      const audioBase64 = await FileSystem.readAsStringAsync(fileUri, { encoding: FileSystem.EncodingType.Base64 });
+      const mimeType = cvUploadedFile?.mimeType || "audio/wav";
 
       const res = await fetch(`${DEVICE_SETTING_URL}/custom-voices`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ label: cvName.trim(), audio_base64: audioBase64, owner_id: ownerId }),
+        body: JSON.stringify({ label: cvName.trim(), audio_base64: audioBase64, owner_id: ownerId, mime_type: mimeType }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -380,6 +386,43 @@ export default function Settings() {
       Alert.alert("エラー", `ボイス登録に失敗しました: ${e?.message ?? e}`);
     } finally {
       setCvRegistering(false);
+    }
+  };
+
+  const uploadCustomVoice = async () => {
+    if (!ownerId) return;
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ["audio/*"],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.length) return;
+
+      const asset = result.assets[0];
+      const maxSize = 10 * 1024 * 1024;
+      if (asset.size && asset.size > maxSize) {
+        Alert.alert("エラー", "ファイルサイズは10MB以下にしてください");
+        return;
+      }
+
+      const { sound, status } = await Audio.Sound.createAsync({ uri: asset.uri });
+      const durationSec = ((status as any).durationMillis ?? 0) / 1000;
+      await sound.unloadAsync();
+
+      if (durationSec < 3 || durationSec > 20) {
+        Alert.alert("エラー", `音声の長さは3〜20秒にしてください（現在: ${durationSec.toFixed(1)}秒）`);
+        return;
+      }
+
+      const fileName = asset.name?.replace(/\.[^.]+$/, "") || "upload";
+      setCvUploadedFile({ uri: asset.uri, name: asset.name || "audio", mimeType: asset.mimeType || "audio/wav", durationSec });
+      setCvName(fileName);
+      setCvRecordSeconds(0);
+      setCvRecording(false);
+      cvWavPathRef.current = "";
+      navigateTo("custom-voice-record");
+    } catch (e: any) {
+      Alert.alert("エラー", `ファイル選択に失敗しました: ${e?.message ?? e}`);
     }
   };
 
@@ -479,23 +522,39 @@ export default function Settings() {
     }
   };
 
-  // ---- カスタムボイス録音画面 ----
+  // ---- カスタムボイス録音/アップロード画面 ----
   if (screen === "custom-voice-record") {
+    const isUpload = !!cvUploadedFile;
     const progress = cvRecordSeconds / CV_DURATION;
+    const canRegister = isUpload || cvRecordSeconds >= CV_DURATION;
     return (
       <SafeAreaView style={s.root}>
         <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
           <View style={s.header}>
-            <TouchableOpacity onPress={() => { if (cvRecording) stopCvRecording(); navigateTo("custom-voice-list", "back"); }} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+            <TouchableOpacity onPress={() => { if (cvRecording) stopCvRecording(); setCvUploadedFile(null); navigateTo("custom-voice-list", "back"); }} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
               <Text style={s.back}>←</Text>
             </TouchableOpacity>
-            <Text style={s.headerTitle}>ボイスを録音</Text>
+            <Text style={s.headerTitle}>{isUpload ? "ファイルからボイス作成" : "ボイスを録音"}</Text>
           </View>
           <ScrollView contentContainerStyle={[s.wrap, { alignItems: "center", paddingTop: 32 }]}>
-            <Text style={{ fontSize: 24, fontWeight: "700", color: "#333", marginBottom: 24 }}>あなたの声を録音しよう!</Text>
-            <View style={{ backgroundColor: "#f0f7ff", borderRadius: 16, padding: 20, marginBottom: 24, width: "100%" }}>
-              <Text style={{ fontSize: 15, color: "#555", lineHeight: 24 }}>{CV_GUIDE_TEXT}</Text>
-            </View>
+            {isUpload ? (
+              <>
+                <Text style={{ fontSize: 24, fontWeight: "700", color: "#333", marginBottom: 24 }}>音声ファイルからボイス作成</Text>
+                <View style={{ backgroundColor: "#f0f7ff", borderRadius: 16, padding: 20, marginBottom: 24, width: "100%" }}>
+                  <Text style={{ fontSize: 15, color: "#555", lineHeight: 24 }}>
+                    ファイル: {cvUploadedFile.name}{"\n"}
+                    長さ: {cvUploadedFile.durationSec.toFixed(1)}秒
+                  </Text>
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={{ fontSize: 24, fontWeight: "700", color: "#333", marginBottom: 24 }}>あなたの声を録音しよう!</Text>
+                <View style={{ backgroundColor: "#f0f7ff", borderRadius: 16, padding: 20, marginBottom: 24, width: "100%" }}>
+                  <Text style={{ fontSize: 15, color: "#555", lineHeight: 24 }}>{CV_GUIDE_TEXT}</Text>
+                </View>
+              </>
+            )}
 
             <View style={{ flexDirection: "row", alignItems: "center", width: "100%", marginBottom: 20, gap: 10 }}>
               <Text style={{ fontSize: 16, fontWeight: "600", color: "#333" }}>ボイス名</Text>
@@ -507,16 +566,18 @@ export default function Settings() {
               />
             </View>
 
-            {/* プログレスバー */}
-            <View style={{ width: "100%", height: 8, backgroundColor: "#e0e0e0", borderRadius: 4, marginBottom: 8 }}>
-              <View style={{ width: `${progress * 100}%`, height: "100%", backgroundColor: cvRecording ? "#FF3B30" : "#007AFF", borderRadius: 4 }} />
-            </View>
-            <Text style={{ fontSize: 14, color: "#999", marginBottom: 20 }}>
-              {cvRecording ? `録音中... ${cvRecordSeconds}/${CV_DURATION}秒` : cvRecordSeconds >= CV_DURATION ? "録音完了!" : `${CV_DURATION}秒間録音します`}
-            </Text>
+            {!isUpload && (
+              <>
+                <View style={{ width: "100%", height: 8, backgroundColor: "#e0e0e0", borderRadius: 4, marginBottom: 8 }}>
+                  <View style={{ width: `${progress * 100}%`, height: "100%", backgroundColor: cvRecording ? "#FF3B30" : "#007AFF", borderRadius: 4 }} />
+                </View>
+                <Text style={{ fontSize: 14, color: "#999", marginBottom: 20 }}>
+                  {cvRecording ? `録音中... ${cvRecordSeconds}/${CV_DURATION}秒` : cvRecordSeconds >= CV_DURATION ? "録音完了!" : `${CV_DURATION}秒間録音します`}
+                </Text>
+              </>
+            )}
 
-            {/* 録音ボタン */}
-            {cvRecordSeconds < CV_DURATION ? (
+            {!isUpload && cvRecordSeconds < CV_DURATION ? (
               <TouchableOpacity
                 style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: cvRecording ? "#FF3B30" : "#007AFF", justifyContent: "center", alignItems: "center", marginBottom: 32 }}
                 onPress={cvRecording ? stopCvRecording : startCvRecording}
@@ -527,7 +588,7 @@ export default function Settings() {
                   <View style={{ width: 24, height: 24, borderRadius: 12, backgroundColor: "#fff" }} />
                 )}
               </TouchableOpacity>
-            ) : (
+            ) : canRegister ? (
               <TouchableOpacity
                 style={[s.button, { width: "100%", marginBottom: 16, backgroundColor: cvRegistering ? "#ccc" : "#007AFF" }]}
                 onPress={registerCustomVoice}
@@ -539,10 +600,10 @@ export default function Settings() {
                   <Text style={s.buttonText}>このボイスで登録する</Text>
                 )}
               </TouchableOpacity>
-            )}
+            ) : null}
 
-            {cvRecordSeconds >= CV_DURATION && !cvRegistering && (
-              <TouchableOpacity onPress={() => { setCvRecordSeconds(0); cvChunksRef.current = []; }}>
+            {!isUpload && cvRecordSeconds >= CV_DURATION && !cvRegistering && (
+              <TouchableOpacity onPress={() => { setCvRecordSeconds(0); cvWavPathRef.current = ""; }}>
                 <Text style={{ color: "#007AFF", fontSize: 15 }}>もう一度録音する</Text>
               </TouchableOpacity>
             )}
@@ -624,7 +685,10 @@ export default function Settings() {
             )}
 
             <TouchableOpacity style={[s.button, { marginTop: 24 }]} onPress={openCustomVoiceRecord}>
-              <Text style={s.buttonText}>+ カスタムボイスを作成</Text>
+              <Text style={s.buttonText}>+ 録音して作成</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[s.button, { marginTop: 10, backgroundColor: "#34C759" }]} onPress={uploadCustomVoice}>
+              <Text style={s.buttonText}>+ ファイルから作成</Text>
             </TouchableOpacity>
           </ScrollView>
         </Animated.View>
@@ -906,6 +970,7 @@ export default function Settings() {
         </View>
         <ScrollView contentContainerStyle={s.wrap}>
           {[
+            { ver: "0.8.1", date: "20260510", desc: "相槌機能追加、サーチ機能追加、クローンボイス機能追加、再生終了後に即録音状態になるよう改修、アプリの録音ボタン押下後に即録音状態になるよう改修" },
             { ver: "0.8.0", date: "20260426", desc: "ずんだもんボイス等追加、LLM選択機能追加、コストページ追加、STT文字起こし中に途中で切れてしまう問題を改善" },
             { ver: "0.7.1", date: "20260328", desc: "複数デバイスの登録機能追加" },
             { ver: "0.7.0", date: "20260322", desc: "キャラクターシステム追加、会話ログ機能追加、UI刷新" },

@@ -559,7 +559,7 @@ export const handler = async (event) => {
     // ---- POST /custom-voices ---- カスタムボイス登録
     if (method === "POST" && path === "/custom-voices") {
       const body = JSON.parse(event.body ?? "{}");
-      const { label, audio_base64, owner_id } = body;
+      const { label, audio_base64, owner_id, mime_type } = body;
       if (!label || !audio_base64) return response(400, { error: "label and audio_base64 are required" });
       if (!owner_id) return response(400, { error: "owner_id is required" });
 
@@ -573,7 +573,7 @@ export const handler = async (event) => {
       const ttsResp = await fetch(`${baseUrl}/v1/speakers/register`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ name: voiceId, audio_base64 }),
+        body: JSON.stringify({ name: voiceId, audio_base64, mime_type: mime_type || "audio/wav" }),
       });
       if (!ttsResp.ok) {
         const errText = await ttsResp.text();
