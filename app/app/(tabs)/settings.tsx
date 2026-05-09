@@ -673,7 +673,7 @@ export default function Settings() {
             <TouchableOpacity onPress={() => navigateTo("main", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
               <Text style={s.back}>←</Text>
             </TouchableOpacity>
-            <Text style={s.headerTitle}>カスタムボイス</Text>
+            <Text style={s.headerTitle}>カスタムボイス（β）</Text>
           </View>
           <ScrollView contentContainerStyle={s.wrap} keyboardShouldPersistTaps="handled">
             {customVoicesLoading ? (
@@ -1060,13 +1060,13 @@ export default function Settings() {
     }
   }
   if (zakicorpSystem.length > 0) {
-    voiceSections.push({ title: "ZakiCorp（システム）", data: zakicorpSystem });
+    voiceSections.push({ title: "ZakiCorp（システム）※ベータ版", data: zakicorpSystem });
   }
   const customAsVoice = customVoices
     .filter(v => v.owner_id !== "system")
     .map(v => ({ voice_id: v.voice_id, label: v.label, provider: "ZakiCorp", vendor_id: v.vendor_id }));
   if (customAsVoice.length > 0) {
-    voiceSections.push({ title: "ZakiCorp（カスタム）", data: customAsVoice });
+    voiceSections.push({ title: "ZakiCorp（カスタム）※ベータ版", data: customAsVoice });
   }
 
   const currentVoiceLabel = () => {
@@ -1338,7 +1338,7 @@ export default function Settings() {
           </TouchableOpacity>
 
           <TouchableOpacity style={s.navRow} onPress={openCustomVoiceList}>
-            <Text style={s.navText}>カスタムボイス管理</Text>
+            <Text style={s.navText}>カスタムボイス管理（β）</Text>
             <Text style={s.chevron}>›</Text>
           </TouchableOpacity>
 
