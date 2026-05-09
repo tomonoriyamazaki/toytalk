@@ -1,11 +1,14 @@
 // Node.js 18+ / ESM（index.mjs）
 // Handler: index.handler
-// Env: なし（DynamoDBはIAMロールで接続）
+// Env: ZAKICORP_API_KEY, ZAKICORP_TTS_URL（カスタムボイス登録用）
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, ScanCommand, DeleteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 
 const client = new DynamoDBClient({ region: "ap-northeast-1" });
 const ddb = DynamoDBDocumentClient.from(client);
+const s3 = new S3Client({ region: "ap-northeast-1" });
+const SPEAKERS_BUCKET = "toytalker-tts-speakers";
 
 // ---- テーブル定義 ----
 const DEVICES_TABLE        = "toytalker-devices";
@@ -538,6 +541,86 @@ export const handler = async (event) => {
       }
 
       return response(200, { date, conversations });
+    }
+
+    // ---- GET /custom-voices ---- ZakiCorpカスタムボイス一覧
+    if (method === "GET" && path === "/custom-voices") {
+      const result = await ddb.send(new ScanCommand({
+        TableName: VOICES_TABLE,
+        FilterExpression: "provider = :p",
+        ExpressionAttributeValues: { ":p": "ZakiCorp" },
+      }));
+      return response(200, { voices: result.Items ?? [] });
+    }
+
+    // ---- POST /custom-voices ---- カスタムボイス登録
+    if (method === "POST" && path === "/custom-voices") {
+      const body = JSON.parse(event.body ?? "{}");
+      const { name, audio_base64 } = body;
+      if (!name || !audio_base64) return response(400, { error: "name and audio_base64 are required" });
+
+      const apiKey = process.env.ZAKICORP_API_KEY;
+      const baseUrl = process.env.ZAKICORP_TTS_URL;
+      if (!apiKey || !baseUrl) return response(500, { error: "ZakiCorp TTS not configured" });
+
+      // APIサーバーでembedding抽出
+      const ttsResp = await fetch(`${baseUrl}/v1/speakers/register`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ name, audio_base64 }),
+      });
+      if (!ttsResp.ok) {
+        const errText = await ttsResp.text();
+        return response(502, { error: `Embedding extraction failed: ${errText}` });
+      }
+      const result = await ttsResp.json();
+
+      // S3に.pt保存
+      const ptBuffer = Buffer.from(result.embedding_base64, "base64");
+      await s3.send(new PutObjectCommand({
+        Bucket: SPEAKERS_BUCKET,
+        Key: `speaker_${name}.pt`,
+        Body: ptBuffer,
+        ContentType: "application/octet-stream",
+      }));
+
+      // DynamoDB登録
+      const voiceId = `zakicorp-${name}`;
+      await ddb.send(new PutCommand({
+        TableName: VOICES_TABLE,
+        Item: {
+          voice_id: voiceId,
+          provider: "ZakiCorp",
+          vendor_id: name,
+          label: `${name} (Clone Voice)`,
+          created_at: new Date().toISOString(),
+        },
+      }));
+
+      console.log(`[CustomVoice] Registered: ${voiceId}, pt=${ptBuffer.length}bytes, extraction=${result.extraction_time_ms}ms`);
+      return response(200, { voice_id: voiceId, name, extraction_time_ms: result.extraction_time_ms });
+    }
+
+    // ---- DELETE /custom-voices/{voice_id} ---- カスタムボイス削除
+    if (method === "DELETE" && path.startsWith("/custom-voices/")) {
+      const voiceId = decodeURIComponent(path.split("/")[2]);
+      if (!voiceId.startsWith("zakicorp-")) return response(400, { error: "Can only delete ZakiCorp voices" });
+      const name = voiceId.replace("zakicorp-", "");
+
+      // S3から削除
+      await s3.send(new DeleteObjectCommand({
+        Bucket: SPEAKERS_BUCKET,
+        Key: `speaker_${name}.pt`,
+      }));
+
+      // DynamoDBから削除
+      await ddb.send(new DeleteCommand({
+        TableName: VOICES_TABLE,
+        Key: { voice_id: voiceId },
+      }));
+
+      console.log(`[CustomVoice] Deleted: ${voiceId}`);
+      return response(200, { message: `Voice '${voiceId}' deleted` });
     }
 
     return response(404, { error: "Not found" });

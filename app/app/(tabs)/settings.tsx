@@ -17,10 +17,13 @@ import {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect, useRef, useState } from "react";
 import { useOwnerId } from "../../hooks/useOwnerId";
+import AudioRecord from "react-native-audio-record";
+import { Audio } from "expo-av";
+import * as FileSystem from "expo-file-system";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 
-type SettingsScreen = "main" | "stt-select" | "character-list" | "character-edit" | "voice-select" | "llm-select" | "version" | "usage" | "usage-detail";
+type SettingsScreen = "main" | "stt-select" | "character-list" | "character-edit" | "voice-select" | "llm-select" | "version" | "usage" | "usage-detail" | "custom-voice-list" | "custom-voice-record";
 
 type CharacterItem = {
   character_id: string;
@@ -265,6 +268,135 @@ export default function Settings() {
     }
   };
 
+  // カスタムボイス
+  type CustomVoiceItem = { voice_id: string; label: string; vendor_id: string; created_at?: string };
+  const [customVoices, setCustomVoices] = useState<CustomVoiceItem[]>([]);
+  const [customVoicesLoading, setCustomVoicesLoading] = useState(false);
+  const [cvName, setCvName] = useState("");
+  const [cvRecording, setCvRecording] = useState(false);
+  const [cvRecordSeconds, setCvRecordSeconds] = useState(0);
+  const [cvRegistering, setCvRegistering] = useState(false);
+  const cvTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cvWavPathRef = useRef<string>("");
+  const CV_DURATION = 5;
+  const CV_GUIDE_TEXT = "以下の文章を、普段の声で読み上げてください：\n\n「こんにちは！今日はとてもいい天気ですね。一緒にお散歩に行きませんか？楽しいお話をたくさんしましょう。」";
+
+  const loadCustomVoices = async () => {
+    setCustomVoicesLoading(true);
+    try {
+      const res = await fetch(`${DEVICE_SETTING_URL}/custom-voices`);
+      const data = await res.json();
+      setCustomVoices(data.voices ?? []);
+    } catch {
+      Alert.alert("エラー", "カスタムボイス一覧の取得に失敗しました");
+    } finally {
+      setCustomVoicesLoading(false);
+    }
+  };
+
+  const openCustomVoiceList = () => {
+    loadCustomVoices();
+    navigateTo("custom-voice-list");
+  };
+
+  const openCustomVoiceRecord = () => {
+    setCvName("");
+    setCvRecordSeconds(0);
+    setCvRecording(false);
+    cvWavPathRef.current = "";
+    navigateTo("custom-voice-record");
+  };
+
+  const startCvRecording = async () => {
+    try {
+      if (Platform.OS === "android") {
+        const granted = await (await import("react-native")).PermissionsAndroid.request(
+          (await import("react-native")).PermissionsAndroid.PERMISSIONS.RECORD_AUDIO
+        );
+        if (granted !== "granted") { Alert.alert("エラー", "マイクの権限が必要です"); return; }
+      } else {
+        const { status } = await Audio.requestPermissionsAsync();
+        if (status !== "granted") { Alert.alert("エラー", "マイクの権限が必要です"); return; }
+      }
+
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+
+      const wavFile = "custom_voice_recording.wav";
+      AudioRecord.init({ sampleRate: 24000, channels: 1, bitsPerSample: 16, audioSource: 6, wavFile });
+      await AudioRecord.start();
+      setCvRecording(true);
+      setCvRecordSeconds(0);
+
+      cvTimerRef.current = setInterval(() => {
+        setCvRecordSeconds(prev => {
+          if (prev + 1 >= CV_DURATION) {
+            stopCvRecording();
+            return CV_DURATION;
+          }
+          return prev + 1;
+        });
+      }, 1000);
+    } catch (e: any) {
+      Alert.alert("エラー", `録音開始に失敗しました: ${e?.message ?? e}`);
+    }
+  };
+
+  const stopCvRecording = async () => {
+    if (cvTimerRef.current) { clearInterval(cvTimerRef.current); cvTimerRef.current = null; }
+    try {
+      const filePath = await AudioRecord.stop();
+      cvWavPathRef.current = filePath;
+    } catch {}
+    setCvRecording(false);
+    await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
+  };
+
+  const registerCustomVoice = async () => {
+    if (!cvName.trim()) { Alert.alert("エラー", "ボイス名を入力してください"); return; }
+    if (!cvWavPathRef.current) { Alert.alert("エラー", "まず録音してください"); return; }
+
+    setCvRegistering(true);
+    try {
+      const filePath = cvWavPathRef.current.startsWith("file://") ? cvWavPathRef.current : `file://${cvWavPathRef.current}`;
+      const audioBase64 = await FileSystem.readAsStringAsync(filePath, { encoding: FileSystem.EncodingType.Base64 });
+
+      const res = await fetch(`${DEVICE_SETTING_URL}/custom-voices`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: cvName.trim().toLowerCase().replace(/\s+/g, "_"), audio_base64: audioBase64 }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      const result = await res.json();
+      Alert.alert("登録完了", `「${result.name}」のボイスを作成しました！\n(${result.extraction_time_ms}ms)`);
+      navigateTo("custom-voice-list", "back");
+      loadCustomVoices();
+    } catch (e: any) {
+      Alert.alert("エラー", `ボイス登録に失敗しました: ${e?.message ?? e}`);
+    } finally {
+      setCvRegistering(false);
+    }
+  };
+
+  const deleteCustomVoice = (voiceId: string) => {
+    Alert.alert("削除確認", "このカスタムボイスを削除しますか？", [
+      { text: "キャンセル", style: "cancel" },
+      {
+        text: "削除する", style: "destructive",
+        onPress: async () => {
+          try {
+            await fetch(`${DEVICE_SETTING_URL}/custom-voices/${encodeURIComponent(voiceId)}`, { method: "DELETE" });
+            setCustomVoices(prev => prev.filter(v => v.voice_id !== voiceId));
+          } catch {
+            Alert.alert("エラー", "削除に失敗しました");
+          }
+        },
+      },
+    ]);
+  };
+
   const openCharacterList = () => {
     navigateTo("character-list");
     loadCharacters();
@@ -343,6 +475,115 @@ export default function Settings() {
       setSaving(false);
     }
   };
+
+  // ---- カスタムボイス録音画面 ----
+  if (screen === "custom-voice-record") {
+    const progress = cvRecordSeconds / CV_DURATION;
+    return (
+      <SafeAreaView style={s.root}>
+        <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
+          <View style={s.header}>
+            <TouchableOpacity onPress={() => { if (cvRecording) stopCvRecording(); navigateTo("custom-voice-list", "back"); }} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+              <Text style={s.back}>←</Text>
+            </TouchableOpacity>
+            <Text style={s.headerTitle}>ボイスを録音</Text>
+          </View>
+          <ScrollView contentContainerStyle={[s.wrap, { alignItems: "center", paddingTop: 32 }]}>
+            <Text style={{ fontSize: 24, fontWeight: "700", color: "#333", marginBottom: 24 }}>あなたの声を録音しよう!</Text>
+            <View style={{ backgroundColor: "#f0f7ff", borderRadius: 16, padding: 20, marginBottom: 24, width: "100%" }}>
+              <Text style={{ fontSize: 15, color: "#555", lineHeight: 24 }}>{CV_GUIDE_TEXT}</Text>
+            </View>
+
+            <TextInput
+              style={[s.input, { width: "100%", marginBottom: 20, textAlign: "center", fontSize: 18 }]}
+              placeholder="ボイスの名前（例: パパ、ママ）"
+              value={cvName}
+              onChangeText={setCvName}
+            />
+
+            {/* プログレスバー */}
+            <View style={{ width: "100%", height: 8, backgroundColor: "#e0e0e0", borderRadius: 4, marginBottom: 8 }}>
+              <View style={{ width: `${progress * 100}%`, height: "100%", backgroundColor: cvRecording ? "#FF3B30" : "#007AFF", borderRadius: 4 }} />
+            </View>
+            <Text style={{ fontSize: 14, color: "#999", marginBottom: 20 }}>
+              {cvRecording ? `録音中... ${cvRecordSeconds}/${CV_DURATION}秒` : cvRecordSeconds >= CV_DURATION ? "録音完了!" : `${CV_DURATION}秒間録音します`}
+            </Text>
+
+            {/* 録音ボタン */}
+            {cvRecordSeconds < CV_DURATION ? (
+              <TouchableOpacity
+                style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: cvRecording ? "#FF3B30" : "#007AFF", justifyContent: "center", alignItems: "center", marginBottom: 32 }}
+                onPress={cvRecording ? stopCvRecording : startCvRecording}
+              >
+                {cvRecording ? (
+                  <View style={{ width: 24, height: 24, backgroundColor: "#fff", borderRadius: 4 }} />
+                ) : (
+                  <View style={{ width: 24, height: 24, borderRadius: 12, backgroundColor: "#fff" }} />
+                )}
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={[s.button, { width: "100%", marginBottom: 16, backgroundColor: cvRegistering ? "#ccc" : "#007AFF" }]}
+                onPress={registerCustomVoice}
+                disabled={cvRegistering}
+              >
+                {cvRegistering ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={s.buttonText}>このボイスで登録する</Text>
+                )}
+              </TouchableOpacity>
+            )}
+
+            {cvRecordSeconds >= CV_DURATION && !cvRegistering && (
+              <TouchableOpacity onPress={() => { setCvRecordSeconds(0); cvChunksRef.current = []; }}>
+                <Text style={{ color: "#007AFF", fontSize: 15 }}>もう一度録音する</Text>
+              </TouchableOpacity>
+            )}
+          </ScrollView>
+        </Animated.View>
+      </SafeAreaView>
+    );
+  }
+
+  // ---- カスタムボイス一覧画面 ----
+  if (screen === "custom-voice-list") {
+    return (
+      <SafeAreaView style={s.root}>
+        <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
+          <View style={s.header}>
+            <TouchableOpacity onPress={() => navigateTo("main", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
+              <Text style={s.back}>←</Text>
+            </TouchableOpacity>
+            <Text style={s.headerTitle}>カスタムボイス</Text>
+          </View>
+          <ScrollView contentContainerStyle={s.wrap}>
+            {customVoicesLoading ? (
+              <ActivityIndicator style={{ marginTop: 32 }} />
+            ) : customVoices.length === 0 ? (
+              <Text style={{ textAlign: "center", color: "#999", marginTop: 32, fontSize: 15 }}>まだカスタムボイスがありません</Text>
+            ) : (
+              customVoices.map(v => (
+                <View key={v.voice_id} style={[s.navRow, { flexDirection: "column", alignItems: "flex-start", gap: 4 }]}>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", width: "100%", alignItems: "center" }}>
+                    <Text style={{ fontSize: 16, fontWeight: "600", color: "#333" }}>{v.label}</Text>
+                    <TouchableOpacity onPress={() => deleteCustomVoice(v.voice_id)}>
+                      <Text style={{ color: "#FF3B30", fontSize: 14 }}>削除</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={{ fontSize: 12, color: "#999" }}>ID: {v.voice_id}</Text>
+                </View>
+              ))
+            )}
+
+            <TouchableOpacity style={[s.button, { marginTop: 24 }]} onPress={openCustomVoiceRecord}>
+              <Text style={s.buttonText}>+ カスタムボイスを作成</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </Animated.View>
+      </SafeAreaView>
+    );
+  }
 
   // ---- 利用状況詳細画面（日次） ----
   if (screen === "usage-detail") {
@@ -961,6 +1202,11 @@ export default function Settings() {
 
           <TouchableOpacity style={s.navRow} onPress={openCharacterList}>
             <Text style={s.navText}>キャラクター管理</Text>
+            <Text style={s.chevron}>›</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={s.navRow} onPress={openCustomVoiceList}>
+            <Text style={s.navText}>カスタムボイス管理</Text>
             <Text style={s.chevron}>›</Text>
           </TouchableOpacity>
 

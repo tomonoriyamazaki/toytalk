@@ -5,7 +5,11 @@ echo "📦 Installing dependencies..."
 "/c/Program Files/nodejs/npm.cmd" install
 
 echo "📦 Bundling with esbuild..."
-"/c/Program Files/nodejs/npx.cmd" esbuild index.mjs --bundle --platform=node --format=cjs --outfile=bundle.js
+"/c/Program Files/nodejs/npx.cmd" esbuild index.mjs --bundle --platform=node --format=cjs \
+  --external:@aws-sdk/client-dynamodb \
+  --external:@aws-sdk/lib-dynamodb \
+  --external:@aws-sdk/client-s3 \
+  --outfile=bundle.js
 
 echo "📁 Creating zip..."
 mkdir -p temp_deploy
