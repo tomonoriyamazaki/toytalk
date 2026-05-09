@@ -1,6 +1,6 @@
   // Node.js 18+ / ESM（index.mjs）
   // Handler: index.handler
-  // Env: OPENAI_API_KEY, GOOGLE_API_KEY, ELEVENLABS_API_KEY, FISHAUDIO_API_KEY
+  // Env: OPENAI_API_KEY, GOOGLE_API_KEY, ELEVENLABS_API_KEY, FISHAUDIO_API_KEY, ZAKICORP_API_KEY, ZAKICORP_TTS_URL
   import OpenAI from "openai";
   import { createHash } from "node:crypto";
   import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -192,6 +192,7 @@
     ElevenLabs: { ttsVendor: "elevenlabs", ttsModel: "eleven_turbo_v2_5" },
     FishAudio:  { ttsVendor: "fishaudio",  ttsModel: "fishaudio" },
     Sakura:     { ttsVendor: "sakura",     ttsModel: "sakura" },
+    ZakiCorp:   { ttsVendor: "zakicorp",   ttsModel: "zakicorp-tts" },
   };
 
   // ---- LLMデフォルト（llm_id未設定時のフォールバック）----
@@ -499,6 +500,48 @@
     return wavBuffer.toString("base64");
   }
 
+  function pcmToWavBase64(pcmBuf, sampleRate = 24000, channels = 1) {
+    const wav = Buffer.alloc(44 + pcmBuf.length);
+    wav.write("RIFF", 0);
+    wav.writeUInt32LE(36 + pcmBuf.length, 4);
+    wav.write("WAVE", 8);
+    wav.write("fmt ", 12);
+    wav.writeUInt32LE(16, 16);
+    wav.writeUInt16LE(1, 20);
+    wav.writeUInt16LE(channels, 22);
+    wav.writeUInt32LE(sampleRate, 24);
+    wav.writeUInt32LE(sampleRate * channels * 2, 28);
+    wav.writeUInt16LE(channels * 2, 32);
+    wav.writeUInt16LE(16, 34);
+    wav.write("data", 36);
+    wav.writeUInt32LE(pcmBuf.length, 40);
+    pcmBuf.copy(wav, 44);
+    return wav.toString("base64");
+  }
+
+  // ZakiCorp TTS (clone voice via local GPU) — streaming chunks
+  async function ttsToBase64ZakiCorp(text, { speaker = "vivian", language = "Japanese" } = {}) {
+    const key = process.env.ZAKICORP_API_KEY;
+    const baseUrl = process.env.ZAKICORP_TTS_URL;
+    if (!key || !baseUrl) throw new Error("ZAKICORP_API_KEY or ZAKICORP_TTS_URL is not set");
+    const resp = await fetch(`${baseUrl}/v1/tts/stream`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ text, language, speaker }),
+    });
+    if (!resp.ok) {
+      const errorText = await resp.text();
+      throw new Error(`ZakiCorp TTS failed: ${resp.status} ${errorText}`);
+    }
+    const sampleRate = parseInt(resp.headers.get("X-Sample-Rate") || "24000");
+    const channels = parseInt(resp.headers.get("X-Channels") || "1");
+    const pcmBuf = Buffer.from(await resp.arrayBuffer());
+    return pcmToWavBase64(pcmBuf, sampleRate, channels);
+  }
+
   async function resolveCharacterFromDynamo(characterId) {
     try {
       const charRes = await ddb.send(new GetCommand({
@@ -603,6 +646,7 @@
       if (s.includes("elevenlabs"))  return "ElevenLabs";
       if (s.includes("fishaudio") || s.includes("fish")) return "FishAudio";
       if (s.includes("sakura"))      return "Sakura";
+      if (s.includes("zakicorp") || s.includes("qwen")) return "ZakiCorp";
       return undefined;
     }
 
@@ -867,6 +911,10 @@
         } else if (cfg.ttsVendor === "sakura") {
           const modelName = voice === "default" ? "zundamon" : voice;
           b64 = await ttsToBase64Sakura(t, { model: modelName });
+          fmt = "wav";
+        } else if (cfg.ttsVendor === "zakicorp") {
+          const speaker = voice === "default" ? "vivian" : voice;
+          b64 = await ttsToBase64ZakiCorp(t, { speaker });
           fmt = "wav";
         } else {
           throw new Error("Unknown ttsVendor");

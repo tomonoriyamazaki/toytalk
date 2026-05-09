@@ -2,7 +2,7 @@
 // Handler: index.handler
 // ESP32向け相槌Lambda: raw PCMバイナリをレスポンスボディで返す
 // ヘッダ X-Backchannel-Text に相槌テキストを格納
-// Env: GOOGLE_API_KEY, OPENAI_API_KEY, SAKURA_API_KEY, ELEVENLABS_API_KEY, FISHAUDIO_API_KEY
+// Env: GOOGLE_API_KEY, OPENAI_API_KEY, SAKURA_API_KEY, ELEVENLABS_API_KEY, FISHAUDIO_API_KEY, ZAKICORP_API_KEY, ZAKICORP_TTS_URL
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 
@@ -20,6 +20,7 @@ const TTS_TABLE = {
   ElevenLabs: { ttsVendor: "elevenlabs", ttsModel: "eleven_turbo_v2_5" },
   FishAudio:  { ttsVendor: "fishaudio",  ttsModel: "fishaudio" },
   Sakura:     { ttsVendor: "sakura",     ttsModel: "sakura" },
+  ZakiCorp:   { ttsVendor: "zakicorp",   ttsModel: "zakicorp-tts" },
 };
 const TTS_DEFAULT = "Sakura";
 
@@ -32,6 +33,7 @@ function normalizeModelKey(k) {
   if (s.includes("elevenlabs"))  return "ElevenLabs";
   if (s.includes("fishaudio") || s.includes("fish")) return "FishAudio";
   if (s.includes("sakura"))      return "Sakura";
+  if (s.includes("zakicorp") || s.includes("qwen")) return "ZakiCorp";
   return undefined;
 }
 
@@ -244,6 +246,20 @@ async function ttsPcmSakura(text, { model = "zundamon", style = "normal" } = {})
   return wavBuffer.slice(44); // WAVヘッダ(44bytes)をスキップ
 }
 
+// ZakiCorp TTS (clone voice via local GPU) → raw PCM Buffer
+async function ttsPcmZakiCorp(text, { speaker = "vivian", language = "Japanese" } = {}) {
+  const key = process.env.ZAKICORP_API_KEY;
+  const baseUrl = process.env.ZAKICORP_TTS_URL;
+  if (!key || !baseUrl) throw new Error("ZAKICORP_API_KEY or ZAKICORP_TTS_URL is not set");
+  const resp = await fetch(`${baseUrl}/v1/tts/stream`, {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ text, language, speaker }),
+  });
+  if (!resp.ok) throw new Error(`ZakiCorp TTS failed: ${resp.status} ${await resp.text()}`);
+  return Buffer.from(await resp.arrayBuffer());
+}
+
 // ---- TTS ルーティング ----
 async function generateTTSPcm(text, vendor, voice) {
   switch (vendor) {
@@ -253,6 +269,7 @@ async function generateTTSPcm(text, vendor, voice) {
     case "gemini":     return ttsPcmGemini(text, { voiceName: voice || "Kore" });
     case "elevenlabs": return ttsPcmElevenLabs(text, { voiceId: voice });
     case "fishaudio":  return ttsPcmFishAudio(text, { referenceId: voice });
+    case "zakicorp":   return ttsPcmZakiCorp(text, { speaker: voice || "vivian" });
     default:           return ttsPcmSakura(text, { model: "zundamon" });
   }
 }

@@ -1,11 +1,14 @@
 // Node.js 18+ / ESM（index.mjs）
 // Handler: index.handler
-// Env: なし（DynamoDBはIAMロールで接続）
+// Env: ZAKICORP_API_KEY, ZAKICORP_TTS_URL（カスタムボイス登録用）
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, ScanCommand, DeleteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 
 const client = new DynamoDBClient({ region: "ap-northeast-1" });
 const ddb = DynamoDBDocumentClient.from(client);
+const s3 = new S3Client({ region: "ap-northeast-1" });
+const SPEAKERS_BUCKET = "toytalker-tts-speakers";
 
 // ---- テーブル定義 ----
 const DEVICES_TABLE        = "toytalker-devices";
@@ -118,10 +121,11 @@ export const handler = async (event) => {
       return response(200, { llms: result.Items ?? [] });
     }
 
-    // ---- GET /voices ---- ボイス一覧取得
+    // ---- GET /voices ---- ボイス一覧取得（ZakiCorpはsystemのみ）
     if (method === "GET" && path === "/voices") {
       const result = await ddb.send(new ScanCommand({ TableName: VOICES_TABLE }));
-      return response(200, { voices: result.Items ?? [] });
+      const voices = (result.Items ?? []).filter(v => v.provider !== "ZakiCorp" || v.owner_id === "system");
+      return response(200, { voices });
     }
 
     // ---- GET /characters ---- キャラクター一覧取得（system + 自分のキャラ）
@@ -538,6 +542,123 @@ export const handler = async (event) => {
       }
 
       return response(200, { date, conversations });
+    }
+
+    // ---- GET /custom-voices ---- ZakiCorpボイス一覧（system + 自分のカスタム）
+    if (method === "GET" && path === "/custom-voices") {
+      const userId = event.queryStringParameters?.owner_id;
+      if (!userId) return response(400, { error: "owner_id is required" });
+      const result = await ddb.send(new ScanCommand({
+        TableName: VOICES_TABLE,
+        FilterExpression: "provider = :p AND (owner_id = :system OR owner_id = :userId)",
+        ExpressionAttributeValues: { ":p": "ZakiCorp", ":system": "system", ":userId": userId },
+      }));
+      return response(200, { voices: result.Items ?? [] });
+    }
+
+    // ---- POST /custom-voices ---- カスタムボイス登録
+    if (method === "POST" && path === "/custom-voices") {
+      const body = JSON.parse(event.body ?? "{}");
+      const { label, audio_base64, owner_id, mime_type } = body;
+      if (!label || !audio_base64) return response(400, { error: "label and audio_base64 are required" });
+      if (!owner_id) return response(400, { error: "owner_id is required" });
+
+      const apiKey = process.env.ZAKICORP_API_KEY;
+      const baseUrl = process.env.ZAKICORP_TTS_URL;
+      if (!apiKey || !baseUrl) return response(500, { error: "ZakiCorp TTS not configured" });
+
+      const voiceId = `${owner_id}_${Date.now()}`;
+
+      // APIサーバーでembedding抽出
+      const ttsResp = await fetch(`${baseUrl}/v1/speakers/register`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: voiceId, audio_base64, mime_type: mime_type || "audio/wav" }),
+      });
+      if (!ttsResp.ok) {
+        const errText = await ttsResp.text();
+        return response(502, { error: `Embedding extraction failed: ${errText}` });
+      }
+      const result = await ttsResp.json();
+
+      // S3に.pt保存
+      const ptBuffer = Buffer.from(result.embedding_base64, "base64");
+      await s3.send(new PutObjectCommand({
+        Bucket: SPEAKERS_BUCKET,
+        Key: `${owner_id}/speaker_${voiceId}.pt`,
+        Body: ptBuffer,
+        ContentType: "application/octet-stream",
+      }));
+
+      // DynamoDB登録
+      await ddb.send(new PutCommand({
+        TableName: VOICES_TABLE,
+        Item: {
+          voice_id: voiceId,
+          provider: "ZakiCorp",
+          owner_id,
+          vendor_id: voiceId,
+          label,
+          created_at: new Date().toISOString(),
+        },
+      }));
+
+      console.log(`[CustomVoice] Registered: ${voiceId}, owner=${owner_id}, label=${label}, pt=${ptBuffer.length}bytes, extraction=${result.extraction_time_ms}ms`);
+      return response(200, { voice_id: voiceId, label, extraction_time_ms: result.extraction_time_ms });
+    }
+
+    // ---- PUT /custom-voices/{voice_id} ---- カスタムボイス更新（ラベル変更）
+    if (method === "PUT" && path.startsWith("/custom-voices/")) {
+      const voiceId = decodeURIComponent(path.split("/")[2]);
+      const body = JSON.parse(event.body ?? "{}");
+      const { label } = body;
+      if (!label) return response(400, { error: "label is required" });
+
+      const existing = await ddb.send(new GetCommand({
+        TableName: VOICES_TABLE,
+        Key: { voice_id: voiceId },
+      }));
+      if (!existing.Item) return response(404, { error: "Voice not found" });
+      if (existing.Item.owner_id === "system") return response(403, { error: "Cannot edit system voice" });
+
+      await ddb.send(new UpdateCommand({
+        TableName: VOICES_TABLE,
+        Key: { voice_id: voiceId },
+        UpdateExpression: "SET #l = :l",
+        ExpressionAttributeNames: { "#l": "label" },
+        ExpressionAttributeValues: { ":l": label },
+      }));
+
+      return response(200, { voice_id: voiceId, label });
+    }
+
+    // ---- DELETE /custom-voices/{voice_id} ---- カスタムボイス削除
+    if (method === "DELETE" && path.startsWith("/custom-voices/")) {
+      const voiceId = decodeURIComponent(path.split("/")[2]);
+
+      const existing = await ddb.send(new GetCommand({
+        TableName: VOICES_TABLE,
+        Key: { voice_id: voiceId },
+      }));
+      if (!existing.Item) return response(404, { error: "Voice not found" });
+      if (existing.Item.owner_id === "system") return response(403, { error: "Cannot delete system voice" });
+
+      const ownerId = existing.Item.owner_id;
+
+      // S3から削除
+      await s3.send(new DeleteObjectCommand({
+        Bucket: SPEAKERS_BUCKET,
+        Key: `${ownerId}/speaker_${voiceId}.pt`,
+      }));
+
+      // DynamoDBから削除
+      await ddb.send(new DeleteCommand({
+        TableName: VOICES_TABLE,
+        Key: { voice_id: voiceId },
+      }));
+
+      console.log(`[CustomVoice] Deleted: ${voiceId}`);
+      return response(200, { message: `Voice '${voiceId}' deleted` });
     }
 
     return response(404, { error: "Not found" });

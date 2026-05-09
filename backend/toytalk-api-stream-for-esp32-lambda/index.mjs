@@ -1,6 +1,6 @@
   // Node.js 18+ / ESM（index.mjs）
   // Handler: index.handler
-  // Env: OPENAI_API_KEY, GOOGLE_API_KEY, ELEVENLABS_API_KEY, FISHAUDIO_API_KEY, SAKURA_API_KEY
+  // Env: OPENAI_API_KEY, GOOGLE_API_KEY, ELEVENLABS_API_KEY, FISHAUDIO_API_KEY, SAKURA_API_KEY, ZAKICORP_API_KEY, ZAKICORP_TTS_URL
   import OpenAI from "openai";
   import { createHash } from "node:crypto";
   import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -205,6 +205,7 @@
     ElevenLabs: { ttsVendor: "elevenlabs", ttsModel: "eleven_turbo_v2_5" },
     FishAudio:  { ttsVendor: "fishaudio",  ttsModel: "fishaudio" },
     Sakura:     { ttsVendor: "sakura",     ttsModel: "sakura" },
+    ZakiCorp:   { ttsVendor: "zakicorp",   ttsModel: "zakicorp-tts" },
   };
 
   // ---- LLMデフォルト（llm_id未設定時のフォールバック）----
@@ -452,6 +453,38 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     return pcmBuffer;
   }
 
+  // ZakiCorp TTS (clone voice via local GPU) — streaming PCM to ESP32
+  async function ttsStreamZakiCorp(text, { speaker = "vivian", language = "Japanese" } = {}, res, segSeq) {
+    const key = process.env.ZAKICORP_API_KEY;
+    const baseUrl = process.env.ZAKICORP_TTS_URL;
+    if (!key || !baseUrl) throw new Error("ZAKICORP_API_KEY or ZAKICORP_TTS_URL is not set");
+    const resp = await fetch(`${baseUrl}/v1/tts/stream`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ text, language, speaker }),
+    });
+    if (!resp.ok) {
+      const errorText = await resp.text();
+      throw new Error(`ZakiCorp TTS failed: ${resp.status} ${errorText}`);
+    }
+    let totalBytes = 0;
+    let firstChunk = true;
+    for await (const raw of resp.body) {
+      const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+      if (firstChunk) {
+        sendMeta(res, "tts_start", { id: segSeq, size: 0, streaming: true });
+        firstChunk = false;
+      }
+      sendPCM(res, chunk);
+      totalBytes += chunk.length;
+    }
+    console.log(`[TTS ZakiCorp] streamed ${totalBytes} bytes, text="${text}"`);
+    return totalBytes;
+  }
+
   // DynamoDBからdevice_idに紐づくキャラクター＆ボイス設定を解決
   // 解決チェーン: device → character(voice_id + personality_prompt) → voice(provider + vendor_id)
   async function resolveCharacterFromDynamo(deviceId) {
@@ -540,6 +573,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       if (s.includes("elevenlabs"))  return "ElevenLabs";
       if (s.includes("fishaudio") || s.includes("fish")) return "FishAudio";
       if (s.includes("sakura"))    return "Sakura";
+      if (s.includes("zakicorp") || s.includes("qwen")) return "ZakiCorp";
       return undefined;
     }
 
@@ -835,14 +869,18 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         } else if (cfg.ttsVendor === "sakura") {
           const modelName = voice === "default" ? "zundamon" : voice;
           pcmBuffer = await ttsBufferSakura(t, { model: modelName });
+        } else if (cfg.ttsVendor === "zakicorp") {
+          const speaker = voice === "default" ? "vivian" : voice;
+          await ttsStreamZakiCorp(t, { speaker }, res, segSeq);
+          pcmBuffer = null;
         } else {
           throw new Error("Unknown ttsVendor");
         }
-        // メタデータでチャンク情報を送信
-        sendMeta(res, "tts_start", { id: segSeq, size: pcmBuffer.length });
-        // PCMバイナリを直接送信
-        sendPCM(res, pcmBuffer);
-        console.log(`[Lambda] id=${segSeq}, pcm.length=${pcmBuffer.length} bytes, text="${t}"`);
+        if (pcmBuffer) {
+          sendMeta(res, "tts_start", { id: segSeq, size: pcmBuffer.length });
+          sendPCM(res, pcmBuffer);
+          console.log(`[Lambda] id=${segSeq}, pcm.length=${pcmBuffer.length} bytes, text="${t}"`);
+        }
       } catch (e) {
         sendMeta(res, "error", { message: `TTS failed: ${e?.message || e}` });
       }
