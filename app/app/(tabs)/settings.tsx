@@ -282,9 +282,10 @@ export default function Settings() {
   const CV_GUIDE_TEXT = "以下の文章を、普段の声で読み上げてください：\n\n「こんにちは！今日はとてもいい天気ですね。一緒にお散歩に行きませんか？楽しいお話をたくさんしましょう。」";
 
   const loadCustomVoices = async () => {
+    if (!ownerId) return;
     setCustomVoicesLoading(true);
     try {
-      const res = await fetch(`${DEVICE_SETTING_URL}/custom-voices`);
+      const res = await fetch(`${DEVICE_SETTING_URL}/custom-voices?owner_id=${encodeURIComponent(ownerId)}`);
       const data = await res.json();
       setCustomVoices(data.voices ?? []);
     } catch {
@@ -363,7 +364,7 @@ export default function Settings() {
       const res = await fetch(`${DEVICE_SETTING_URL}/custom-voices`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: cvName.trim().toLowerCase().replace(/\s+/g, "_"), audio_base64: audioBase64 }),
+        body: JSON.stringify({ name: cvName.trim().toLowerCase().replace(/\s+/g, "_"), audio_base64: audioBase64, owner_id: ownerId }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -548,6 +549,23 @@ export default function Settings() {
 
   // ---- カスタムボイス一覧画面 ----
   if (screen === "custom-voice-list") {
+    const systemVoices = customVoices.filter(v => (v as any).owner_id === "system");
+    const userVoices = customVoices.filter(v => (v as any).owner_id !== "system");
+
+    const renderVoiceRow = (v: CustomVoiceItem, deletable: boolean) => (
+      <View key={v.voice_id} style={[s.navRow, { flexDirection: "column", alignItems: "flex-start", gap: 4 }]}>
+        <View style={{ flexDirection: "row", justifyContent: "space-between", width: "100%", alignItems: "center" }}>
+          <Text style={{ fontSize: 16, fontWeight: "600", color: "#333" }}>{v.label}</Text>
+          {deletable && (
+            <TouchableOpacity onPress={() => deleteCustomVoice(v.voice_id)}>
+              <Text style={{ color: "#FF3B30", fontSize: 14 }}>削除</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+        <Text style={{ fontSize: 12, color: "#999" }}>ID: {v.voice_id}</Text>
+      </View>
+    );
+
     return (
       <SafeAreaView style={s.root}>
         <Animated.View style={[s.flex, { transform: [{ translateX: slideAnim }] }]}>
@@ -560,20 +578,21 @@ export default function Settings() {
           <ScrollView contentContainerStyle={s.wrap}>
             {customVoicesLoading ? (
               <ActivityIndicator style={{ marginTop: 32 }} />
-            ) : customVoices.length === 0 ? (
-              <Text style={{ textAlign: "center", color: "#999", marginTop: 32, fontSize: 15 }}>まだカスタムボイスがありません</Text>
             ) : (
-              customVoices.map(v => (
-                <View key={v.voice_id} style={[s.navRow, { flexDirection: "column", alignItems: "flex-start", gap: 4 }]}>
-                  <View style={{ flexDirection: "row", justifyContent: "space-between", width: "100%", alignItems: "center" }}>
-                    <Text style={{ fontSize: 16, fontWeight: "600", color: "#333" }}>{v.label}</Text>
-                    <TouchableOpacity onPress={() => deleteCustomVoice(v.voice_id)}>
-                      <Text style={{ color: "#FF3B30", fontSize: 14 }}>削除</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <Text style={{ fontSize: 12, color: "#999" }}>ID: {v.voice_id}</Text>
-                </View>
-              ))
+              <>
+                {systemVoices.length > 0 && (
+                  <>
+                    <Text style={{ fontSize: 13, fontWeight: "600", color: "#999", marginTop: 16, marginBottom: 8 }}>ZakiCorp（システム）</Text>
+                    {systemVoices.map(v => renderVoiceRow(v, false))}
+                  </>
+                )}
+                <Text style={{ fontSize: 13, fontWeight: "600", color: "#999", marginTop: 20, marginBottom: 8 }}>ZakiCorp（カスタム）</Text>
+                {userVoices.length === 0 ? (
+                  <Text style={{ textAlign: "center", color: "#bbb", marginTop: 12, fontSize: 14 }}>まだカスタムボイスがありません</Text>
+                ) : (
+                  userVoices.map(v => renderVoiceRow(v, true))
+                )}
+              </>
             )}
 
             <TouchableOpacity style={[s.button, { marginTop: 24 }]} onPress={openCustomVoiceRecord}>
