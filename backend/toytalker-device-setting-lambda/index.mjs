@@ -558,21 +558,21 @@ export const handler = async (event) => {
     // ---- POST /custom-voices ---- カスタムボイス登録
     if (method === "POST" && path === "/custom-voices") {
       const body = JSON.parse(event.body ?? "{}");
-      const { name, audio_base64, owner_id } = body;
-      if (!name || !audio_base64) return response(400, { error: "name and audio_base64 are required" });
+      const { label, audio_base64, owner_id } = body;
+      if (!label || !audio_base64) return response(400, { error: "label and audio_base64 are required" });
       if (!owner_id) return response(400, { error: "owner_id is required" });
 
       const apiKey = process.env.ZAKICORP_API_KEY;
       const baseUrl = process.env.ZAKICORP_TTS_URL;
       if (!apiKey || !baseUrl) return response(500, { error: "ZakiCorp TTS not configured" });
 
-      const speakerName = `${owner_id}_${name}`;
+      const voiceId = `${owner_id}_${Date.now()}`;
 
       // APIサーバーでembedding抽出
       const ttsResp = await fetch(`${baseUrl}/v1/speakers/register`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ name: speakerName, audio_base64 }),
+        body: JSON.stringify({ name: voiceId, audio_base64 }),
       });
       if (!ttsResp.ok) {
         const errText = await ttsResp.text();
@@ -580,37 +580,60 @@ export const handler = async (event) => {
       }
       const result = await ttsResp.json();
 
-      // S3に.pt保存（owner_id/speaker_{name}.pt）
+      // S3に.pt保存
       const ptBuffer = Buffer.from(result.embedding_base64, "base64");
       await s3.send(new PutObjectCommand({
         Bucket: SPEAKERS_BUCKET,
-        Key: `${owner_id}/speaker_${name}.pt`,
+        Key: `${owner_id}/speaker_${voiceId}.pt`,
         Body: ptBuffer,
         ContentType: "application/octet-stream",
       }));
 
       // DynamoDB登録
-      const voiceId = `zakicorp-${speakerName}`;
       await ddb.send(new PutCommand({
         TableName: VOICES_TABLE,
         Item: {
           voice_id: voiceId,
           provider: "ZakiCorp",
           owner_id,
-          vendor_id: speakerName,
-          label: `${name} (Clone Voice)`,
+          vendor_id: voiceId,
+          label,
           created_at: new Date().toISOString(),
         },
       }));
 
-      console.log(`[CustomVoice] Registered: ${voiceId}, owner=${owner_id}, pt=${ptBuffer.length}bytes, extraction=${result.extraction_time_ms}ms`);
-      return response(200, { voice_id: voiceId, name, extraction_time_ms: result.extraction_time_ms });
+      console.log(`[CustomVoice] Registered: ${voiceId}, owner=${owner_id}, label=${label}, pt=${ptBuffer.length}bytes, extraction=${result.extraction_time_ms}ms`);
+      return response(200, { voice_id: voiceId, label, extraction_time_ms: result.extraction_time_ms });
+    }
+
+    // ---- PUT /custom-voices/{voice_id} ---- カスタムボイス更新（ラベル変更）
+    if (method === "PUT" && path.startsWith("/custom-voices/")) {
+      const voiceId = decodeURIComponent(path.split("/")[2]);
+      const body = JSON.parse(event.body ?? "{}");
+      const { label } = body;
+      if (!label) return response(400, { error: "label is required" });
+
+      const existing = await ddb.send(new GetCommand({
+        TableName: VOICES_TABLE,
+        Key: { voice_id: voiceId },
+      }));
+      if (!existing.Item) return response(404, { error: "Voice not found" });
+      if (existing.Item.owner_id === "system") return response(403, { error: "Cannot edit system voice" });
+
+      await ddb.send(new UpdateCommand({
+        TableName: VOICES_TABLE,
+        Key: { voice_id: voiceId },
+        UpdateExpression: "SET #l = :l",
+        ExpressionAttributeNames: { "#l": "label" },
+        ExpressionAttributeValues: { ":l": label },
+      }));
+
+      return response(200, { voice_id: voiceId, label });
     }
 
     // ---- DELETE /custom-voices/{voice_id} ---- カスタムボイス削除
     if (method === "DELETE" && path.startsWith("/custom-voices/")) {
       const voiceId = decodeURIComponent(path.split("/")[2]);
-      if (!voiceId.startsWith("zakicorp-")) return response(400, { error: "Can only delete ZakiCorp voices" });
 
       const existing = await ddb.send(new GetCommand({
         TableName: VOICES_TABLE,
@@ -619,13 +642,12 @@ export const handler = async (event) => {
       if (!existing.Item) return response(404, { error: "Voice not found" });
       if (existing.Item.owner_id === "system") return response(403, { error: "Cannot delete system voice" });
 
-      const name = existing.Item.vendor_id;
       const ownerId = existing.Item.owner_id;
 
       // S3から削除
       await s3.send(new DeleteObjectCommand({
         Bucket: SPEAKERS_BUCKET,
-        Key: `${ownerId}/speaker_${name.replace(`${ownerId}_`, "")}.pt`,
+        Key: `${ownerId}/speaker_${voiceId}.pt`,
       }));
 
       // DynamoDBから削除

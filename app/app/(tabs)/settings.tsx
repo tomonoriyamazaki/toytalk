@@ -269,7 +269,7 @@ export default function Settings() {
   };
 
   // カスタムボイス
-  type CustomVoiceItem = { voice_id: string; label: string; vendor_id: string; created_at?: string };
+  type CustomVoiceItem = { voice_id: string; label: string; vendor_id: string; owner_id?: string; created_at?: string };
   const [customVoices, setCustomVoices] = useState<CustomVoiceItem[]>([]);
   const [customVoicesLoading, setCustomVoicesLoading] = useState(false);
   const [cvName, setCvName] = useState("");
@@ -364,14 +364,14 @@ export default function Settings() {
       const res = await fetch(`${DEVICE_SETTING_URL}/custom-voices`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: cvName.trim().toLowerCase().replace(/\s+/g, "_"), audio_base64: audioBase64, owner_id: ownerId }),
+        body: JSON.stringify({ label: cvName.trim(), audio_base64: audioBase64, owner_id: ownerId }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error ?? `HTTP ${res.status}`);
       }
       const result = await res.json();
-      Alert.alert("登録完了", `「${result.name}」のボイスを作成しました！\n(${result.extraction_time_ms}ms)`);
+      Alert.alert("登録完了", `「${result.label}」のボイスを作成しました！\n(${result.extraction_time_ms}ms)`);
       navigateTo("custom-voice-list", "back");
       loadCustomVoices();
     } catch (e: any) {
@@ -549,20 +549,66 @@ export default function Settings() {
 
   // ---- カスタムボイス一覧画面 ----
   if (screen === "custom-voice-list") {
-    const systemVoices = customVoices.filter(v => (v as any).owner_id === "system");
-    const userVoices = customVoices.filter(v => (v as any).owner_id !== "system");
+    const systemVoices = customVoices.filter(v => v.owner_id === "system");
+    const userVoices = customVoices.filter(v => v.owner_id !== "system");
 
-    const renderVoiceRow = (v: CustomVoiceItem, deletable: boolean) => (
+    const [editingVoiceId, setEditingVoiceId] = useState<string | null>(null);
+    const [editingVoiceLabel, setEditingVoiceLabel] = useState("");
+
+    const startRename = (voiceId: string, currentLabel: string) => {
+      setEditingVoiceId(voiceId);
+      setEditingVoiceLabel(currentLabel);
+    };
+
+    const submitRename = async () => {
+      if (!editingVoiceId || !editingVoiceLabel.trim()) return;
+      try {
+        const res = await fetch(`${DEVICE_SETTING_URL}/custom-voices/${encodeURIComponent(editingVoiceId)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ label: editingVoiceLabel.trim() }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setCustomVoices(prev => prev.map(v => v.voice_id === editingVoiceId ? { ...v, label: editingVoiceLabel.trim() } : v));
+      } catch {
+        Alert.alert("エラー", "名前の変更に失敗しました");
+      }
+      setEditingVoiceId(null);
+    };
+
+    const renderVoiceRow = (v: CustomVoiceItem, editable: boolean) => (
       <View key={v.voice_id} style={[s.navRow, { flexDirection: "column", alignItems: "flex-start", gap: 4 }]}>
-        <View style={{ flexDirection: "row", justifyContent: "space-between", width: "100%", alignItems: "center" }}>
-          <Text style={{ fontSize: 16, fontWeight: "600", color: "#333" }}>{v.label}</Text>
-          {deletable && (
-            <TouchableOpacity onPress={() => deleteCustomVoice(v.voice_id)}>
-              <Text style={{ color: "#FF3B30", fontSize: 14 }}>削除</Text>
+        {editingVoiceId === v.voice_id ? (
+          <View style={{ flexDirection: "row", width: "100%", alignItems: "center", gap: 8 }}>
+            <TextInput
+              style={[s.input, { flex: 1, marginBottom: 0 }]}
+              value={editingVoiceLabel}
+              onChangeText={setEditingVoiceLabel}
+              autoFocus
+              onSubmitEditing={submitRename}
+            />
+            <TouchableOpacity onPress={submitRename}>
+              <Text style={{ color: "#007AFF", fontSize: 14, fontWeight: "600" }}>保存</Text>
             </TouchableOpacity>
-          )}
-        </View>
-        <Text style={{ fontSize: 12, color: "#999" }}>ID: {v.voice_id}</Text>
+            <TouchableOpacity onPress={() => setEditingVoiceId(null)}>
+              <Text style={{ color: "#999", fontSize: 14 }}>取消</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View style={{ flexDirection: "row", justifyContent: "space-between", width: "100%", alignItems: "center" }}>
+            <Text style={{ fontSize: 16, fontWeight: "600", color: "#333" }}>{v.label}</Text>
+            {editable && (
+              <View style={{ flexDirection: "row", gap: 16 }}>
+                <TouchableOpacity onPress={() => startRename(v.voice_id, v.label)}>
+                  <Text style={{ color: "#007AFF", fontSize: 14 }}>編集</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => deleteCustomVoice(v.voice_id)}>
+                  <Text style={{ color: "#FF3B30", fontSize: 14 }}>削除</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        )}
       </View>
     );
 
