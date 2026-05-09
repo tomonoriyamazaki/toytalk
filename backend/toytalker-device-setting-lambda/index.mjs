@@ -121,10 +121,11 @@ export const handler = async (event) => {
       return response(200, { llms: result.Items ?? [] });
     }
 
-    // ---- GET /voices ---- ボイス一覧取得
+    // ---- GET /voices ---- ボイス一覧取得（ZakiCorpはsystemのみ）
     if (method === "GET" && path === "/voices") {
       const result = await ddb.send(new ScanCommand({ TableName: VOICES_TABLE }));
-      return response(200, { voices: result.Items ?? [] });
+      const voices = (result.Items ?? []).filter(v => v.provider !== "ZakiCorp" || v.owner_id === "system");
+      return response(200, { voices });
     }
 
     // ---- GET /characters ---- キャラクター一覧取得（system + 自分のキャラ）

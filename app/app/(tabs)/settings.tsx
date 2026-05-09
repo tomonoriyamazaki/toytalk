@@ -278,6 +278,8 @@ export default function Settings() {
   const [cvRegistering, setCvRegistering] = useState(false);
   const cvTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cvWavPathRef = useRef<string>("");
+  const [editingVoiceId, setEditingVoiceId] = useState<string | null>(null);
+  const [editingVoiceLabel, setEditingVoiceLabel] = useState("");
   const CV_DURATION = 5;
   const CV_GUIDE_TEXT = "以下の文章を、普段の声で読み上げてください：\n\n「こんにちは！今日はとてもいい天気ですね。一緒にお散歩に行きませんか？楽しいお話をたくさんしましょう。」";
 
@@ -495,12 +497,15 @@ export default function Settings() {
               <Text style={{ fontSize: 15, color: "#555", lineHeight: 24 }}>{CV_GUIDE_TEXT}</Text>
             </View>
 
-            <TextInput
-              style={[s.input, { width: "100%", marginBottom: 20, textAlign: "center", fontSize: 18 }]}
-              placeholder="ボイスの名前（例: パパ、ママ）"
-              value={cvName}
-              onChangeText={setCvName}
-            />
+            <View style={{ flexDirection: "row", alignItems: "center", width: "100%", marginBottom: 20, gap: 10 }}>
+              <Text style={{ fontSize: 16, fontWeight: "600", color: "#333" }}>ボイス名</Text>
+              <TextInput
+                style={[s.input, { flex: 1, marginBottom: 0, fontSize: 18 }]}
+                placeholder="例: パパ、ママ"
+                value={cvName}
+                onChangeText={setCvName}
+              />
+            </View>
 
             {/* プログレスバー */}
             <View style={{ width: "100%", height: 8, backgroundColor: "#e0e0e0", borderRadius: 4, marginBottom: 8 }}>
@@ -549,27 +554,22 @@ export default function Settings() {
 
   // ---- カスタムボイス一覧画面 ----
   if (screen === "custom-voice-list") {
-    const systemVoices = customVoices.filter(v => v.owner_id === "system");
     const userVoices = customVoices.filter(v => v.owner_id !== "system");
 
-    const [editingVoiceId, setEditingVoiceId] = useState<string | null>(null);
-    const [editingVoiceLabel, setEditingVoiceLabel] = useState("");
-
-    const startRename = (voiceId: string, currentLabel: string) => {
-      setEditingVoiceId(voiceId);
-      setEditingVoiceLabel(currentLabel);
-    };
-
-    const submitRename = async () => {
-      if (!editingVoiceId || !editingVoiceLabel.trim()) return;
+    const saveVoiceLabel = async (voiceId: string, newLabel: string) => {
+      const original = customVoices.find(v => v.voice_id === voiceId)?.label;
+      if (!newLabel.trim() || newLabel.trim() === original) {
+        setEditingVoiceId(null);
+        return;
+      }
       try {
-        const res = await fetch(`${DEVICE_SETTING_URL}/custom-voices/${encodeURIComponent(editingVoiceId)}`, {
+        const res = await fetch(`${DEVICE_SETTING_URL}/custom-voices/${encodeURIComponent(voiceId)}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ label: editingVoiceLabel.trim() }),
+          body: JSON.stringify({ label: newLabel.trim() }),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        setCustomVoices(prev => prev.map(v => v.voice_id === editingVoiceId ? { ...v, label: editingVoiceLabel.trim() } : v));
+        setCustomVoices(prev => prev.map(v => v.voice_id === voiceId ? { ...v, label: newLabel.trim() } : v));
       } catch {
         Alert.alert("エラー", "名前の変更に失敗しました");
       }
@@ -578,37 +578,30 @@ export default function Settings() {
 
     const renderVoiceRow = (v: CustomVoiceItem, editable: boolean) => (
       <View key={v.voice_id} style={[s.navRow, { flexDirection: "column", alignItems: "flex-start", gap: 4 }]}>
-        {editingVoiceId === v.voice_id ? (
-          <View style={{ flexDirection: "row", width: "100%", alignItems: "center", gap: 8 }}>
+        <View style={{ flexDirection: "row", justifyContent: "space-between", width: "100%", alignItems: "center" }}>
+          {editingVoiceId === v.voice_id ? (
             <TextInput
               style={[s.input, { flex: 1, marginBottom: 0 }]}
               value={editingVoiceLabel}
               onChangeText={setEditingVoiceLabel}
               autoFocus
-              onSubmitEditing={submitRename}
+              onBlur={() => saveVoiceLabel(v.voice_id, editingVoiceLabel)}
+              onSubmitEditing={() => saveVoiceLabel(v.voice_id, editingVoiceLabel)}
             />
-            <TouchableOpacity onPress={submitRename}>
-              <Text style={{ color: "#007AFF", fontSize: 14, fontWeight: "600" }}>保存</Text>
+          ) : (
+            <TouchableOpacity
+              style={{ flex: 1 }}
+              onPress={() => { if (editable) { setEditingVoiceId(v.voice_id); setEditingVoiceLabel(v.label); } }}
+            >
+              <Text style={{ fontSize: 16, fontWeight: "600", color: "#333" }}>{v.label}</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => setEditingVoiceId(null)}>
-              <Text style={{ color: "#999", fontSize: 14 }}>取消</Text>
+          )}
+          {editable && editingVoiceId !== v.voice_id && (
+            <TouchableOpacity onPress={() => deleteCustomVoice(v.voice_id)}>
+              <Text style={{ color: "#FF3B30", fontSize: 14 }}>削除</Text>
             </TouchableOpacity>
-          </View>
-        ) : (
-          <View style={{ flexDirection: "row", justifyContent: "space-between", width: "100%", alignItems: "center" }}>
-            <Text style={{ fontSize: 16, fontWeight: "600", color: "#333" }}>{v.label}</Text>
-            {editable && (
-              <View style={{ flexDirection: "row", gap: 16 }}>
-                <TouchableOpacity onPress={() => startRename(v.voice_id, v.label)}>
-                  <Text style={{ color: "#007AFF", fontSize: 14 }}>編集</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => deleteCustomVoice(v.voice_id)}>
-                  <Text style={{ color: "#FF3B30", fontSize: 14 }}>削除</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
-        )}
+          )}
+        </View>
       </View>
     );
 
@@ -621,24 +614,13 @@ export default function Settings() {
             </TouchableOpacity>
             <Text style={s.headerTitle}>カスタムボイス</Text>
           </View>
-          <ScrollView contentContainerStyle={s.wrap}>
+          <ScrollView contentContainerStyle={s.wrap} keyboardShouldPersistTaps="handled">
             {customVoicesLoading ? (
               <ActivityIndicator style={{ marginTop: 32 }} />
+            ) : userVoices.length === 0 ? (
+              <Text style={{ textAlign: "center", color: "#999", marginTop: 32, fontSize: 15 }}>まだカスタムボイスがありません</Text>
             ) : (
-              <>
-                {systemVoices.length > 0 && (
-                  <>
-                    <Text style={{ fontSize: 13, fontWeight: "600", color: "#999", marginTop: 16, marginBottom: 8 }}>ZakiCorp（システム）</Text>
-                    {systemVoices.map(v => renderVoiceRow(v, false))}
-                  </>
-                )}
-                <Text style={{ fontSize: 13, fontWeight: "600", color: "#999", marginTop: 20, marginBottom: 8 }}>ZakiCorp（カスタム）</Text>
-                {userVoices.length === 0 ? (
-                  <Text style={{ textAlign: "center", color: "#bbb", marginTop: 12, fontSize: 14 }}>まだカスタムボイスがありません</Text>
-                ) : (
-                  userVoices.map(v => renderVoiceRow(v, true))
-                )}
-              </>
+              userVoices.map(v => renderVoiceRow(v, true))
             )}
 
             <TouchableOpacity style={[s.button, { marginTop: 24 }]} onPress={openCustomVoiceRecord}>
@@ -1001,13 +983,33 @@ export default function Settings() {
   }
 
   const providerOrder = [...new Set(voices.map((v) => v.provider))];
-  const voiceSections = providerOrder
-    .map((provider) => ({ title: provider, data: voices.filter((v) => v.provider === provider) }))
-    .filter((sec) => sec.data.length > 0);
+  const voiceSections: { title: string; data: VoiceItem[] }[] = [];
+  const zakicorpSystem: VoiceItem[] = [];
+  for (const provider of providerOrder) {
+    const providerVoices = voices.filter((v) => v.provider === provider);
+    if (providerVoices.length === 0) continue;
+    if (provider === "ZakiCorp") {
+      zakicorpSystem.push(...providerVoices);
+    } else {
+      voiceSections.push({ title: provider, data: providerVoices });
+    }
+  }
+  if (zakicorpSystem.length > 0) {
+    voiceSections.push({ title: "ZakiCorp（システム）", data: zakicorpSystem });
+  }
+  const customAsVoice = customVoices
+    .filter(v => v.owner_id !== "system")
+    .map(v => ({ voice_id: v.voice_id, label: v.label, provider: "ZakiCorp", vendor_id: v.vendor_id }));
+  if (customAsVoice.length > 0) {
+    voiceSections.push({ title: "ZakiCorp（カスタム）", data: customAsVoice });
+  }
 
   const currentVoiceLabel = () => {
     const v = voices.find((v) => v.voice_id === charVoiceId);
-    return v ? `${v.label} (${v.provider})` : charVoiceId;
+    if (v) return `${v.label} (${v.provider})`;
+    const cv = customVoices.find((v) => v.voice_id === charVoiceId);
+    if (cv) return `${cv.label} (ZakiCorp)`;
+    return charVoiceId;
   };
 
   const currentLlmLabel = () => {
@@ -1137,7 +1139,7 @@ export default function Settings() {
           />
 
           <Text style={[s.sectionTitle, { marginTop: 16 }]}>ボイス</Text>
-          <TouchableOpacity style={s.settingRow} onPress={() => navigateTo("voice-select")}>
+          <TouchableOpacity style={s.settingRow} onPress={() => { loadCustomVoices(); navigateTo("voice-select"); }}>
             <Text style={s.settingRowText}>{voicesLoading ? "読み込み中..." : currentVoiceLabel()}</Text>
             <Text style={s.chevron}>›</Text>
           </TouchableOpacity>
