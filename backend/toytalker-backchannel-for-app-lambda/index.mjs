@@ -1,6 +1,6 @@
 // Node.js 18+ / ESM（index.mjs）
 // Handler: index.handler
-// Env: ANTHROPIC_API_KEY, SAKURA_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY, ELEVENLABS_API_KEY, FISHAUDIO_API_KEY
+// Env: ANTHROPIC_API_KEY, SAKURA_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY, ELEVENLABS_API_KEY, FISHAUDIO_API_KEY, ZAKICORP_API_KEY, ZAKICORP_TTS_URL
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 
@@ -17,6 +17,7 @@ const TTS_TABLE = {
   ElevenLabs: { ttsVendor: "elevenlabs", ttsModel: "eleven_turbo_v2_5" },
   FishAudio:  { ttsVendor: "fishaudio",  ttsModel: "fishaudio" },
   Sakura:     { ttsVendor: "sakura",     ttsModel: "sakura" },
+  ZakiCorp:   { ttsVendor: "zakicorp",   ttsModel: "zakicorp-tts" },
 };
 const TTS_DEFAULT = "Sakura";
 
@@ -29,6 +30,7 @@ function normalizeModelKey(k) {
   if (s.includes("elevenlabs"))  return "ElevenLabs";
   if (s.includes("fishaudio") || s.includes("fish")) return "FishAudio";
   if (s.includes("sakura"))      return "Sakura";
+  if (s.includes("zakicorp") || s.includes("qwen")) return "ZakiCorp";
   return undefined;
 }
 
@@ -243,6 +245,30 @@ async function ttsToBase64FishAudio(text, { referenceId = "e58b0d7efca34eb38d5c4
   return wavBuffer.toString("base64");
 }
 
+// ZakiCorp TTS (clone voice via local GPU) → base64(WAV)
+async function ttsToBase64ZakiCorp(text, { speaker = "vivian", language = "Japanese" } = {}) {
+  const key = process.env.ZAKICORP_API_KEY;
+  const baseUrl = process.env.ZAKICORP_TTS_URL;
+  if (!key || !baseUrl) throw new Error("ZAKICORP_API_KEY or ZAKICORP_TTS_URL is not set");
+  const resp = await fetch(`${baseUrl}/v1/tts/stream`, {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ text, language, speaker }),
+  });
+  if (!resp.ok) throw new Error(`ZakiCorp TTS failed: ${resp.status} ${await resp.text()}`);
+  const sampleRate = parseInt(resp.headers.get("X-Sample-Rate") || "24000");
+  const pcmBuf = Buffer.from(await resp.arrayBuffer());
+  const wav = Buffer.alloc(44 + pcmBuf.length);
+  wav.write("RIFF", 0); wav.writeUInt32LE(36 + pcmBuf.length, 4);
+  wav.write("WAVE", 8); wav.write("fmt ", 12); wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(sampleRate, 24); wav.writeUInt32LE(sampleRate * 2, 28);
+  wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);
+  wav.write("data", 36); wav.writeUInt32LE(pcmBuf.length, 40);
+  pcmBuf.copy(wav, 44);
+  return wav.toString("base64");
+}
+
 // ---- TTS ルーティング ----
 async function generateTTS(text, vendor, voice) {
   switch (vendor) {
@@ -252,6 +278,7 @@ async function generateTTS(text, vendor, voice) {
     case "gemini":     return ttsToBase64Gemini(text, { voiceName: voice || "Kore" });
     case "elevenlabs": return ttsToBase64ElevenLabs(text, { voiceId: voice });
     case "fishaudio":  return ttsToBase64FishAudio(text, { referenceId: voice });
+    case "zakicorp":   return ttsToBase64ZakiCorp(text, { speaker: voice || "vivian" });
     default:           return ttsToBase64Sakura(text, { model: "zundamon" });
   }
 }
