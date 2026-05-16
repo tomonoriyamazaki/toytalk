@@ -1,0 +1,14 @@
+{
+  "name": "toytalker-tts-only-lambda",
+  "version": "1.0.0",
+  "description": "Text-to-speech only Lambda for the app reading feature (no LLM/STT)",
+  "type": "module",
+  "main": "index.mjs",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "openai": "^5.16.0"
+  }
+}
