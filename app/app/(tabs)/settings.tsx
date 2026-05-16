@@ -392,13 +392,24 @@ export default function Settings() {
   const uploadCustomVoice = async () => {
     if (!ownerId) return;
     try {
+      // type を audio/* に絞ると Google Drive 等のクラウドではファイルが
+      // グレーアウトして選択できない（iOS の File Provider が UTI を正しく
+      // 返さないため）。全種別を許可し、選択後に拡張子/長さで検証する。
       const result = await DocumentPicker.getDocumentAsync({
-        type: ["audio/*"],
+        type: "*/*",
         copyToCacheDirectory: true,
       });
       if (result.canceled || !result.assets?.length) return;
 
       const asset = result.assets[0];
+      const audioExtPattern = /\.(wav|mp3|m4a|aac|ogg|flac|aiff?|caf|opus)$/i;
+      const looksAudio =
+        (asset.mimeType && asset.mimeType.startsWith("audio/")) ||
+        audioExtPattern.test(asset.name || "");
+      if (!looksAudio) {
+        Alert.alert("エラー", "音声ファイルを選択してください（wav / mp3 / m4a など）");
+        return;
+      }
       const maxSize = 10 * 1024 * 1024;
       if (asset.size && asset.size > maxSize) {
         Alert.alert("エラー", "ファイルサイズは10MB以下にしてください");
