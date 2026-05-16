@@ -31,6 +31,7 @@ OpenAI / Google / Gemini / ElevenLabs / FishAudio / Sakura(ずんだもん) / Za
 | `toytalker-backchannel-for-esp32-lambda` | ESP32用相槌 | `backend/toytalker-backchannel-for-esp32-lambda` |
 | `toytalk-soniox-stt-lambda` | Soniox一時キー発行 | `backend/toytalk-soniox-stt-lambda` |
 | `toytalker-device-setting-lambda` | デバイス登録・ボイス設定・コスト管理 | `backend/toytalker-device-setting-lambda` |
+| `toytalker-tts-only-lambda` | App用 読み上げ（テキスト→TTSのみ、LLM/STTなし、音声バイナリ直返し） | `backend/toytalker-tts-only-lambda` |
 
 ### DynamoDBテーブル一覧
 
@@ -65,7 +66,7 @@ OpenAI / Google / Gemini / ElevenLabs / FishAudio / Sakura(ずんだもん) / Za
 
 ログオン時にタスクスケジューラ (`TTS-AutoStart`) が自動起動。手動起動は不要。
 - スクリプト: `C:\Users\exodj\projects\tts-models\faster-qwen3-tts\scripts\start-tts-service.ps1`
-- APIサーバー + ngrok起動 → URL変更時はLambda環境変数 (`ZAKICORP_TTS_URL`) を4つ自動更新
+- APIサーバー + ngrok起動 → URL変更時はLambda環境変数 (`ZAKICORP_TTS_URL`) を5つ自動更新
 - ログ: `scripts\tts-service.log` / トースト通知(BurntToast)
 
 ### ngrok URL変更時のLambda更新対象
@@ -74,6 +75,7 @@ OpenAI / Google / Gemini / ElevenLabs / FishAudio / Sakura(ずんだもん) / Za
 2. `toytalk-api-stream-for-esp32-lambda` (ESP32 TTS)
 3. `toytalker-backchannel-for-app-lambda` (app 相槌)
 4. `toytalker-backchannel-for-esp32-lambda` (ESP32 相槌)
+5. `toytalker-tts-only-lambda` (app 読み上げ)
 
 ### S3 / DynamoDB
 

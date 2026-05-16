@@ -31,6 +31,7 @@ import { useFocusEffect } from "@react-navigation/native";
 import { useOwnerId } from "../../hooks/useOwnerId";
 import AudioRecord from "react-native-audio-record";
 import Sound from "react-native-sound";
+import ReadAloud from "../../components/ReadAloud";
 
 /* === Soniox定数 === */
 const SONIOX_WS_URL = "wss://stt-rt.soniox.com/transcribe-websocket"; // 公式
@@ -84,6 +85,7 @@ export default function Chat() {
   // ドロワー
   type SessionItem = { session_id: string; first_message: string; timestamp: string };
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [readAloudOpen, setReadAloudOpen] = useState(false);
   const drawerAnim = useRef(new Animated.Value(0)).current;
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const scrollRef = useRef<ScrollView>(null);
@@ -1338,6 +1340,14 @@ export default function Chat() {
         <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
           <Pressable style={s.drawerOverlay} onPress={closeDrawer} />
           <Animated.View style={[s.drawer, { width: DRAWER_W, transform: [{ translateX: drawerAnim }] }]}>
+            {/* 読み上げモード（会話とは独立） */}
+            <TouchableOpacity
+              style={s.drawerReadAloud}
+              onPress={() => { closeDrawer(); setReadAloudOpen(true); }}
+            >
+              <Text style={s.drawerReadAloudText}>🔊 読み上げ</Text>
+            </TouchableOpacity>
+            <View style={s.drawerDivider} />
             {/* New Chat */}
             <TouchableOpacity style={s.drawerNewChat} onPress={startNewChat}>
               <Text style={s.drawerNewChatText}>＋ New Chat</Text>
@@ -1363,6 +1373,12 @@ export default function Chat() {
           </Animated.View>
         </View>
       )}
+
+      <ReadAloud
+        visible={readAloudOpen}
+        onClose={() => setReadAloudOpen(false)}
+        ownerId={ownerId}
+      />
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -1605,6 +1621,17 @@ const s = StyleSheet.create({
     shadowRadius: 16,
     shadowOffset: { width: 4, height: 0 },
     elevation: 8,
+  },
+  drawerReadAloud: {
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  drawerReadAloudText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#111",
   },
   drawerNewChat: {
     paddingVertical: 16,

@@ -2,7 +2,7 @@
   "expo": {
     "name": "ToyTalk",
     "slug": "toytalk",
-    "version": "0.8.1",
+    "version": "0.8.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "toytalk",
@@ -10,7 +10,7 @@
     "newArchEnabled": true,
     "ios": {
       "bundleIdentifier": "com.zakicorp.toytalk",
-      "buildNumber": "19",
+      "buildNumber": "20",
       "supportsTablet": false,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
@@ -19,7 +19,8 @@
         "NSPhotoLibraryUsageDescription": "このアプリはユーザーの体験向上のために写真ライブラリへアクセスする可能性があります。",
         "NSPhotoLibraryAddUsageDescription": "このアプリは生成した画像やコンテンツを保存するために写真ライブラリを使用する可能性があります。",
         "NSBluetoothAlwaysUsageDescription": "おもちゃとの接続にBluetoothを使用します。",
-        "NSBluetoothPeripheralUsageDescription": "おもちゃとの接続にBluetoothを使用します。"
+        "NSBluetoothPeripheralUsageDescription": "おもちゃとの接続にBluetoothを使用します。",
+        "UIBackgroundModes": ["audio"]
       }
     },
     "android": {
