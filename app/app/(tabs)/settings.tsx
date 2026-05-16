@@ -673,7 +673,7 @@ export default function Settings() {
             <TouchableOpacity onPress={() => navigateTo("main", "back")} hitSlop={{ top: 12, bottom: 12, left: 12, right: 24 }}>
               <Text style={s.back}>←</Text>
             </TouchableOpacity>
-            <Text style={s.headerTitle}>カスタムボイス（β）</Text>
+            <Text style={s.headerTitle}>カスタムボイス</Text>
           </View>
           <ScrollView contentContainerStyle={s.wrap} keyboardShouldPersistTaps="handled">
             {customVoicesLoading ? (
@@ -970,7 +970,8 @@ export default function Settings() {
         </View>
         <ScrollView contentContainerStyle={s.wrap}>
           {[
-            { ver: "0.8.1", date: "20260510", desc: "相槌機能追加、サーチ機能追加、クローンボイス機能追加、再生終了後に即録音状態になるよう改修、アプリの録音ボタン押下後に即録音状態になるよう改修" },
+            { ver: "0.8.2", date: "20260510", desc: "入力文字の読み上げ機能を追加" },
+            { ver: "0.8.1", date: "20260510", desc: "相槌機能追加、サーチ機能追加（LLM Geminiのみ）、クローンボイス機能追加（β版）、再生⇔録音の切替をスムーズにするよう改修" },
             { ver: "0.8.0", date: "20260426", desc: "ずんだもんボイス等追加、LLM選択機能追加、コストページ追加、STT文字起こし中に途中で切れてしまう問題を改善" },
             { ver: "0.7.1", date: "20260328", desc: "複数デバイスの登録機能追加" },
             { ver: "0.7.0", date: "20260322", desc: "キャラクターシステム追加、会話ログ機能追加、UI刷新" },
@@ -1060,13 +1061,13 @@ export default function Settings() {
     }
   }
   if (zakicorpSystem.length > 0) {
-    voiceSections.push({ title: "ZakiCorp（システム）※ベータ版", data: zakicorpSystem });
+    voiceSections.push({ title: "ZakiCorp（システム）", data: zakicorpSystem });
   }
   const customAsVoice = customVoices
     .filter(v => v.owner_id !== "system")
     .map(v => ({ voice_id: v.voice_id, label: v.label, provider: "ZakiCorp", vendor_id: v.vendor_id }));
   if (customAsVoice.length > 0) {
-    voiceSections.push({ title: "ZakiCorp（カスタム）※ベータ版", data: customAsVoice });
+    voiceSections.push({ title: "ZakiCorp（カスタム）", data: customAsVoice });
   }
 
   const currentVoiceLabel = () => {
@@ -1338,7 +1339,7 @@ export default function Settings() {
           </TouchableOpacity>
 
           <TouchableOpacity style={s.navRow} onPress={openCustomVoiceList}>
-            <Text style={s.navText}>カスタムボイス管理（β）</Text>
+            <Text style={s.navText}>カスタムボイス管理</Text>
             <Text style={s.chevron}>›</Text>
           </TouchableOpacity>
 

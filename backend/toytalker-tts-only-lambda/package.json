@@ -9,6 +9,7 @@
   },
   "license": "ISC",
   "dependencies": {
+    "@breezystack/lamejs": "^1.2.7",
     "openai": "^5.16.0"
   }
 }

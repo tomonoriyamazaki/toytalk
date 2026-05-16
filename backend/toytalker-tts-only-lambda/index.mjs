@@ -3,9 +3,10 @@
 // 用途: テキストを受け取り、選択ボイスのTTSだけで音声化して直接ストリーミング返却する（LLM/STT/相槌なし）。
 //       アプリの「読み上げ」専用機能のためのLambda。音声はサーバー側に保存しない。
 // 入力: { text, voice_id, owner_id? }
-// 出力: 音声バイナリ（Content-Type: audio/wav | audio/mpeg, ヘッダ X-Audio-Format に wav|mp3）
+// 出力: mp3 音声バイナリ（Content-Type: audio/mpeg, ヘッダ X-Audio-Format=mp3。全プロバイダーmp3統一）
 // Env: OPENAI_API_KEY, GOOGLE_API_KEY, ELEVENLABS_API_KEY, FISHAUDIO_API_KEY, SAKURA_API_KEY, ZAKICORP_API_KEY, ZAKICORP_TTS_URL
 import OpenAI from "openai";
+import { Mp3Encoder } from "@breezystack/lamejs";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 
@@ -18,7 +19,6 @@ const EXCHANGE_RATES_TABLE = "toytalker-exchange-rates";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const TTS_FORMAT    = "wav";
 const TTS_DEFAULT   = "OpenAI";
 const VOICE_DEFAULT = "alloy";
 const TTS_TABLE = {
@@ -60,19 +60,18 @@ function applyLineBreakPauses(raw) {
 
 // ===== TTS プロバイダー（toytalk-stream-handler-lambda から流用。base64返却）=====
 
-async function ttsToBase64OpenAI(text, voice, ttsModel) {
-  const tts = await openai.audio.speech.create({ model: ttsModel, input: text, voice, format: TTS_FORMAT });
-  const buf = Buffer.from(await tts.arrayBuffer());
-  return buf.toString("base64");
-}
+// 全プロバイダーで出力をmp3に統一する。
+// ネイティブmp3対応(OpenAI/Google/ElevenLabs/FishAudio)は直接mp3を要求し、
+// PCM/WAVのみ(Gemini/ZakiCorp/Sakura)は lamejs でmp3エンコードする。
+const MP3_KBPS = 128;
 
-// PCM16 (LINEAR16) を WAV へラップして base64 を返す
-function pcm16ToWavBase64(pcmB64, sampleRate = 24000, channels = 1) {
-  let pcm = Buffer.from(pcmB64, "base64");
-  const bytesPerSample = 2;
-  const totalSamples = pcm.length / bytesPerSample;
+// PCM16(LE, mono想定)のクリーンアップ: DCオフセット除去 + 端のフェード + 先頭無音パッド
+// （元のWAVラップ処理が持っていた冒頭クリック音対策を維持する）
+function cleanupPcm16(pcmIn, sampleRate) {
+  let pcm = Buffer.from(pcmIn);
+  const totalSamples = Math.floor(pcm.length / 2);
+  if (totalSamples === 0) return pcm;
 
-  // DCオフセット除去
   let sum = 0;
   for (let i = 0; i < totalSamples; i++) sum += pcm.readInt16LE(i * 2);
   const mean = sum / totalSamples;
@@ -81,7 +80,6 @@ function pcm16ToWavBase64(pcmB64, sampleRate = 24000, channels = 1) {
     pcm.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(v))), i * 2);
   }
 
-  // 先頭/末尾をハニング窓でフェード（冒頭クリック音潰し）
   const fadeMs = 12;
   const fadeSamples = Math.min(Math.floor(sampleRate * fadeMs / 1000), Math.floor(totalSamples / 4));
   for (let i = 0; i < fadeSamples; i++) {
@@ -94,50 +92,54 @@ function pcm16ToWavBase64(pcmB64, sampleRate = 24000, channels = 1) {
     pcm.writeInt16LE(Math.round(vo * wOut), idx);
   }
 
-  // 先頭の無音パッド
   const padHeadMs = 40;
   const padSamples = Math.max(1, Math.floor(sampleRate * padHeadMs / 1000));
-  const pad = Buffer.alloc(padSamples * bytesPerSample, 0);
-  pcm = Buffer.concat([pad, pcm]);
-
-  const byteRate   = sampleRate * channels * 2;
-  const blockAlign = channels * 2;
-  const dataSize   = pcm.length;
-  const buf = Buffer.alloc(44 + dataSize);
-  buf.write("RIFF", 0);
-  buf.writeUInt32LE(36 + dataSize, 4);
-  buf.write("WAVE", 8);
-  buf.write("fmt ", 12);
-  buf.writeUInt32LE(16, 16);
-  buf.writeUInt16LE(1, 20);
-  buf.writeUInt16LE(channels, 22);
-  buf.writeUInt32LE(sampleRate, 24);
-  buf.writeUInt32LE(byteRate, 28);
-  buf.writeUInt16LE(blockAlign, 32);
-  buf.writeUInt16LE(16, 34);
-  buf.write("data", 36);
-  buf.writeUInt32LE(dataSize, 40);
-  pcm.copy(buf, 44);
-  return buf.toString("base64");
+  const pad = Buffer.alloc(padSamples * 2, 0);
+  return Buffer.concat([pad, pcm]);
 }
 
-function pcmToWavBase64(pcmBuf, sampleRate = 24000, channels = 1) {
-  const wav = Buffer.alloc(44 + pcmBuf.length);
-  wav.write("RIFF", 0);
-  wav.writeUInt32LE(36 + pcmBuf.length, 4);
-  wav.write("WAVE", 8);
-  wav.write("fmt ", 12);
-  wav.writeUInt32LE(16, 16);
-  wav.writeUInt16LE(1, 20);
-  wav.writeUInt16LE(channels, 22);
-  wav.writeUInt32LE(sampleRate, 24);
-  wav.writeUInt32LE(sampleRate * channels * 2, 28);
-  wav.writeUInt16LE(channels * 2, 32);
-  wav.writeUInt16LE(16, 34);
-  wav.write("data", 36);
-  wav.writeUInt32LE(pcmBuf.length, 40);
-  pcmBuf.copy(wav, 44);
-  return wav.toString("base64");
+// 生PCM16(mono)バッファ → mp3 base64
+function pcm16ToMp3Base64(pcmBuf, sampleRate = 24000) {
+  const pcm = cleanupPcm16(pcmBuf, sampleRate);
+  const n = Math.floor(pcm.length / 2);
+  const samples = new Int16Array(n);
+  for (let i = 0; i < n; i++) samples[i] = pcm.readInt16LE(i * 2);
+
+  const enc = new Mp3Encoder(1, sampleRate, MP3_KBPS);
+  const blockSize = 1152;
+  const chunks = [];
+  for (let i = 0; i < samples.length; i += blockSize) {
+    const slice = samples.subarray(i, i + blockSize);
+    const buf = enc.encodeBuffer(slice);
+    if (buf.length > 0) chunks.push(Buffer.from(buf));
+  }
+  const end = enc.flush();
+  if (end.length > 0) chunks.push(Buffer.from(end));
+  return Buffer.concat(chunks).toString("base64");
+}
+
+// WAVバッファをパースして {pcm, sampleRate} を返す（'data'チャンクを走査）
+function parseWav(wavBuf) {
+  if (wavBuf.length < 44 || wavBuf.toString("ascii", 0, 4) !== "RIFF") {
+    throw new Error("invalid WAV");
+  }
+  const sampleRate = wavBuf.readUInt32LE(24);
+  let off = 12;
+  while (off + 8 <= wavBuf.length) {
+    const id = wavBuf.toString("ascii", off, off + 4);
+    const size = wavBuf.readUInt32LE(off + 4);
+    if (id === "data") {
+      return { pcm: wavBuf.subarray(off + 8, off + 8 + size), sampleRate };
+    }
+    off += 8 + size + (size % 2);
+  }
+  throw new Error("WAV data chunk not found");
+}
+
+async function ttsToBase64OpenAI(text, voice, ttsModel) {
+  const tts = await openai.audio.speech.create({ model: ttsModel, input: text, voice, format: "mp3" });
+  const buf = Buffer.from(await tts.arrayBuffer());
+  return buf.toString("base64");
 }
 
 async function ttsToBase64Google(text, { voiceName = "ja-JP-Neural2-B", speakingRate = 1.3, pitch = 3.0, sampleRateHertz = 24000 } = {}) {
@@ -151,12 +153,13 @@ async function ttsToBase64Google(text, { voiceName = "ja-JP-Neural2-B", speaking
     body: JSON.stringify({
       input: { text },
       voice: { languageCode, name: voiceName },
-      audioConfig: { audioEncoding: "LINEAR16", speakingRate, pitch, sampleRateHertz },
+      audioConfig: { audioEncoding: "MP3", speakingRate, pitch, sampleRateHertz },
     }),
   });
   const json = await resp.json();
   if (!resp.ok) throw new Error(json?.error?.message || "Google TTS failed");
-  return pcm16ToWavBase64(json.audioContent, sampleRateHertz, 1);
+  // audioContent は MP3 の base64（そのまま返す）
+  return json.audioContent;
 }
 
 async function ttsToBase64Gemini(text, { model = "gemini-2.5-flash-preview-tts", voiceName = "leda" } = {}) {
@@ -182,7 +185,7 @@ async function ttsToBase64Gemini(text, { model = "gemini-2.5-flash-preview-tts",
     const b64Pcm = json?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || "";
     if (b64Pcm) {
       const audioTokens = json?.usageMetadata?.candidatesTokenCount ?? 0;
-      return { b64: pcm16ToWavBase64(b64Pcm, 24000, 1), audioTokens };
+      return { b64: pcm16ToMp3Base64(Buffer.from(b64Pcm, "base64"), 24000), audioTokens };
     }
   }
   throw new Error("Gemini TTS: empty audio after retries");
@@ -192,7 +195,7 @@ async function ttsToBase64ElevenLabs(text, { model = "eleven_turbo_v2_5", voiceI
   const key = process.env.ELEVENLABS_API_KEY;
   if (!key) throw new Error("ELEVENLABS_API_KEY is not set");
   const resp = await fetch(
-    `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=pcm_24000&optimize_streaming_latency=0`,
+    `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_128&optimize_streaming_latency=0`,
     {
       method: "POST",
       headers: { "xi-api-key": key, "Content-Type": "application/json" },
@@ -200,8 +203,8 @@ async function ttsToBase64ElevenLabs(text, { model = "eleven_turbo_v2_5", voiceI
     }
   );
   if (!resp.ok) throw new Error(`ElevenLabs TTS failed: ${resp.status} ${await resp.text()}`);
-  const pcmBuffer = Buffer.from(await resp.arrayBuffer());
-  return pcm16ToWavBase64(pcmBuffer.toString("base64"), 24000, 1);
+  // mp3 バイナリをそのまま base64 化
+  return Buffer.from(await resp.arrayBuffer()).toString("base64");
 }
 
 async function ttsToBase64FishAudio(text, { referenceId = "6fdaebea7db042129f03ecb0a57ea7b6" } = {}) {
@@ -227,7 +230,8 @@ async function ttsToBase64Sakura(text, { model = "zundamon", style = "normal" } 
   });
   if (!resp.ok) throw new Error(`Sakura TTS failed: ${resp.status} ${await resp.text()}`);
   const wavBuffer = Buffer.from(await resp.arrayBuffer());
-  return wavBuffer.toString("base64");
+  const { pcm, sampleRate } = parseWav(wavBuffer);
+  return pcm16ToMp3Base64(pcm, sampleRate);
 }
 
 async function ttsToBase64ZakiCorp(text, { speaker = "vivian", language = "Japanese" } = {}) {
@@ -241,9 +245,8 @@ async function ttsToBase64ZakiCorp(text, { speaker = "vivian", language = "Japan
   });
   if (!resp.ok) throw new Error(`ZakiCorp TTS failed: ${resp.status} ${await resp.text()}`);
   const sampleRate = parseInt(resp.headers.get("X-Sample-Rate") || "24000");
-  const channels = parseInt(resp.headers.get("X-Channels") || "1");
   const pcmBuf = Buffer.from(await resp.arrayBuffer());
-  return pcmToWavBase64(pcmBuf, sampleRate, channels);
+  return pcm16ToMp3Base64(pcmBuf, sampleRate);
 }
 
 // ===== ボイス解決（voice_id → toytalker-voices → {provider, vendor_id}）=====
@@ -356,7 +359,10 @@ async function trackTtsCost({ ownerId, ttsVendor, ttsModel, text, b64Len }) {
     const priceKey = `${ttsVendor}#tts`;
     let cost;
     if (ttsVendor === "openai") {
-      const pcmBytes = Math.round(b64Len * 3 / 4) - 44;
+      // 出力はmp3(128kbps)。mp3バイト数から再生秒数→PCM相当バイト数を概算
+      const mp3Bytes = Math.round(b64Len * 3 / 4);
+      const durationSec = (mp3Bytes * 8) / (MP3_KBPS * 1000);
+      const pcmBytes = Math.round(durationSec * 24000 * 2);
       cost = calcTtsCostJpy({ providerApiType: priceKey, characters: chars, pcmBytes, usdJpyRate });
     } else if (ttsVendor === "fishaudio") {
       cost = calcTtsCostJpy({ providerApiType: priceKey, utf8Bytes: Buffer.byteLength(text, "utf8"), usdJpyRate });
@@ -414,31 +420,25 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
   // 改行を文区切り（長めのポーズ）に変換してから合成
   const ttsText = applyLineBreakPauses(text);
 
-  // TTS 実行
-  let b64, fmt;
+  // TTS 実行（出力は全プロバイダーmp3に統一）
+  let b64;
+  const fmt = "mp3";
   try {
     if (cfg.ttsVendor === "openai") {
       b64 = await ttsToBase64OpenAI(ttsText, voice, cfg.ttsModel);
-      fmt = "wav";
     } else if (cfg.ttsVendor === "google") {
       b64 = await ttsToBase64Google(ttsText, { voiceName: voice });
-      fmt = "wav";
     } else if (cfg.ttsVendor === "gemini") {
       const result = await ttsToBase64Gemini(ttsText, { model: cfg.ttsModel, voiceName: voice });
       b64 = result.b64;
-      fmt = "wav";
     } else if (cfg.ttsVendor === "elevenlabs") {
       b64 = await ttsToBase64ElevenLabs(ttsText, { model: cfg.ttsModel, voiceId: voice });
-      fmt = "wav";
     } else if (cfg.ttsVendor === "fishaudio") {
       b64 = await ttsToBase64FishAudio(ttsText, { referenceId: voice });
-      fmt = "mp3";
     } else if (cfg.ttsVendor === "sakura") {
       b64 = await ttsToBase64Sakura(ttsText, { model: voice === "default" ? "zundamon" : voice });
-      fmt = "wav";
     } else if (cfg.ttsVendor === "zakicorp") {
       b64 = await ttsToBase64ZakiCorp(ttsText, { speaker: voice === "default" ? "vivian" : voice });
-      fmt = "wav";
     } else {
       return fail(500, "Unknown ttsVendor");
     }

@@ -7,7 +7,8 @@
       "developmentClient": true,
       "distribution": "internal",
       "ios": {
-        "resourceClass": "m-medium"
+        "resourceClass": "m-medium",
+        "image": "latest"
       }
     },
     "preview": {
@@ -16,7 +17,8 @@
     "testflight": {
       "distribution": "store",
       "ios": {
-        "simulator": false
+        "simulator": false,
+        "image": "latest"
       }
     },
     "production": {
