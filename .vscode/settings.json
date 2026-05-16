@@ -5,9 +5,10 @@
   "[typescript]": { "files.encoding": "utf8" },
   "[typescriptreact]": { "files.encoding": "utf8" },
   "[javascript]": { "files.encoding": "utf8" },
-  "terminal.integrated.defaultProfile.windows": "PowerShell",
+  "terminal.integrated.defaultProfile.windows": "Git Bash",
   "terminal.integrated.profiles.windows": {
-    "PowerShell": {
+    "Git Bash": { "source": "Git Bash" },
+    "PowerShell (UTF-8)": {
       "source": "PowerShell",
       "args": ["-NoExit", "-Command", "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $OutputEncoding=[System.Text.Encoding]::UTF8"]
     }
