@@ -272,6 +272,19 @@ export default function ReadAloud({ visible, onClose, ownerId }: Props) {
 
   if (!mounted) return null;
 
+  // ベンダー(provider)別にグルーピング（キャラ設定のボイス選択画面と同じ並び）。
+  // ZakiCorp は最後にまとめる。
+  const providerOrder = [...new Set(voices.map((v) => v.provider))];
+  const voiceSections: { title: string; data: Voice[] }[] = [];
+  const zakicorp: Voice[] = [];
+  for (const provider of providerOrder) {
+    const pv = voices.filter((v) => v.provider === provider);
+    if (pv.length === 0) continue;
+    if (provider === "ZakiCorp") zakicorp.push(...pv);
+    else voiceSections.push({ title: provider, data: pv });
+  }
+  if (zakicorp.length > 0) voiceSections.push({ title: "ZakiCorp", data: zakicorp });
+
   return (
     <Modal visible transparent animationType="none" onRequestClose={handleClose}>
       <Animated.View style={[st.container, { transform: [{ translateX: slideAnim }] }]}>
@@ -355,18 +368,25 @@ export default function ReadAloud({ visible, onClose, ownerId }: Props) {
             <View style={st.pickerBox}>
               <Text style={st.pickerHeader}>ボイスを選択</Text>
               <ScrollView>
-                {voices.map((v) => (
-                  <TouchableOpacity
-                    key={v.voice_id}
-                    style={[
-                      st.pickerItem,
-                      selectedVoice?.voice_id === v.voice_id && st.pickerItemActive,
-                    ]}
-                    onPress={() => pickVoice(v)}
-                  >
-                    <Text style={st.pickerItemText}>{v.label}</Text>
-                    <Text style={st.pickerItemSub}>{v.provider}</Text>
-                  </TouchableOpacity>
+                {voiceSections.map((section) => (
+                  <View key={section.title}>
+                    <Text style={st.pickerSection}>{section.title}</Text>
+                    {section.data.map((v) => (
+                      <TouchableOpacity
+                        key={v.voice_id}
+                        style={[
+                          st.pickerItem,
+                          selectedVoice?.voice_id === v.voice_id && st.pickerItemActive,
+                        ]}
+                        onPress={() => pickVoice(v)}
+                      >
+                        <Text style={st.pickerItemText}>{v.label}</Text>
+                        {selectedVoice?.voice_id === v.voice_id && (
+                          <Text style={st.pickerCheck}>✓</Text>
+                        )}
+                      </TouchableOpacity>
+                    ))}
+                  </View>
                 ))}
               </ScrollView>
             </View>
@@ -456,8 +476,23 @@ const st = StyleSheet.create({
     paddingVertical: 8,
     textTransform: "uppercase",
   },
-  pickerItem: { paddingHorizontal: 16, paddingVertical: 12 },
+  pickerSection: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#999",
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 4,
+    backgroundColor: "#f7f7f7",
+    textTransform: "uppercase",
+  },
+  pickerItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
   pickerItemActive: { backgroundColor: "rgba(0,122,255,0.08)" },
-  pickerItemText: { fontSize: 16, color: "#111", fontWeight: "600" },
-  pickerItemSub: { fontSize: 12, color: "#888", marginTop: 2 },
+  pickerItemText: { flex: 1, fontSize: 16, color: "#111", fontWeight: "600" },
+  pickerCheck: { fontSize: 16, color: "#007aff", marginLeft: 8 },
 });

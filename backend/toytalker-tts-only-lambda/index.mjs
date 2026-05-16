@@ -44,6 +44,20 @@ function normalizeModelKey(k) {
   return undefined;
 }
 
+// 改行を「文の区切り（長めのポーズ）」として扱う。
+// TTSは改行で間を取らないため、各行末に句点を補い全プロバイダー共通でポーズを作る。
+// 既に文末記号で終わる行はそのまま、空行は除去。
+function applyLineBreakPauses(raw) {
+  const lines = String(raw)
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (lines.length <= 1) return lines[0] ?? "";
+  return lines
+    .map((s) => (/[。．.！!？?…」』）)]$/.test(s) ? s : s + "。"))
+    .join("\n");
+}
+
 // ===== TTS プロバイダー（toytalk-stream-handler-lambda から流用。base64返却）=====
 
 async function ttsToBase64OpenAI(text, voice, ttsModel) {
@@ -397,30 +411,33 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
   voice  = v.vendorId ?? VOICE_DEFAULT;
   const cfg = TTS_TABLE[ttsKey] ?? TTS_TABLE[TTS_DEFAULT];
 
+  // 改行を文区切り（長めのポーズ）に変換してから合成
+  const ttsText = applyLineBreakPauses(text);
+
   // TTS 実行
   let b64, fmt;
   try {
     if (cfg.ttsVendor === "openai") {
-      b64 = await ttsToBase64OpenAI(text, voice, cfg.ttsModel);
+      b64 = await ttsToBase64OpenAI(ttsText, voice, cfg.ttsModel);
       fmt = "wav";
     } else if (cfg.ttsVendor === "google") {
-      b64 = await ttsToBase64Google(text, { voiceName: voice });
+      b64 = await ttsToBase64Google(ttsText, { voiceName: voice });
       fmt = "wav";
     } else if (cfg.ttsVendor === "gemini") {
-      const result = await ttsToBase64Gemini(text, { model: cfg.ttsModel, voiceName: voice });
+      const result = await ttsToBase64Gemini(ttsText, { model: cfg.ttsModel, voiceName: voice });
       b64 = result.b64;
       fmt = "wav";
     } else if (cfg.ttsVendor === "elevenlabs") {
-      b64 = await ttsToBase64ElevenLabs(text, { model: cfg.ttsModel, voiceId: voice });
+      b64 = await ttsToBase64ElevenLabs(ttsText, { model: cfg.ttsModel, voiceId: voice });
       fmt = "wav";
     } else if (cfg.ttsVendor === "fishaudio") {
-      b64 = await ttsToBase64FishAudio(text, { referenceId: voice });
+      b64 = await ttsToBase64FishAudio(ttsText, { referenceId: voice });
       fmt = "mp3";
     } else if (cfg.ttsVendor === "sakura") {
-      b64 = await ttsToBase64Sakura(text, { model: voice === "default" ? "zundamon" : voice });
+      b64 = await ttsToBase64Sakura(ttsText, { model: voice === "default" ? "zundamon" : voice });
       fmt = "wav";
     } else if (cfg.ttsVendor === "zakicorp") {
-      b64 = await ttsToBase64ZakiCorp(text, { speaker: voice === "default" ? "vivian" : voice });
+      b64 = await ttsToBase64ZakiCorp(ttsText, { speaker: voice === "default" ? "vivian" : voice });
       fmt = "wav";
     } else {
       return fail(500, "Unknown ttsVendor");
@@ -430,7 +447,7 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
   }
 
   // コスト記録（レスポンスとは独立、失敗しても無視）
-  trackTtsCost({ ownerId, ttsVendor: cfg.ttsVendor, ttsModel: cfg.ttsModel, text, b64Len: b64.length });
+  trackTtsCost({ ownerId, ttsVendor: cfg.ttsVendor, ttsModel: cfg.ttsModel, text: ttsText, b64Len: b64.length });
 
   // 音声バイナリを直接ストリーミング返却（S3に保存しない）
   const audioBuf = Buffer.from(b64, "base64");
