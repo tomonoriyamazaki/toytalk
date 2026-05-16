@@ -35,7 +35,13 @@ const DEVICE_SETTING_URL =
 const RECENT_KEY = "readAloudRecents";
 const MAX_RECENTS = 20;
 
-type Voice = { voice_id: string; label: string; provider: string; vendor_id: string };
+type Voice = {
+  voice_id: string;
+  label: string;
+  provider: string;
+  vendor_id: string;
+  isCustom?: boolean;
+};
 type Recent = {
   id: string;
   text: string;
@@ -101,7 +107,32 @@ export default function ReadAloud({ visible, onClose, ownerId }: Props) {
     try {
       const res = await fetch(`${DEVICE_SETTING_URL}/voices`);
       const data = await res.json();
-      const vs: Voice[] = data.voices ?? [];
+      const systemVoices: Voice[] = data.voices ?? [];
+
+      // ユーザー自身のZakiCorpカスタムボイスは別エンドポイント。
+      // settings.tsx と同じ方式でマージ（GET /voices には含まれない）。
+      let customVoices: Voice[] = [];
+      if (ownerId) {
+        try {
+          const cr = await fetch(
+            `${DEVICE_SETTING_URL}/custom-voices?owner_id=${encodeURIComponent(ownerId)}`
+          );
+          const cd = await cr.json();
+          customVoices = (cd.voices ?? [])
+            .filter((v: any) => v.owner_id !== "system")
+            .map((v: any) => ({
+              voice_id: v.voice_id,
+              label: v.label,
+              provider: "ZakiCorp",
+              vendor_id: v.vendor_id,
+              isCustom: true,
+            }));
+        } catch {
+          // カスタムボイス取得失敗時はシステムボイスのみで継続
+        }
+      }
+
+      const vs = [...systemVoices, ...customVoices];
       setVoices(vs);
       const savedId = await AsyncStorage.getItem("readAloudVoiceId");
       const found = vs.find((v) => v.voice_id === savedId);
@@ -296,14 +327,22 @@ export default function ReadAloud({ visible, onClose, ownerId }: Props) {
   // ZakiCorp は最後にまとめる。
   const providerOrder = [...new Set(voices.map((v) => v.provider))];
   const voiceSections: { title: string; data: Voice[] }[] = [];
-  const zakicorp: Voice[] = [];
+  const zakicorpSystem: Voice[] = [];
+  const zakicorpCustom: Voice[] = [];
   for (const provider of providerOrder) {
     const pv = voices.filter((v) => v.provider === provider);
     if (pv.length === 0) continue;
-    if (provider === "ZakiCorp") zakicorp.push(...pv);
-    else voiceSections.push({ title: provider, data: pv });
+    if (provider === "ZakiCorp") {
+      zakicorpSystem.push(...pv.filter((v) => !v.isCustom));
+      zakicorpCustom.push(...pv.filter((v) => v.isCustom));
+    } else {
+      voiceSections.push({ title: provider, data: pv });
+    }
   }
-  if (zakicorp.length > 0) voiceSections.push({ title: "ZakiCorp", data: zakicorp });
+  if (zakicorpSystem.length > 0)
+    voiceSections.push({ title: "ZakiCorp（システム）", data: zakicorpSystem });
+  if (zakicorpCustom.length > 0)
+    voiceSections.push({ title: "ZakiCorp（カスタム）", data: zakicorpCustom });
 
   return (
     <Modal visible transparent animationType="none" onRequestClose={handleClose}>
