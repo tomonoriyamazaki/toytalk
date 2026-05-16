@@ -19,6 +19,7 @@ import {
   Platform,
 } from "react-native";
 import * as FileSystem from "expo-file-system";
+import * as Sharing from "expo-sharing";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Sound from "react-native-sound";
 import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from "expo-av";
@@ -265,6 +266,25 @@ export default function ReadAloud({ visible, onClose, ownerId }: Props) {
     await persistRecents(recents.filter((r) => r.id !== rec.id));
   };
 
+  // 共有シート（iOS/Android）でファイルとして取り出す。
+  // 「"ファイル"に保存」「AirDrop」「他アプリへ送信」等が選べる。
+  const shareRecent = async (rec: Recent) => {
+    try {
+      if (!(await Sharing.isAvailableAsync())) {
+        setStatus("この端末では共有を利用できません");
+        return;
+      }
+      const isMp3 = rec.format === "mp3";
+      await Sharing.shareAsync(`${AUDIO_DIR}${rec.fileName}`, {
+        mimeType: isMp3 ? "audio/mpeg" : "audio/wav",
+        UTI: isMp3 ? "public.mp3" : "com.microsoft.waveform-audio",
+        dialogTitle: "音声を共有",
+      });
+    } catch (e: any) {
+      setStatus(`共有に失敗しました: ${e?.message ?? e}`);
+    }
+  };
+
   const handleClose = () => {
     stopPlayback();
     onClose();
@@ -346,6 +366,9 @@ export default function ReadAloud({ visible, onClose, ownerId }: Props) {
                       ▶ {r.voiceLabel} ・ {r.format.toUpperCase()} ・{" "}
                       {new Date(r.createdAt).toLocaleString("ja-JP")}
                     </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => shareRecent(r)} style={st.shareBtn}>
+                    <Text style={st.shareText}>共有</Text>
                   </TouchableOpacity>
                   <TouchableOpacity onPress={() => deleteRecent(r)} style={st.delBtn}>
                     <Text style={st.delText}>削除</Text>
@@ -453,6 +476,8 @@ const st = StyleSheet.create({
   },
   recentText: { fontSize: 14, color: "#111" },
   recentMeta: { marginTop: 4, fontSize: 11, color: "#999" },
+  shareBtn: { paddingHorizontal: 8, paddingVertical: 4 },
+  shareText: { color: "#007aff", fontSize: 12, fontWeight: "600" },
   delBtn: { paddingHorizontal: 8, paddingVertical: 4 },
   delText: { color: "#b00", fontSize: 12 },
   pickerOverlay: {
