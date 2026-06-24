@@ -981,7 +981,7 @@ export default function Settings() {
         </View>
         <ScrollView contentContainerStyle={s.wrap}>
           {[
-            { ver: "0.8.2", date: "20260510", desc: "入力文字の読み上げ機能を追加" },
+            { ver: "0.8.2", date: "20260624", desc: "入力文字の読み上げ機能を追加" },
             { ver: "0.8.1", date: "20260510", desc: "相槌機能追加、サーチ機能追加（LLM Geminiのみ）、クローンボイス機能追加（β版）、再生⇔録音の切替をスムーズにするよう改修" },
             { ver: "0.8.0", date: "20260426", desc: "ずんだもんボイス等追加、LLM選択機能追加、コストページ追加、STT文字起こし中に途中で切れてしまう問題を改善" },
             { ver: "0.7.1", date: "20260328", desc: "複数デバイスの登録機能追加" },
