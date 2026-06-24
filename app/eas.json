@@ -18,7 +18,7 @@
       "distribution": "store",
       "ios": {
         "simulator": false,
-        "image": "macos-sequoia-15.3-xcode-16.2"
+        "image": "macos-sequoia-15.6-xcode-26.0"
       }
     },
     "production": {
