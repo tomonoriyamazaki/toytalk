@@ -302,7 +302,7 @@ export const handler = async (event) => {
     let ttsVoice = "zundamon";
     let personalityPrompt = null;
 
-    if (characterId && characterId !== "default") {
+    if (characterId) {
       const charConfig = await resolveCharacter(characterId);
       if (charConfig) {
         const ttsKey = normalizeModelKey(charConfig.provider) ?? TTS_DEFAULT;

@@ -500,7 +500,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       let personalityPrompt = null;
       let llmId = null;
 
-      if (device.character_id && device.character_id !== "default") {
+      if (device.character_id) {
         const charRes = await ddb.send(new GetCommand({
           TableName: CHARACTERS_TABLE,
           Key: { character_id: device.character_id },

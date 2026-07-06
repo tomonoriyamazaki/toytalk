@@ -611,7 +611,7 @@
 
     const backchannelFired = !!body.backchannel_fired;
     const characterId = typeof body.character_id === "string" ? body.character_id : null;
-    if (characterId && characterId !== "default") {
+    if (characterId) {
       const charConfig = await resolveCharacterFromDynamo(characterId);
       if (charConfig) {
         ttsKey = normalizeModelKey(charConfig.provider) ?? ttsKey;

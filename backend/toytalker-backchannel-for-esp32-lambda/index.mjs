@@ -47,7 +47,7 @@ async function resolveCharacterFromDevice(deviceId) {
     const device = deviceRes.Item;
     if (!device) return null;
 
-    if (device.character_id && device.character_id !== "default") {
+    if (device.character_id) {
       return resolveCharacter(device.character_id);
     }
     return null;
@@ -298,7 +298,7 @@ export const handler = async (event) => {
     if (deviceId) {
       charConfig = await resolveCharacterFromDevice(deviceId);
     }
-    if (!charConfig && characterId && characterId !== "default") {
+    if (!charConfig && characterId) {
       charConfig = await resolveCharacter(characterId);
     }
     if (charConfig) {
