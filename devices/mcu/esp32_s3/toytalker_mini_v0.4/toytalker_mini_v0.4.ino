@@ -108,7 +108,7 @@ const unsigned long debounceDelay = 50;
 
 unsigned long buttonPressStart = 0;
 bool buttonLongPressTriggered = false;
-const unsigned long LONG_PRESS_MS = 3000;
+const unsigned long LONG_PRESS_MS = 1500;
 
 // ==== WiFi接続状態（イベントベース） ====
 volatile bool wifiConnected = false;
@@ -186,7 +186,7 @@ Message conversationHistory[MAX_HISTORY * 2];
 int historyCount = 0;
 
 // ==== 音量調整 ====
-const float VOLUME = 1.0;
+const float VOLUME = 1.5;  // デジタルゲイン（クリップ保護あり、上げすぎると歪むので2.5程度まで）
 
 // ==== TTS設定 ====
 const char* TTS_PROVIDER = "ElevenLabs";
@@ -433,7 +433,11 @@ void addToHistory(const String& role, const String& content) {
 // ==== mono → stereo 変換 ====
 void monoToStereo(int16_t* mono, int16_t* stereo, size_t samples) {
   for (size_t i = 0; i < samples; i++) {
-    int16_t sample = (int16_t)(mono[i] * VOLUME);
+    // クリップ保護: int16範囲を超えたら飽和させる（オーバーフローによる波形破壊を防ぐ）
+    int32_t v = (int32_t)(mono[i] * VOLUME);
+    if (v > 32767) v = 32767;
+    else if (v < -32768) v = -32768;
+    int16_t sample = (int16_t)v;
     stereo[2*i]     = sample;
     stereo[2*i + 1] = sample;
   }
