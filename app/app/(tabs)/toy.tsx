@@ -742,7 +742,7 @@ export default function Toy() {
                   >
                     <View>
                       <Text style={s.deviceName}>{item.name}</Text>
-                      <Text style={s.deviceSub}>{item.id}</Text>
+                      <Text style={s.deviceSub}>タップして接続</Text>
                     </View>
                     <Text style={s.chevron}>›</Text>
                   </TouchableOpacity>
@@ -772,7 +772,7 @@ export default function Toy() {
 
         {/* 登録済みデバイス（常に最下部に表示） */}
         {registeredDevices.length > 0 && (
-          <View style={s.section}>
+          <View style={[s.section, s.registeredSection]}>
             <Text style={s.subtitle}>登録済みデバイス</Text>
             {registeredDevices.map((device) => (
               <TouchableOpacity
@@ -805,6 +805,7 @@ const s = StyleSheet.create({
   title:                 { fontSize: 24, fontWeight: "700", marginBottom: 8 },
   subtitle:              { fontSize: 16, fontWeight: "600", marginBottom: 8, color: "#333" },
   section:               { gap: 8 },
+  registeredSection:     { marginTop: 24, paddingTop: 24, borderTopWidth: 2, borderTopColor: "#ccc" },
   statusBox:             { backgroundColor: "#e3f2fd", padding: 12, borderRadius: 8 },
   statusText:            { fontSize: 14, color: "#1976d2" },
   button:                { backgroundColor: "#007AFF", padding: 16, borderRadius: 12, alignItems: "center" },
