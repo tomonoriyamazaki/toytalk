@@ -10,6 +10,7 @@
 #include <ArduinoJson.h>
 #include <driver/i2s.h>
 #include <esp_wifi.h>
+#include <esp_mac.h>  // esp_read_mac (BLEアドバタイズ名用)
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -186,7 +187,7 @@ Message conversationHistory[MAX_HISTORY * 2];
 int historyCount = 0;
 
 // ==== 音量調整 ====
-const float VOLUME = 1.5;  // デジタルゲイン（クリップ保護あり、上げすぎると歪むので2.5程度まで）
+const float VOLUME = 1.5;  // デジタルゲイン（クリップ保護あり）。2.0はノイズ増の割に音量差わずかで、1.5がスイートスポット
 
 // ==== TTS設定 ====
 const char* TTS_PROVIDER = "ElevenLabs";
@@ -327,7 +328,12 @@ class CommandCallbacks : public BLECharacteristicCallbacks {
 // ==== BLE開始 ====
 void startBLE() {
   Serial.println("🔵 Starting BLE...");
-  BLEDevice::init("ToyTalk-Setup");
+  // アドバタイズ名にMAC下4桁を含める（アプリのスキャン一覧で個体を識別できるように）
+  uint8_t btMac[6];
+  esp_read_mac(btMac, ESP_MAC_BT);
+  char bleName[20];
+  snprintf(bleName, sizeof(bleName), "ToyTalker-%02X%02X", btMac[4], btMac[5]);
+  BLEDevice::init(bleName);
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new ServerCallbacks());
 
