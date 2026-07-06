@@ -5,6 +5,19 @@
   import { createHash } from "node:crypto";
   import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
   import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
+  import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
+
+  // ---- 予備インスタンスの事前ウォームアップ ----
+  // 本リクエスト処理中（=このインスタンスがビジー中）に自分自身へwarmup pingを非同期送信すると、
+  // 別のコールドなインスタンスに着弾して初期化されるため、2人目の同時利用時のコールドスタートを防げる
+  const lambdaSelfClient = new LambdaClient({});
+  function prewarmSpareInstance() {
+    lambdaSelfClient.send(new InvokeCommand({
+      FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME,
+      InvocationType: "Event",
+      Payload: Buffer.from(JSON.stringify({ body: '{"warmup":true}' })),
+    })).catch(() => {});
+  }
 
   // ---- Web検索（Serper） ----
   const SERPER_API_KEY = process.env.SERPER_API_KEY;
@@ -592,6 +605,7 @@
 
     const body      = event.body ? JSON.parse(event.body) : {};
     if (body.warmup) { res.end(); return; }  // EventBridgeウォームアップping（コールドスタート対策）
+    prewarmSpareInstance();  // 処理中に予備インスタンスを温める（同時2人目対策）
     const messages  = body.messages ?? [{ role:"user", content:"自己紹介して" }];
     const rawModel  = typeof body.model === "string" ? body.model : undefined;
     let ttsKey      = normalizeModelKey(rawModel) ?? TTS_DEFAULT;

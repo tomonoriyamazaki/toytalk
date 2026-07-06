@@ -3,6 +3,19 @@
 // Env: ANTHROPIC_API_KEY, SAKURA_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY, ELEVENLABS_API_KEY, FISHAUDIO_API_KEY, ZAKICORP_API_KEY, ZAKICORP_TTS_URL
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
+
+// ---- 予備インスタンスの事前ウォームアップ ----
+// 本リクエスト処理中（=このインスタンスがビジー中）に自分自身へwarmup pingを非同期送信すると、
+// 別のコールドなインスタンスに着弾して初期化されるため、2人目の同時利用時のコールドスタートを防げる
+const lambdaSelfClient = new LambdaClient({});
+function prewarmSpareInstance() {
+  lambdaSelfClient.send(new InvokeCommand({
+    FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME,
+    InvocationType: "Event",
+    Payload: Buffer.from(JSON.stringify({ body: '{"warmup":true}' })),
+  })).catch(() => {});
+}
 
 const ddbClient = new DynamoDBClient({ region: "ap-northeast-1" });
 const ddb = DynamoDBDocumentClient.from(ddbClient);
@@ -289,6 +302,7 @@ export const handler = async (event) => {
   try {
     const body = event.body ? JSON.parse(event.body) : {};
     if (body.warmup) return { statusCode: 200, body: "warm" };  // EventBridgeウォームアップping
+    prewarmSpareInstance();  // 処理中に予備インスタンスを温める（同時2人目対策）
     const partialText = body.partial_text ?? "";
     const characterId = body.character_id ?? null;
     const history = Array.isArray(body.history) ? body.history.slice(-6) : [];
