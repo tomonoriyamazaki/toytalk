@@ -554,6 +554,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     res.setContentType("application/octet-stream");
 
     const body    = event.body ? JSON.parse(event.body) : {};
+    if (body.warmup) { res.end(); return; }  // EventBridgeウォームアップping（コールドスタート対策）
     const messages= body.messages ?? [{ role:"user", content:"自己紹介して" }];
     const deviceId = typeof body.device_id === "string" ? body.device_id : null;
     const backchannelFired = !!body.backchannel_fired;

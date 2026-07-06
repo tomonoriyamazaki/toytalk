@@ -591,6 +591,7 @@
     res.setContentType("text/event-stream");
 
     const body      = event.body ? JSON.parse(event.body) : {};
+    if (body.warmup) { res.end(); return; }  // EventBridgeウォームアップping（コールドスタート対策）
     const messages  = body.messages ?? [{ role:"user", content:"自己紹介して" }];
     const rawModel  = typeof body.model === "string" ? body.model : undefined;
     let ttsKey      = normalizeModelKey(rawModel) ?? TTS_DEFAULT;

@@ -7,6 +7,9 @@ const DEVICES_TABLE = "toytalker-devices";
 
 export const handler = async (event) => {
   try {
+    // EventBridgeウォームアップping（コールドスタート対策）
+    if (event.body === '{"warmup":true}') return { statusCode: 200, body: "warm" };
+
     const SONIOX_API_KEY = process.env.SONIOX_API_KEY;
     if (!SONIOX_API_KEY) {
       return {

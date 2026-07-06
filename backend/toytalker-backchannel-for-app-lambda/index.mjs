@@ -288,6 +288,7 @@ export const handler = async (event) => {
   const start = Date.now();
   try {
     const body = event.body ? JSON.parse(event.body) : {};
+    if (body.warmup) return { statusCode: 200, body: "warm" };  // EventBridgeウォームアップping
     const partialText = body.partial_text ?? "";
     const characterId = body.character_id ?? null;
     const history = Array.isArray(body.history) ? body.history.slice(-6) : [];
