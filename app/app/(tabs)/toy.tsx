@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useOwnerId } from "../../hooks/useOwnerId";
 import {
@@ -192,15 +192,27 @@ export default function Toy() {
     }
   };
 
+  const scanStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const finishScan = (message: string) => {
+    if (scanStopTimerRef.current) {
+      clearTimeout(scanStopTimerRef.current);
+      scanStopTimerRef.current = null;
+    }
+    bleManager.stopDeviceScan();
+    setStatus("disconnected");
+    setStatusMessage(message);
+  };
+
   const startScan = () => {
     setBleDevices([]);
     setStatus("scanning");
     setStatusMessage("スキャン中...");
+    let foundAny = false;
 
     bleManager.startDeviceScan(null, null, (error, device) => {
       if (error) {
-        setStatus("disconnected");
-        setStatusMessage("スキャンエラー: " + error.message);
+        finishScan("スキャンエラー: " + error.message);
         return;
       }
       if (device?.name?.includes("ToyTalk")) {
@@ -208,20 +220,21 @@ export default function Toy() {
           if (prev.find((d) => d.id === device.id)) return prev;
           return [...prev, device];
         });
+        // 最初の1台を見つけたら、近くの2台目を拾う猶予1秒だけ待って終了
+        if (!foundAny) {
+          foundAny = true;
+          if (scanStopTimerRef.current) clearTimeout(scanStopTimerRef.current);
+          scanStopTimerRef.current = setTimeout(() => finishScan("スキャン完了"), 1000);
+        }
       }
     });
 
-    setTimeout(() => {
-      bleManager.stopDeviceScan();
-      setStatus("disconnected");
-      setStatusMessage("スキャン完了");
-    }, 10000);
+    // 何も見つからない場合の上限
+    scanStopTimerRef.current = setTimeout(() => finishScan("スキャン完了"), 5000);
   };
 
   const stopScan = () => {
-    bleManager.stopDeviceScan();
-    setStatus("disconnected");
-    setStatusMessage("");
+    finishScan("");
   };
 
   const connectToDevice = async (device: Device) => {
