@@ -24,7 +24,8 @@ bundle.js
 # KiCad temporary files
 *_autosave-*
 ~*.kicad_*.lck
-#auto_saved_files#
+\#auto_saved_files\#
+.history/
 *.kicad_prl
 fp-info-cache
 *-backups/
