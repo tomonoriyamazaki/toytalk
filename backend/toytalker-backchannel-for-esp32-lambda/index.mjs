@@ -6,6 +6,24 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
+import { Agent, setGlobalDispatcher } from "undici";
+
+// ---- fetchのkeep-alive延長（デフォルト4秒→60秒） ----
+// 会話の間が空くとLLM/TTSへのTLS接続が閉じられ、次の相槌でハンドシェイクからやり直しになる
+try {
+  setGlobalDispatcher(new Agent({ keepAliveTimeout: 60_000, keepAliveMaxTimeout: 600_000 }));
+} catch (e) {
+  console.log("[KeepAlive] setGlobalDispatcher failed:", e?.message);
+}
+
+// ---- 外部APIへの接続を事前確立（deep warmup） ----
+const PREWARM_ORIGINS = ["https://generativelanguage.googleapis.com", "https://api.ai.sakura.ad.jp"];
+const prewarmConnections = async (waitMs = 0) => {
+  const jobs = PREWARM_ORIGINS.map(o =>
+    fetch(o, { method: "HEAD", signal: AbortSignal.timeout(1500) }).catch(() => {})
+  );
+  if (waitMs > 0) await Promise.race([Promise.allSettled(jobs), new Promise(r => setTimeout(r, waitMs))]);
+};
 
 // ---- 予備インスタンスの事前ウォームアップ ----
 // 本リクエスト処理中（=このインスタンスがビジー中）に自分自身へwarmup pingを非同期送信すると、
@@ -273,6 +291,26 @@ async function ttsPcmZakiCorp(text, { speaker = "vivian", language = "Japanese" 
   return Buffer.from(await resp.arrayBuffer());
 }
 
+// ---- TTS音声の先頭/末尾の無音トリミング（24kHz/16bit/mono前提） ----
+// 相槌は速さが命なので、TTSが付ける前後の無音を削って体感を詰める
+function trimSilence(pcm, { threshold = 512, padMs = 80, sampleRate = 24000 } = {}) {
+  const total = Math.floor(pcm.length / 2);
+  if (total === 0) return pcm;
+  let start = 0, end = total - 1;
+  while (start < total && Math.abs(pcm.readInt16LE(start * 2)) < threshold) start++;
+  while (end > start && Math.abs(pcm.readInt16LE(end * 2)) < threshold) end--;
+  if (start >= end) return pcm;  // 全体が無音なら触らない
+  const pad = Math.round(sampleRate * padMs / 1000);
+  const headCut = Math.max(0, start - pad);
+  const tailCut = Math.min(total - 1, end + pad);
+  const trimmed = pcm.slice(headCut * 2, (tailCut + 1) * 2);
+  const cutMs = Math.round(((total - (tailCut - headCut + 1)) / sampleRate) * 1000);
+  if (cutMs > 0) {
+    console.log(`[TrimSilence] cut ${cutMs}ms (head ${Math.round(headCut / sampleRate * 1000)}ms, tail ${Math.round((total - 1 - tailCut) / sampleRate * 1000)}ms)`);
+  }
+  return trimmed;
+}
+
 // ---- TTS ルーティング ----
 async function generateTTSPcm(text, vendor, voice) {
   switch (vendor) {
@@ -294,6 +332,7 @@ export const handler = async (event) => {
     const body = event.body ? JSON.parse(event.body) : {};
     if (body.warmup) return { statusCode: 200, body: "warm" };  // EventBridgeウォームアップping
     prewarmSpareInstance();  // 処理中に予備インスタンスを温める（同時2人目対策）
+    prewarmConnections();    // LLM/TTS接続を先行確立（keep-alive切れ時の保険、非同期）
     const partialText = body.partial_text ?? "";
     const deviceId = body.device_id ?? null;
     const characterId = body.character_id ?? null;
@@ -330,7 +369,7 @@ export const handler = async (event) => {
 
     // TTS生成 (raw PCM)
     const ttsStart = Date.now();
-    const pcmBuffer = await generateTTSPcm(backchannelText, ttsVendor, ttsVoice);
+    const pcmBuffer = trimSilence(await generateTTSPcm(backchannelText, ttsVendor, ttsVoice));
     console.log(`[TTS] ${ttsVendor}/${ttsVoice} pcm=${pcmBuffer.length}bytes (${Date.now() - ttsStart}ms)`);
     console.log(`[Total] ${Date.now() - start}ms`);
 

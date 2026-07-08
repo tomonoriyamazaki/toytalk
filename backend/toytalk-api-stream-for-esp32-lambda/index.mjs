@@ -6,6 +6,27 @@
   import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
   import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
   import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
+  import { Agent, setGlobalDispatcher } from "undici";
+
+  // ---- fetchのkeep-alive延長（デフォルト4秒→60秒） ----
+  // 会話の間が数秒空くとLLM/TTSへのTLS接続が閉じられ、次のターンで
+  // SSLハンドシェイクからやり直しになり体感ラグが出る。60秒に延長して回避
+  try {
+    setGlobalDispatcher(new Agent({ keepAliveTimeout: 60_000, keepAliveMaxTimeout: 600_000 }));
+  } catch (e) {
+    console.log("[KeepAlive] setGlobalDispatcher failed:", e?.message);
+  }
+
+  // ---- 外部APIへの接続を事前確立（deep warmup） ----
+  // TLSハンドシェイク済みのkeep-alive接続をプールに作っておく。
+  // 401等が返っても接続自体はプールに残るのでOK
+  const PREWARM_ORIGINS = ["https://api.openai.com", "https://api.ai.sakura.ad.jp"];
+  const prewarmConnections = async (waitMs = 0) => {
+    const jobs = PREWARM_ORIGINS.map(o =>
+      fetch(o, { method: "HEAD", signal: AbortSignal.timeout(1500) }).catch(() => {})
+    );
+    if (waitMs > 0) await Promise.race([Promise.allSettled(jobs), new Promise(r => setTimeout(r, waitMs))]);
+  };
 
   // ---- 予備インスタンスの事前ウォームアップ ----
   // 本リクエスト処理中（=このインスタンスがビジー中）に自分自身へwarmup pingを非同期送信すると、
@@ -205,6 +226,27 @@
     header.writeUInt32LE(pcmBuffer.length, 1); // length
     res.write(header);
     res.write(pcmBuffer);
+  };
+
+  // TTS音声の先頭/末尾の無音をトリミング（24kHz/16bit/mono前提）
+  // TTSは末尾に数百msの無音を含むことが多く、これを削ると
+  // 「喋り終わり→録音再開」の体感切替がその分速くなる（先頭側は応答体感の改善）
+  const trimSilence = (pcm, { threshold = 512, padMs = 80, sampleRate = 24000 } = {}) => {
+    const total = Math.floor(pcm.length / 2);
+    if (total === 0) return pcm;
+    let start = 0, end = total - 1;
+    while (start < total && Math.abs(pcm.readInt16LE(start * 2)) < threshold) start++;
+    while (end > start && Math.abs(pcm.readInt16LE(end * 2)) < threshold) end--;
+    if (start >= end) return pcm;  // 全体が無音なら触らない
+    const pad = Math.round(sampleRate * padMs / 1000);
+    const headCut = Math.max(0, start - pad);
+    const tailCut = Math.min(total - 1, end + pad);
+    const trimmed = pcm.slice(headCut * 2, (tailCut + 1) * 2);
+    const cutMs = Math.round(((total - (tailCut - headCut + 1)) / sampleRate) * 1000);
+    if (cutMs > 0) {
+      console.log(`[TrimSilence] cut ${cutMs}ms (head ${Math.round(headCut / sampleRate * 1000)}ms, tail ${Math.round((total - 1 - tailCut) / sampleRate * 1000)}ms)`);
+    }
+    return trimmed;
   };
 
   const sha1  = (s)=>createHash("sha1").update(s).digest("hex");
@@ -569,6 +611,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     const body    = event.body ? JSON.parse(event.body) : {};
     if (body.warmup) { res.end(); return; }  // EventBridgeウォームアップping（コールドスタート対策）
     prewarmSpareInstance();  // 処理中に予備インスタンスを温める（同時2人目対策）
+    prewarmConnections();    // LLM/TTS接続を先行確立（keep-alive切れ時の保険、非同期）
     const messages= body.messages ?? [{ role:"user", content:"自己紹介して" }];
     const deviceId = typeof body.device_id === "string" ? body.device_id : null;
     const backchannelFired = !!body.backchannel_fired;
@@ -892,6 +935,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
           throw new Error("Unknown ttsVendor");
         }
         if (pcmBuffer) {
+          pcmBuffer = trimSilence(pcmBuffer);  // 前後の無音を削って切替体感を速く
           sendMeta(res, "tts_start", { id: segSeq, size: pcmBuffer.length });
           sendPCM(res, pcmBuffer);
           console.log(`[Lambda] id=${segSeq}, pcm.length=${pcmBuffer.length} bytes, text="${t}"`);
