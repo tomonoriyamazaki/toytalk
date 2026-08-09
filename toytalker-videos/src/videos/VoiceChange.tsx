@@ -8,22 +8,23 @@ import {Caption, Subtitle} from '../components/Subtitle';
 import {PhoneFrame} from '../components/PhoneFrame';
 import {Pendant} from '../components/Pendant';
 
-// 動画4「声変え」15.0秒 / 450フレーム
+// 動画4「声変え」26.0秒 / 780フレーム
 // アプリでキャラクターを作成(名前・性格・声)→ おもちゃに反映される流れ。
 // 声はキャラ音声 → クローンボイス(家族の声)に切替可能なことを波形の色で表現
+// まとめ画面以外は2倍スロー(まとめの表示時間は等倍のまま)
 //
-// 0.4  : アプリ画面出現、設定行が順に埋まる(名前/性格/声)、字幕①
-// 3.4  : 送信エフェクト → ぬいぐるみが設定どおりの声で話す(緑)
-// 6.8  : アプリで声をクローンボイスに変更、字幕②
-// 7.4  : 送信エフェクト → 同じセリフが紫(おかあさんの声)に
-// 10.6 : 再生停止
-// 11.2 : まとめ画面
-// 14.2 : フェードアウト(ループ用)
+// 0.8  : アプリ画面出現、設定行が順に埋まる(名前/性格/声)、字幕①
+// 6.8  : 送信エフェクト → ぬいぐるみが設定どおりの声で話す(緑)
+// 13.6 : アプリで声をクローンボイスに変更、字幕②
+// 14.8 : 送信エフェクト → 同じセリフが紫(おかあさんの声)に
+// 21.2 : 再生停止
+// 22.4 : まとめ画面
+// 25.2 : フェードアウト(ループ用)
 
 const PHRASE = 'こんにちは！ぼく、ぽんちゃん！';
-const SWITCH_T = 6.8;
-const REPLAY_T = 7.8;
-const STOP_T = 10.6;
+const SWITCH_T = 13.6;
+const REPLAY_T = 15.6;
+const STOP_T = 21.2;
 
 const VOICES = [
   {name: 'ずんだもん', tag: 'キャラ音声', main: '#22B583', deep: '#0F7A5A'},
@@ -31,9 +32,9 @@ const VOICES = [
 ];
 
 const CAPTIONS: Caption[] = [
-  {at: 0.5, text: '① アプリで、性格と声をきめる'},
-  {at: SWITCH_T, text: '② じぶんの声も、クローンでつくれる'},
-  {at: 11.2, text: ''},
+  {at: 1.0, text: '① アプリで、性格と声をきめる'},
+  {at: SWITCH_T, text: '② 自分の声も、クローンでつくれる'},
+  {at: 22.4, text: ''},
 ];
 
 // アプリの設定行
@@ -84,10 +85,10 @@ export const VoiceChange: React.FC = () => {
   const fadeStart = durationInFrames / fps - 0.8;
   const fade = t > fadeStart ? Math.max(0, 1 - (t - fadeStart) / 0.8) : 1;
 
-  const phone = appear(frame, fps, 0.4);
-  const rowName = appear(frame, fps, 1.0);
-  const rowPersona = appear(frame, fps, 1.8);
-  const rowVoice = appear(frame, fps, 2.6);
+  const phone = appear(frame, fps, 0.8);
+  const rowName = appear(frame, fps, 2.0);
+  const rowPersona = appear(frame, fps, 3.6);
+  const rowVoice = appear(frame, fps, 5.2);
 
   // 声の切替(0=キャラ音声, 1=クローン)
   const sw = easeCubic(t, SWITCH_T, 0.5);
@@ -95,19 +96,19 @@ export const VoiceChange: React.FC = () => {
   const waveDeep = interpolateColors(sw, [0, 1], [VOICES[0].deep, VOICES[1].deep]);
 
   // 送信エフェクト(アプリ→おもちゃ)。設定直後と声変更直後の2回流れる
-  const sendWindow = (t0: number) => t >= t0 && t < t0 + 1.0;
-  const sending = sendWindow(3.4) || sendWindow(7.4);
+  const sendWindow = (t0: number) => t >= t0 && t < t0 + 2.0;
+  const sending = sendWindow(6.8) || sendWindow(14.8);
 
-  const bear = appear(frame, fps, 3.6);
-  const bubble = appear(frame, fps, 3.9);
+  const bear = appear(frame, fps, 7.2);
+  const bubble = appear(frame, fps, 7.8);
 
   // 再生中のみ波形が揺れる(切替時にいったん絞って再生し直す)
   const playing =
-    easeCubic(t, 4.1, 0.4) *
+    easeCubic(t, 8.2, 0.4) *
     (1 - easeCubic(t, STOP_T, 0.4)) *
     (1 - (easeCubic(t, SWITCH_T, 0.3) - easeCubic(t, REPLAY_T, 0.4)));
 
-  const summary = easeCubic(t, 11.2, 0.5);
+  const summary = easeCubic(t, 22.4, 0.5);
 
   return (
     <AbsoluteFill style={{backgroundColor: COLORS.bg, fontFamily: FONT}}>
@@ -202,7 +203,7 @@ export const VoiceChange: React.FC = () => {
         >
           🧸
         </div>
-        <div style={{position: 'absolute', left: 1256, top: 656, opacity: bear}}>
+        <div style={{position: 'absolute', left: 1297, top: 610, opacity: bear}}>
           <Pendant size={64} strap={false} />
         </div>
         {/* 吹き出し(声の色で枠が変わる) */}
@@ -307,7 +308,7 @@ export const VoiceChange: React.FC = () => {
                 opacity: summary,
               }}
             >
-              性格も、声も、じぶんでつくれる。
+              性格も、声も、自分でつくれる。
             </div>
             <div
               style={{

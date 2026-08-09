@@ -7,70 +7,74 @@ import {StageArrow, StageCard} from '../components/StageCard';
 import {Pill} from '../components/Pill';
 import {Caption, Subtitle} from '../components/Subtitle';
 
-// 動画3「応答速度」30.0秒 / 900フレーム
+// 動画3「応答速度」44.5秒 / 1335フレーム
 //
-// イントロ 0-12秒: STT/LLM/TTS の3ステップを予備知識ゼロ向けに説明
-// 本編 12秒-: パイプライン並行動作のアニメ(reference/render.py のイベント表を
-//             12秒オフセット + 1.2倍スローで再生。相対タイミングはプロトタイプ準拠)
+// イントロ 0-13.5秒: 音声認識/AI/音声合成 の3ステップを予備知識ゼロ向けに説明
+// (STT/LLM/TTS等の専門用語は画面に出さない方針。締めの一言で+1.5秒ストップ)
+// 本編 13.5秒-: パイプライン並行動作のアニメ(reference/render.py のイベント表を
+//             13.5秒オフセット + 3.6倍スローで再生。相対タイミングはプロトタイプ準拠)
+// 尺を変えるときは SCALE と Root.tsx の尺(13.5 + 7.35*SCALE + まとめ約4.5秒)を合わせて調整する
 
-const INTRO_END = 12.0;
-const SCALE = 1.2;
+const INTRO_END = 13.5;
+const SCALE = 3.6;
 // プロトタイプのイベント表時刻 → 本動画の時刻
 const m = (s: number) => INTRO_END + s * SCALE;
 
 const FULL = 'こんにちは！今日はいい天気だね。何をお話ししようか？';
 const STT_S = 'こんにちは';
 
-const INTRO_STEPS: {icon: string; name: string; label: string; desc: string; at: number}[] = [
-  {icon: '🎤', name: 'STT', label: '音声認識', desc: 'こえを もじにする', at: 0.8},
-  {icon: '💭', name: 'LLM', label: 'AI', desc: 'へんじを かんがえる', at: 3.0},
-  {icon: '🔊', name: 'TTS', label: '音声合成', desc: 'もじを こえにする', at: 5.2},
+const INTRO_STEPS: {icon: string; name: string; desc: string; at: number}[] = [
+  {icon: '🎤', name: '音声認識', desc: 'こえを もじにする', at: 0.8},
+  {icon: '💭', name: 'AI', desc: 'へんじを かんがえる', at: 3.0},
+  {icon: '🔊', name: '音声合成', desc: 'もじを こえにする', at: 5.2},
 ];
 
 const CAPTIONS: Caption[] = [
-  {at: m(0.2), text: '① 発話をSTTがリアルタイムに文字起こし'},
-  {at: m(1.8), text: '② 確定した瞬間、即LLMへ。返答はストリーミング生成'},
-  {at: m(2.9), text: '③ 文の区切りごとに、生成完了を待たずTTSへ'},
+  {at: m(0.2), text: '① 発話をリアルタイムに文字起こし'},
+  {at: m(1.8), text: '② 確定した瞬間、即AIへ。返答はストリーミング生成'},
+  {at: m(2.9), text: '③ 文の区切りごとに、生成完了を待たず音声合成へ'},
   {at: m(3.6), text: '④ 最初の音声が届き次第、すぐ再生開始'},
   {at: m(5.05), text: '⑤ 再生の裏で、後続の音声をため込む'},
-  {at: m(7.0), text: '⑥ 生成を待たずに連続再生'},
-  {at: m(11.0), text: ''},
+  {at: m(6.15), text: '⑥ 生成しながら再生することで、待ち時間を低減'},
+  {at: m(7.35), text: ''},
 ];
 
 const STAGES: {name: string; role: string; activeSec: number}[] = [
-  {name: 'STT', role: '音声認識', activeSec: m(0.2)},
-  {name: 'LLM', role: '返答生成', activeSec: m(1.8)},
-  {name: 'TTS', role: '音声合成', activeSec: m(2.9)},
+  {name: '音声認識', role: 'こえ→もじ', activeSec: m(0.2)},
+  {name: 'AI', role: '返答生成', activeSec: m(1.8)},
+  {name: '音声合成', role: 'もじ→こえ', activeSec: m(2.9)},
   {name: 'デバイス', role: '再生', activeSec: m(3.6)},
 ];
 
 const stageStatus = (t: number): string[] => {
   const s = ['待機中', '待機中', '待機中', '待機中'];
   if (t >= m(0.2)) s[0] = '認識中…';
-  if (t >= m(1.75)) s[0] = '確定 → 即LLMへ';
+  if (t >= m(1.75)) s[0] = '確定 → 即AIへ';
   if (t >= m(1.8)) s[1] = 'ストリーミング生成中…';
-  if (t >= m(5.7)) s[1] = '生成完了';
+  if (t >= m(4.8)) s[1] = '生成完了';
   if (t >= m(2.9)) s[2] = '文の区切りごとに合成';
   if (t >= m(3.6)) s[3] = '再生中';
-  if (t >= m(10.6)) s[3] = '再生完了';
+  if (t >= m(6.95)) s[3] = '再生完了';
   return s;
 };
 
 // TTSキュー: (テキスト, 出現時刻)
+// 各文はAIストリームで書き終わった瞬間に出現(天気=3.61, 全文=4.68 完了)
 const TTS_QUEUE: [string, number][] = [
   ['こんにちは！', m(2.9)],
-  ['今日はいい天気だね。', m(4.35)],
-  ['何をお話ししようか？', m(5.75)],
+  ['今日はいい天気だね。', m(3.65)],
+  ['何をお話ししようか？', m(4.7)],
 ];
 
 // デバイス再生: (テキスト, 出現, 再生開始, 再生終了)
+// 字幕⑤(m(5.05))で2文目、字幕⑥(m(6.15))で3文目の再生に移っていること
 const PLAYS: [string, number, number, number][] = [
-  ['こんにちは！', m(3.6), m(3.6), m(7.0)],
-  ['今日はいい天気だね。', m(5.05), m(7.0), m(8.8)],
-  ['何をお話ししようか？', m(6.45), m(8.8), m(10.6)],
+  ['こんにちは！', m(3.6), m(3.6), m(5.0)],
+  ['今日はいい天気だね。', m(4.35), m(5.0), m(6.05)],
+  ['何をお話ししようか？', m(5.4), m(6.05), m(6.95)],
 ];
 
-const LANES = ['ユーザー発話', 'LLM ストリーム', 'TTS キュー', 'デバイス再生'];
+const LANES = ['ユーザー発話', 'AIの返答', '音声合成キュー', 'デバイス再生'];
 
 const LANE_Y = 360;
 const LANE_H = 120;
@@ -95,10 +99,11 @@ export const ResponseSpeed: React.FC = () => {
   const ga = easeCubic(t, INTRO_END, 0.4);
   const subs = stageStatus(t);
   const stt = typed(t, m(0.8), m(1.7), STT_S);
-  const llm = typed(t, m(1.9), m(5.6), FULL);
-  const cursorOn = t < m(5.7) && Math.floor(t * 2) % 2 === 0;
+  // 文字送りは元の0.75倍の所要時間(1.9 + 3.7*0.75 = 4.68)
+  const llm = typed(t, m(1.9), m(4.68), FULL);
+  const cursorOn = t < m(4.78) && Math.floor(t * 2) % 2 === 0;
   const nbuf = PLAYS.filter(([, t0, ps]) => t0 <= t && t < ps).length;
-  const summary = easeCubic(t, m(11.0), 0.5);
+  const summary = easeCubic(t, m(7.35), 0.5);
 
   return (
     <AbsoluteFill style={{backgroundColor: COLORS.bg, fontFamily: FONT}}>
@@ -172,7 +177,6 @@ export const ResponseSpeed: React.FC = () => {
                         <span style={{fontSize: SIZES.stage, fontWeight: 700, color: COLORS.text}}>
                           {step.name}
                         </span>
-                        <span style={{fontSize: SIZES.note, color: COLORS.textSub}}>{step.label}</span>
                       </div>
                       <div style={{fontSize: SIZES.pill, fontWeight: 700, color: COLORS.accent}}>
                         {step.desc}
@@ -231,7 +235,7 @@ export const ResponseSpeed: React.FC = () => {
                 opacity: ga,
               }}
             >
-              応答速度のしくみ — すべてを並行に、待たない設計
+              応答速度のしくみ
             </div>
 
             {/* パイプライン段カード */}
@@ -366,7 +370,7 @@ export const ResponseSpeed: React.FC = () => {
                   playing={ps <= t && t < pe}
                 />
               ))}
-              {t >= m(3.6) && t < m(10.8) ? (
+              {t >= m(3.6) && t < m(7.1) ? (
                 <div style={{fontSize: SIZES.lane, color: COLORS.textSub, marginLeft: 10}}>
                   バッファ: {nbuf}
                 </div>
@@ -406,21 +410,7 @@ export const ResponseSpeed: React.FC = () => {
                     opacity: summary,
                   }}
                 >
-                  体感レイテンシ 1秒以下
-                </div>
-                <div
-                  style={{
-                    position: 'absolute',
-                    left: 0,
-                    right: 0,
-                    top: 640,
-                    textAlign: 'center',
-                    fontSize: SIZES.midLine,
-                    color: COLORS.text,
-                    opacity: summary,
-                  }}
-                >
-                  認識・生成・合成・再生 — すべてが同時に走っている
+                  体感速度 1-2秒
                 </div>
               </AbsoluteFill>
             ) : null}
