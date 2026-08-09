@@ -1,0 +1,24 @@
+{
+  "name": "toytalker-videos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ToyTalker TIB FAB 展示動画シリーズ (Remotion)",
+  "scripts": {
+    "studio": "remotion studio",
+    "render:response-speed": "remotion render ResponseSpeed out/toytalker_response_speed.mp4 --crf 18",
+    "render:concept": "remotion render Concept out/toytalker_concept.mp4 --crf 18",
+    "render:voice-change": "remotion render VoiceChange out/toytalker_voice_change.mp4 --crf 18",
+    "render:all": "npm run render:concept && npm run render:response-speed && npm run render:voice-change"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.246",
+    "@remotion/google-fonts": "4.0.246",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.246"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "typescript": "5.6.3"
+  }
+}
