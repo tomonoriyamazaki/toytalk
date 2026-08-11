@@ -209,8 +209,26 @@
   };
 
   // ---- LLMデフォルト（llm_id未設定時のフォールバック）----
-  const LLM_DEFAULT_PROVIDER = "openai";
-  const LLM_DEFAULT_MODEL    = "gpt-4.1-mini";
+  // toytalker-llms の is_default エントリを使う（コンテナ生存中はキャッシュ）。
+  // テーブルから取れないときだけ下の定数に落ちる
+  const LLM_DEFAULT_PROVIDER = "google";
+  const LLM_DEFAULT_MODEL    = "gemini-2.5-flash";
+  let defaultLlmPromise = null;
+  function loadDefaultLlm() {
+    if (!defaultLlmPromise) {
+      defaultLlmPromise = (async () => {
+        try {
+          const res = await ddb.send(new ScanCommand({ TableName: LLMS_TABLE }));
+          const item = (res.Items ?? []).find((i) => i.is_default);
+          if (item) return { provider: item.provider, modelId: item.model_id };
+        } catch (e) {
+          console.error("[DynamoDB] loadDefaultLlm error:", e);
+        }
+        return { provider: LLM_DEFAULT_PROVIDER, modelId: LLM_DEFAULT_MODEL };
+      })();
+    }
+    return defaultLlmPromise;
+  }
 
 
 
@@ -574,8 +592,8 @@
       }));
       if (!voiceRes.Item) return null;
 
-      let llmProvider = LLM_DEFAULT_PROVIDER;
-      let llmModelId  = LLM_DEFAULT_MODEL;
+      let llmProvider = null;
+      let llmModelId  = null;
       if (llmId) {
         const llmRes = await ddb.send(new GetCommand({
           TableName: LLMS_TABLE,
@@ -611,8 +629,8 @@
     let ttsKey      = normalizeModelKey(rawModel) ?? TTS_DEFAULT;
     let voice       = body.voice ?? VOICE_DEFAULT;
     let personalityPrompt = null;
-    let llmProvider = LLM_DEFAULT_PROVIDER;
-    let llmModelId  = LLM_DEFAULT_MODEL;
+    let llmProvider = null;
+    let llmModelId  = null;
 
     // ---- ログ用メタデータ ----
     const sessionId  = typeof body.session_id === "string" ? body.session_id : "unknown";
@@ -621,8 +639,9 @@
     const requestAt  = Date.now();
     const userTimestamp = new Date(requestAt).toISOString();
 
-    // 単価キャッシュを先にロード（await不要、バックグラウンドで）
+    // 単価キャッシュ・デフォルトLLMを先にロード（await不要、バックグラウンドで）
     loadPricingCache();
+    loadDefaultLlm();
 
     const backchannelFired = !!body.backchannel_fired;
     const characterId = typeof body.character_id === "string" ? body.character_id : null;
@@ -637,6 +656,14 @@
         console.log(`[Character] id=${characterId}, tts=${charConfig.provider}, voice=${charConfig.vendorId}, llm=${llmProvider}/${llmModelId}`);
       }
     }
+
+    // キャラ側にLLM指定がなければ is_default エントリを使う
+    if (!llmProvider || !llmModelId) {
+      const d = await loadDefaultLlm();
+      llmProvider = d.provider;
+      llmModelId  = d.modelId;
+    }
+    console.log(`[LLM] provider=${llmProvider}, model=${llmModelId}`);
 
     const cfg = TTS_TABLE[ttsKey] ?? TTS_TABLE[TTS_DEFAULT];
 

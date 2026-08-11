@@ -1,10 +1,12 @@
 #!/bin/bash
+set -euo pipefail  # バンドル失敗時に古いbundle.mjsをデプロイしてしまわないよう即停止
 cd "$(dirname "$0")"
 
 echo "📦 Bundling with esbuild..."
 "/c/Program Files/nodejs/npx.cmd" esbuild index.mjs --bundle --platform=node --format=esm \
   --external:@aws-sdk/client-dynamodb \
   --external:@aws-sdk/lib-dynamodb \
+  --external:@aws-sdk/client-lambda \
   --outfile=bundle.mjs
 
 echo "📁 Creating zip..."

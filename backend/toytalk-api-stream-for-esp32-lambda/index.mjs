@@ -264,8 +264,26 @@
   };
 
   // ---- LLMデフォルト（llm_id未設定時のフォールバック）----
-  const LLM_DEFAULT_PROVIDER = "openai";
-  const LLM_DEFAULT_MODEL    = "gpt-4.1-mini";
+  // toytalker-llms の is_default エントリを使う（コンテナ生存中はキャッシュ）。
+  // テーブルから取れないときだけ下の定数に落ちる
+  const LLM_DEFAULT_PROVIDER = "google";
+  const LLM_DEFAULT_MODEL    = "gemini-2.5-flash";
+  let defaultLlmPromise = null;
+  function loadDefaultLlm() {
+    if (!defaultLlmPromise) {
+      defaultLlmPromise = (async () => {
+        try {
+          const res = await ddb.send(new ScanCommand({ TableName: LLMS_TABLE }));
+          const item = (res.Items ?? []).find((i) => i.is_default);
+          if (item) return { provider: item.provider, modelId: item.model_id };
+        } catch (e) {
+          console.error("[DynamoDB] loadDefaultLlm error:", e);
+        }
+        return { provider: LLM_DEFAULT_PROVIDER, modelId: LLM_DEFAULT_MODEL };
+      })();
+    }
+    return defaultLlmPromise;
+  }
 
 
 
@@ -576,9 +594,9 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
       }));
       if (!voiceRes.Item) return null;
 
-      // LLM設定を解決（llm_id未設定ならデフォルト）
-      let llmProvider = LLM_DEFAULT_PROVIDER;
-      let llmModelId  = LLM_DEFAULT_MODEL;
+      // LLM設定を解決（llm_id未設定なら null のまま返し、handler側でデフォルトを充当）
+      let llmProvider = null;
+      let llmModelId  = null;
       if (llmId) {
         const llmRes = await ddb.send(new GetCommand({
           TableName: LLMS_TABLE,
@@ -612,6 +630,7 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     if (body.warmup) { res.end(); return; }  // EventBridgeウォームアップping（コールドスタート対策）
     prewarmSpareInstance();  // 処理中に予備インスタンスを温める（同時2人目対策）
     prewarmConnections();    // LLM/TTS接続を先行確立（keep-alive切れ時の保険、非同期）
+    loadDefaultLlm();        // デフォルトLLMを先読み（キャッシュ済みなら即時）
     const messages= body.messages ?? [{ role:"user", content:"自己紹介して" }];
     const deviceId = typeof body.device_id === "string" ? body.device_id : null;
     const backchannelFired = !!body.backchannel_fired;
@@ -639,8 +658,8 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
     let ttsKey = normalizeModelKey(body.model) ?? TTS_DEFAULT;
     let voice    = body.voice ?? VOICE_DEFAULT;
     let personalityPrompt = null;
-    let llmProvider = LLM_DEFAULT_PROVIDER;
-    let llmModelId  = LLM_DEFAULT_MODEL;
+    let llmProvider = null;
+    let llmModelId  = null;
     let characterId = "default";
 
     if (deviceId) {
@@ -658,6 +677,14 @@ async function ttsBufferOpenAI(text, voice, ttsModel) {
         console.log(`[DynamoDB] device=${deviceId} not found or no character set, using defaults`);
       }
     }
+
+    // キャラ側にLLM指定がなければ is_default エントリを使う
+    if (!llmProvider || !llmModelId) {
+      const d = await loadDefaultLlm();
+      llmProvider = d.provider;
+      llmModelId  = d.modelId;
+    }
+    console.log(`[LLM] provider=${llmProvider}, model=${llmModelId}`);
 
     const cfg = TTS_TABLE[ttsKey] ?? TTS_TABLE[TTS_DEFAULT];
 

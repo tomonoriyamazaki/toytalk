@@ -41,6 +41,7 @@ type VoiceItem = {
   label: string;
   provider: string;
   vendor_id: string;
+  is_default?: boolean;
 };
 
 type LlmItem = {
@@ -48,6 +49,7 @@ type LlmItem = {
   label: string;
   provider: string;
   model_id: string;
+  is_default?: boolean;
 };
 
 const DEVICE_SETTING_URL = "https://7k6nkpy3tf2drljy77pnouohjm0buoux.lambda-url.ap-northeast-1.on.aws";
@@ -93,8 +95,9 @@ export default function Settings() {
   const [charName, setCharName] = useState("");
   const [charDesc, setCharDesc] = useState("");
   const [charPrompt, setCharPrompt] = useState("");
-  const [charVoiceId, setCharVoiceId] = useState("elevenlabs_sameno");
-  const [charLlmId, setCharLlmId] = useState("openai_gpt41mini");
+  // 初期値はサーバの is_default エントリを採用（loadVoices/loadLlms 取得後に充当）
+  const [charVoiceId, setCharVoiceId] = useState("");
+  const [charLlmId, setCharLlmId] = useState("");
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -248,7 +251,10 @@ export default function Settings() {
     try {
       const res = await fetch(`${DEVICE_SETTING_URL}/voices`);
       const data = await res.json();
-      setVoices(data.voices ?? []);
+      const list: VoiceItem[] = data.voices ?? [];
+      setVoices(list);
+      // 未選択（新規作成・voice_id未設定キャラ）のときだけデフォルトを充当
+      setCharVoiceId((cur) => cur || (list.find((v) => v.is_default)?.voice_id ?? list[0]?.voice_id ?? ""));
     } catch {
       Alert.alert("エラー", "ボイス一覧の取得に失敗しました");
     } finally {
@@ -261,7 +267,10 @@ export default function Settings() {
     try {
       const res = await fetch(`${DEVICE_SETTING_URL}/llms`);
       const data = await res.json();
-      setLlms(data.llms ?? []);
+      const list: LlmItem[] = data.llms ?? [];
+      setLlms(list);
+      // 未選択（新規作成・llm_id未設定キャラ）のときだけデフォルトを充当
+      setCharLlmId((cur) => cur || (list.find((l) => l.is_default)?.llm_id ?? list[0]?.llm_id ?? ""));
     } catch {
       Alert.alert("エラー", "LLM一覧の取得に失敗しました");
     } finally {
@@ -464,8 +473,8 @@ export default function Settings() {
     setCharName(character?.name ?? "");
     setCharDesc(character?.description ?? "");
     setCharPrompt(character?.personality_prompt ?? "");
-    setCharVoiceId(character?.voice_id ?? "elevenlabs_sameno");
-    setCharLlmId(character?.llm_id ?? "openai_gpt41mini");
+    setCharVoiceId(character?.voice_id ?? "");
+    setCharLlmId(character?.llm_id ?? "");
     setSelectedTemplate(null);
     navigateTo("character-edit");
     loadVoices();
