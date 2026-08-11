@@ -683,8 +683,9 @@ void statsRecordRssi() {
 
 void statsPrint() {
   int avg = statRssiCount ? (int)(statRssiSum / statRssiCount) : 0;
-  Serial.printf("[STATS] underruns=%lu rssi_avg=%d rssi_min=%d samples=%ld\n",
-                (unsigned long)statUnderruns, avg, statRssiMin, (long)statRssiCount);
+  // bc=1(相槌発動)のターンはバースト受信→生成ペース落ちで underruns=1 が正常値
+  Serial.printf("[STATS] underruns=%lu bc=%d rssi_avg=%d rssi_min=%d samples=%ld\n",
+                (unsigned long)statUnderruns, backchannelFired ? 1 : 0, avg, statRssiMin, (long)statRssiCount);
 }
 
 size_t playRingAvail() {
@@ -781,6 +782,7 @@ void playerStart() {
   playRingTail = 0;
   playerStreamEnd = false;
   playerPrebuffering = true;
+  statUnderrunPending = false;  // 前セッション(相槌等)の終端レースを持ち越さない
   playerActive = true;
 }
 
