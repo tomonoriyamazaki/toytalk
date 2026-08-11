@@ -990,6 +990,7 @@ export default function Settings() {
         </View>
         <ScrollView contentContainerStyle={s.wrap}>
           {[
+            { ver: "0.8.4", date: "20260811", desc: "デフォルトのボイス/LLMをずんだもん/Geminiに設定" },
             { ver: "0.8.3", date: "20260709", desc: "デバイス登録時の挙動を修正、デバイス検索の高速化と設定画面の改善" },
             { ver: "0.8.2", date: "20260624", desc: "入力文字の読み上げ機能を追加" },
             { ver: "0.8.1", date: "20260510", desc: "相槌機能追加、サーチ機能追加（LLM Geminiのみ）、クローンボイス機能追加（β版）、再生⇔録音の切替をスムーズにするよう改修" },
