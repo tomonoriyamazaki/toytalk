@@ -654,6 +654,39 @@ static volatile bool playerPrebuffering = true;
 static volatile bool playerParked = true;     // タスクがI2Sに触っていない状態
 static TaskHandle_t playerTaskHandle = NULL;
 
+// ==== WiFi/再生品質の計測（基板グラウンド設計の検証用） ====
+// 1ターン（録音開始）ごとにリセットし、再生終了時に [STATS] サマリを出す。
+// underruns = 再生中のバッファ枯渇回数（音途切れの直接指標）。v0.1基板の
+// ベースライン取得と、v0.2（GND強化後）の効果測定に使う
+static volatile uint32_t statUnderruns = 0;
+static volatile bool statUnderrunPending = false;  // 空検知→再生再開で確定カウント(終端の空は数えない)
+static int32_t statRssiSum = 0;
+static int32_t statRssiCount = 0;
+static int statRssiMin = 0;  // RSSIは負値。0は未計測の意味
+static uint32_t statLastRssiMs = 0;
+
+void statsReset() {
+  statUnderruns = 0;
+  statUnderrunPending = false;
+  statRssiSum = 0;
+  statRssiCount = 0;
+  statRssiMin = 0;
+}
+
+void statsRecordRssi() {
+  int r = WiFi.RSSI();
+  if (r >= 0) return;  // 未接続時は0が返るので除外
+  statRssiSum += r;
+  statRssiCount++;
+  if (statRssiMin == 0 || r < statRssiMin) statRssiMin = r;
+}
+
+void statsPrint() {
+  int avg = statRssiCount ? (int)(statRssiSum / statRssiCount) : 0;
+  Serial.printf("[STATS] underruns=%lu rssi_avg=%d rssi_min=%d samples=%ld\n",
+                (unsigned long)statUnderruns, avg, statRssiMin, (long)statRssiCount);
+}
+
 size_t playRingAvail() {
   size_t h = playRingHead, t = playRingTail;
   return (h + PLAY_RING_SIZE - t) % PLAY_RING_SIZE;
@@ -700,6 +733,10 @@ void playbackTask(void* param) {
       // プリバッファ: 一定量溜まるまで再生開始を待つ（ストリーム終了時は即出し切る）
       if (avail >= PLAY_PREBUFFER || (playerStreamEnd && avail > 0)) {
         playerPrebuffering = false;
+        if (statUnderrunPending) {  // 溜め直し後の再開=本物のアンダーランとして確定
+          statUnderruns++;
+          statUnderrunPending = false;
+        }
         Serial.printf("[PLAYER] playback start (buffered=%u bytes)\n", (unsigned)avail);
       } else if (playerStreamEnd && avail == 0) {
         playerActive = false;  // 何も残っていないまま終了
@@ -709,12 +746,20 @@ void playbackTask(void* param) {
       continue;
     }
 
+    // 500msごとにRSSIをサンプリング（再生中の電波品質記録）
+    if (millis() - statLastRssiMs > 500) {
+      statLastRssiMs = millis();
+      statsRecordRssi();
+    }
+
     if (avail == 0) {
       if (playerStreamEnd) {
         playerActive = false;  // 全データ再生完了
         continue;
       }
       // アンダーラン: 溜め直す（この間DMAは無音を出力）
+      // カウントは再生再開時に確定させる（ストリーム終端の空を誤カウントしないため）
+      statUnderrunPending = true;
       Serial.println("[PLAYER] underrun → rebuffering");
       playerPrebuffering = true;
       continue;
@@ -1228,6 +1273,7 @@ void sendToLambdaAndPlay(const String& text) {
   digitalWrite(PIN_AMP_SD, LOW);
   ampOn = false;
   Serial.printf("⏱️ end+[%lums] Amp off\n", millis() - tEnd);
+  statsPrint();  // このターンのWiFi/再生品質サマリ
 
   addToHistory("user", text);
   if (responseText.length() > 0) addToHistory("assistant", responseText);
@@ -1340,6 +1386,7 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
 void startSTTRecording() {
   unsigned long t0 = millis();
   sttRestartMs = t0;
+  statsReset();  // このターンの品質計測を開始
   Serial.println("🎙️ Starting STT recording...");
   // 準備中はゆっくり点滅（タイマーが録音停止中の場合があるので再開）
   if (ledTimer) timerAlarm(ledTimer, 30000, true, 0);
@@ -1669,6 +1716,7 @@ void loop() {
       lastSend = millis();
     }
     if (millis() - lastStats > 5000) {
+      statsRecordRssi();  // 録音中(待機側)のRSSIも記録
       Serial.printf("[STT] send ok=%d fail=%d RSSI=%d heap=%d\n", sendOk, sendFail, WiFi.RSSI(), ESP.getFreeHeap());
       sendOk = 0; sendFail = 0;
       lastStats = millis();
